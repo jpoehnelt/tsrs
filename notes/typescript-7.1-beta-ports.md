@@ -124,3 +124,21 @@ results. The release binary is still SHA-256
 its bundled runtime assets are unchanged, so the instructions-retired,
 wall-time, and peak-RSS measurements also remain applicable. This entry is
 the corresponding evidence-only port of the upstream merge.
+
+## Follow-up: refresh the module resolver oracle for the beta version
+
+The full workspace test exposed one stale handcrafted module resolver fixture:
+`typesVersions` resolution traces still named `7.1.0-dev`. The Go oracle
+adapter was updated for the beta source's rooted-path and case-sensitivity
+types, then built against the exact `3e9236361fa9` tag. Regenerating all 18
+handcrafted scenarios changed only four trace arguments in that one scenario
+from `7.1.0-dev` to `7.1.0-beta`; resolved files, diagnostics, automatic types,
+and every other trace were unchanged. The refreshed fixture matches the Go
+oracle byte for byte, and `cargo test --locked -p tsrs_module oracle_handcrafted`
+passes. The full `tsrs_module` crate has 36 passing tests and one pre-existing
+ignored corpus test; warnings-denied workspace Clippy, source lint, `gofmt`,
+and `git diff --check` pass. This follow-up changes test tooling and expected
+output only, so the compiler binary and performance evidence above remain
+applicable. Other `7.1.0-dev` references in the codec and Node API goldens are
+historical or soft expectations; release notes and benchmark records retain
+their original versions.
