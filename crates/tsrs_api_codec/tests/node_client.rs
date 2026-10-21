@@ -1,5 +1,5 @@
 //! Rust-encoded bytes decoded by the real pinned JavaScript client. Needs Node.js and an installed
-//! typescript@7.1.0-dev.20260930.4 package: `TSRS_CODEC_ORACLE=<dir>/node_modules/typescript cargo test -p
+//! typescript@7.1.0-dev.20261018.1 package: `TSRS_CODEC_ORACLE=<dir>/node_modules/typescript cargo test -p
 //! tsrs_api_codec --test node_client`. Without `TSRS_CODEC_ORACLE` the test reports that it was skipped.
 
 #[expect(dead_code, reason = "This target uses only part of the shared integration helper module.")]
@@ -90,7 +90,7 @@ fn synthesized(f: &NodeFactory) -> P<Node> {
 fn rust_encodings_decode_in_the_pinned_js_client() {
     let Ok(oracle) = std::env::var("TSRS_CODEC_ORACLE") else {
         eprintln!(
-            "SKIPPED: set TSRS_CODEC_ORACLE to an installed typescript@7.1.0-dev.20260930.4 package directory"
+            "SKIPPED: set TSRS_CODEC_ORACLE to an installed typescript@7.1.0-dev.20261018.1 package directory"
         );
         return;
     };

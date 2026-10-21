@@ -61,7 +61,7 @@ On Linux the binary is wrapped by `proxy.mjs`, a byte-transparent tap that recor
 JSON-RPC, including method names inside `batchRequests` and per-entry batch errors. `preload.mjs` wraps
 `node:test` so each spawned server records the full name of the test that started it.
 
-`inventory.mjs` reads the 172 `Method` constants from the pinned `proto.go` and, per method, reports
+`inventory.mjs` reads the 177 `Method` constants from the pinned `proto.go` and, per method, reports
 oracle and candidate sends, answers, errors, explicit unsupported errors, and the tests that sent it with
 their outcome. Candidate status is one of:
 
@@ -138,9 +138,9 @@ The saved `parity` job runs the Go oracle (must pass), then tsrs against the sam
 uploads the results, and fails on any tsrs failure. The saved `package` job builds, packs and runs `consumer.mjs` on
 linux-x64 and linux-arm64; `package-macos` does the same on darwin-arm64. Restore that workflow before using these jobs.
 
-## Current evidence
+## Earlier-pin evidence
 
-In [CI run 39439143649](https://github.com/oxc-project/tsrs/actions/runs/39439143649), the pinned upstream
+In [CI run 39439143649](https://github.com/oxc-project/tsrs/actions/runs/39439143649), the earlier-pin upstream
 sync and async suites passed 850/850 tests on both the Go oracle and tsrs (7 files each, no skips, timeouts or leaked
 processes; tracing disabled). An earlier traced Go oracle run on Linux x64 with Node 24.21 passed 842/842 tests
 (7 files, 787 server processes, 0 unparseable frames). In that run, 165 of 172 methods were sent by at least one

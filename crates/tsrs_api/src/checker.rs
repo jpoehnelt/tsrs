@@ -1,5 +1,5 @@
 // Node API checker lane (mfs-cx/node-api-checker): port of the checker / symbol / type / signature
-// request handlers of the pinned tsgo API (microsoft/TypeScript b85298b6, tsc/internal/api/session.go +
+// request handlers of the tsgo API (originally based on microsoft/TypeScript b85298b6, tsc/internal/api/session.go +
 // proto.go). See checker/README.md for the contract, id ownership and the per-method coverage inventory.
 //
 // Core hook (docs/NODE_API.md, "checker hook"): `handle(session, method, params)` and
