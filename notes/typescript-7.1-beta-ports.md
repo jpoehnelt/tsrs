@@ -87,3 +87,19 @@ same release binary (SHA-256
 and bundled runtime assets are used, so its recorded instructions-retired,
 wall-time, and peak-RSS results also apply without another timing run. The
 local change is this evidence entry only.
+
+## 3. `d7d39da5c4` — Include `weswigham/*` in TypeScript CI
+
+Upstream adds `weswigham/*` to the push, pull-request, and merge-group branch
+filters in `.github/workflows/ci.yml`. Those are TypeScript-specific branches;
+tsrs CI has no corresponding filter to update. The upstream `tsc/` tree is
+`affae8248f115df1204769ecf61285cc1a1eec04` before and after this commit,
+and `packages/typescript/` is likewise identical. The beta tag was pinned in
+entry 1, and this evidence entry changes no local compiler, SDK, fixture,
+generated asset, or runtime input.
+
+Entry 1's exact-beta conformance, SDK, lint, and API-transport results retain
+the same inputs and passing sets. The release binary is unchanged at SHA-256
+`14de5d279e5946f7c51747ccc7fe61d4bc1872869393234eb33ba92f0a329fc2`;
+its bundled runtime assets are unchanged too. Its recorded instructions-retired,
+wall-time, and peak-RSS measurements therefore apply without a new timing run.
