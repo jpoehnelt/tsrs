@@ -168,7 +168,7 @@ impl RawSourceMap {
             }
         };
         for (name, v) in members {
-            match name.as_str() {
+            match name {
                 "version" => {
                     sm.version = match v {
                         Value::Null => 0,

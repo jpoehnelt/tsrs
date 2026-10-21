@@ -2566,7 +2566,7 @@ function generateCode() {
             writeLine("        for (k, v) in members {");
             const singleField = fields.length === 1;
             if (!singleField) {
-                writeLine("            match k.as_str() {");
+                writeLine("            match k {");
             }
             for (const f of fields) {
                 const prop = f.prop!;
@@ -2586,7 +2586,7 @@ function generateCode() {
                     expr = "field(k, v)?";
                 }
                 if (singleField) {
-                    writeLine(`            if k.as_str() == ${rustStr(prop.name)} {`);
+                    writeLine(`            if k == ${rustStr(prop.name)} {`);
                     if (bit >= 0) {
                         writeLine(`                seen |= 1 << ${bit};`);
                     }
@@ -2682,7 +2682,7 @@ function generateCode() {
         writeLine(`        let mut raw_register_options: Option<&Value> = None;`);
         writeLine("");
         writeLine(`        for (k, v) in members {`);
-        writeLine(`            match k.as_str() {`);
+        writeLine(`            match k {`);
         writeLine(`                "id" => {`);
         writeLine(`                    missing &= !MISSING_ID;`);
         writeLine(`                    s.${idField.rust} = field(k, v)?;`);
