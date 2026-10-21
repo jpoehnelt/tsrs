@@ -1311,6 +1311,7 @@ name = "tsrs_module"
 version = "0.18.0"
 dependencies = [
  "bitflags",
+ "hashbrown",
  "rustc-hash",
  "tsrs_ast",
  "tsrs_core",
