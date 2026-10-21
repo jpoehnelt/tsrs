@@ -47,24 +47,24 @@ latest published version until it ships:
 version = "0.19.0"
 
 [workspace.metadata.typescript]
-version = "7.1.0-dev.20261018"                         # the TypeScript version the port follows
-commit = "5237fd46890956e4bb8177a1a05dcd69e4166560"    # and its commit (CI checks out its tsc/testdata)
-nightly = "7.1.0-dev.20261018.1"                      # npm nightly used for the compiler's reported version
+version = "7.1.0-beta"                                 # the TypeScript version the port follows
+commit = "3e9236361fa97a9e6c685f4833ac457ae2d8c50a"    # and its commit (CI checks out its tsc/testdata)
+nightly = "7.1.0-beta"                                 # matching npm package used for the compiler's reported version
 ```
 
-npm version: `<version>-ts<typescript version>` = `0.19.0-ts7.1.0-dev.20261018`, for every package including
+npm version: `<version>-ts<typescript version>` = `0.19.0-ts7.1.0-beta`, for every package including
 `@tsrs/wasm` (`npm/tsrs-wasm/package.json` holds a placeholder that `npm/build.mjs` replaces). `tsrs --version`
 and `tsrs-wasm --version` include the package version, embedded at build time by `crates/tsrs_execute/build.rs`.
 The example below shows the 0.19.0 release version; read `Cargo.toml` for the current source pin:
 
 ```
-Version 7.1.0-dev.20261018.1 (tsrs 0.19.0-ts7.1.0-dev.20261018, microsoft/TypeScript@5237fd468909)
+Version 7.1.0-beta (tsrs 0.19.0-ts7.1.0-beta, microsoft/TypeScript@3e9236361fa9)
 ```
 
 To release a fix on the same TypeScript commit, bump `[workspace.package] version`; after porting a newer TypeScript
-commit, update `[workspace.metadata.typescript]`, including the matching npm `nightly`.
+commit, update `[workspace.metadata.typescript]`, including the matching npm package version in `nightly`.
 
-Source builds default to `7.1.0-dev` unless `TSRS_TS_VERSION` is set. Release builds stamp the nightly as the
+Source builds default to `7.1.0-beta` unless `TSRS_TS_VERSION` is set. Release builds stamp the matching npm package as the
 compiler version so `.tsbuildinfo` files and `typesVersions` agree with the reference compiler.
 
 ## Building packages locally

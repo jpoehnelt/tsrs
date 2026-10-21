@@ -1,7 +1,7 @@
 # Differences from pinned TypeScript
 
 This page records known differences from the Go implementation of TypeScript at the commit pinned in
-[`Cargo.toml`](../Cargo.toml), currently [`5237fd468909`](https://github.com/microsoft/TypeScript/tree/5237fd46890956e4bb8177a1a05dcd69e4166560/tsc). It covers changed defaults, unsupported features and
+[`Cargo.toml`](../Cargo.toml), currently [`3e9236361fa9`](https://github.com/microsoft/TypeScript/tree/3e9236361fa97a9e6c685f4833ac457ae2d8c50a/tsc). It covers changed defaults, unsupported features and
 remaining parity gaps. These are comparisons with that pinned compiler, not with TypeScript 5/6 or a newer nightly.
 The [compatibility table](COMPATIBILITY.md#what-it-does-and-doesnt-do) summarizes support and conformance.
 
@@ -31,7 +31,7 @@ four spaces and `"\n"`; the limits below apply to explicit client settings.
 | Parallel parsing | Goroutines scheduled by the Go runtime | A thread pool of `min(available parallelism, 32)`, overridden by a positive `RAYON_NUM_THREADS`; `--singleThreaded` disables parallel parsing |
 | Incremental startup | Reads tsbuildinfo, then builds the program | Both at once on two threads, unless `--singleThreaded` |
 | tsbuildinfo contents | tsgo's fields | Adds `tsrsCanonicalCheckSignature`. In `go` history mode or API mode, tsrs won't reuse a tsbuildinfo that has this field |
-| `--version` | `Version <TypeScript version>` | Appends `(tsrs <release>, microsoft/TypeScript@<commit>)`. Unstamped source builds use `7.1.0-dev`; npm builds use the pinned nightly version on both sides |
+| `--version` | `Version <TypeScript version>` | Appends `(tsrs <release>, microsoft/TypeScript@<commit>)`. Unstamped source builds use `7.1.0-beta`; npm builds use the pinned package version on both sides |
 | `--init` | Writes a tsconfig.json | `error: --init is not supported by tsrs.`, exit status 5, no file written |
 | `--showConfig` | Prints the resolved config as JSON | Not supported, exit status 5 |
 | `--help`, `--all`, `-b --help` | Full option help | A version line and short usage, exit status 0 |
@@ -190,5 +190,6 @@ library files matched. Probes with source-built binaries on macOS covered help, 
 locale handling, statistics, incremental metadata, tracing, profiling, non-UTF-8 arguments and API startup errors. Direct Go/Rust
 probes confirmed the unknown `moduleDetection` and tsbuildinfo enum conversions. Platform-specific watcher
 behavior, runtime scheduling and the remaining server/API details were checked in source. The current 0.19.0
-source pin is `5237fd468909`; its broader conformance evidence is in the
-[recorded suite results](COMPATIBILITY.md#conformance) and [port log](../notes/typescript-623-ports.md).
+source pin is `3e9236361fa9`; its broader conformance evidence is in the
+[recorded suite results](COMPATIBILITY.md#conformance), [source-upgrade log](../notes/typescript-623-ports.md),
+and [beta follow-up log](../notes/typescript-7.1-beta-ports.md).

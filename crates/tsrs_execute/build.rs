@@ -5,7 +5,10 @@
 use std::path::Path;
 
 fn main() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../Cargo.toml")
+        .canonicalize()
+        .expect("locate workspace Cargo.toml");
     println!("cargo:rerun-if-changed={}", manifest.display());
     let text = std::fs::read_to_string(&manifest).expect("read workspace Cargo.toml");
 

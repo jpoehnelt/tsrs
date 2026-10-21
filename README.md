@@ -18,7 +18,7 @@ Try checking and emitting code in the [browser playground](https://tsrs-playgrou
 
 ## Conformance
 
-The 0.19.0 source upgrade targets [microsoft/TypeScript at `5237fd468909`](https://github.com/microsoft/TypeScript/tree/5237fd46890956e4bb8177a1a05dcd69e4166560).
+The 0.19.0 source upgrade targets [microsoft/TypeScript `v7.1-beta` at `3e9236361fa9`](https://github.com/microsoft/TypeScript/tree/3e9236361fa97a9e6c685f4833ac457ae2d8c50a).
 We aim to release a stable version against TypeScript 7.1 with 100% conformance. In our testing on existing projects,
 we have yet to find a correctness bug in `tsrs`.
 

@@ -11,14 +11,14 @@ publish = false
 
 # The microsoft/TypeScript commit this port follows. Read by crates/tsrs_execute/build.rs (`tsrs --version`), by
 # npm/build.mjs (npm version = "<workspace version>-ts<version>") and by CI (conformance testdata checkout).
-# `nightly` is the npm `typescript` nightly built from `commit` (its package.json `gitHead` is `commit`, or a later
-# commit that changes nothing under tsc/). Release builds stamp it
-# as TypeScript's version (TSRS_TS_VERSION, crates/tsrs_core/src/version.rs), as the nightly's own build does, so the
+# `nightly` is the npm `typescript` package matching `commit` (a nightly or prerelease; its package.json `gitHead`
+# is `commit`, or a later commit that changes nothing under tsc/). Release builds stamp it
+# as TypeScript's version (TSRS_TS_VERSION, crates/tsrs_core/src/version.rs), as the package's own build does, so the
 # tsbuildinfo `version`, `typesVersions` matching and `--version` agree with that tsgo; the release checks both.
 [workspace.metadata.typescript]
-version = "7.1.0-dev.20261018"
-commit = "5237fd46890956e4bb8177a1a05dcd69e4166560"
-nightly = "7.1.0-dev.20261018.1"
+version = "7.1.0-beta"
+commit = "3e9236361fa97a9e6c685f4833ac457ae2d8c50a"
+nightly = "7.1.0-beta"
 
 [workspace.dependencies]
 criterion2 = { version = "3.0.4", default-features = false } # Benchmarking

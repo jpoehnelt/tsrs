@@ -3,3 +3,7 @@ packages:
   - playground
 allowBuilds:
   '@parcel/watcher': false
+# These two native packages for the pinned TypeScript 7.1 beta are newer than pnpm's minimum release age.
+minimumReleaseAgeExclude:
+  - '@typescript/typescript-aix-ppc64@7.1.0-beta'
+  - '@typescript/typescript-linux-arm64@7.1.0-beta'

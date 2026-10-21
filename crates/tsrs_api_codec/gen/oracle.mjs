@@ -4,8 +4,8 @@
 // Usage:
 //   # server: built from ts-ref at the workspace pin (Cargo.toml [workspace.metadata.typescript].commit)
 //   (cd ts-ref/tsc && GOWORK=off go build -o /tmp/tsgo/tsc ./cmd/tsc)
-//   # client: the JavaScript API client of the same source (the pinned npm nightly)
-//   pnpm --dir /tmp/tsoracle add typescript@7.1.0-dev.20261018.1
+//   # client: the JavaScript API client of the same source (the pinned npm package)
+//   pnpm --dir /tmp/tsoracle add typescript@7.1.0-beta
 //   TSRS_CODEC_TSC=/tmp/tsgo/tsc TSRS_CODEC_ORACLE=/tmp/tsoracle/node_modules/typescript \
 //     node crates/tsrs_api_codec/gen/oracle.mjs
 //
@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process";
 const crateRoot = path.resolve(import.meta.dirname, "..");
 const oracle = process.env.TSRS_CODEC_ORACLE;
 if (!oracle) {
-    console.error("set TSRS_CODEC_ORACLE to an installed typescript@7.1.0-dev.20261018.1 package directory");
+    console.error("set TSRS_CODEC_ORACLE to an installed typescript@7.1.0-beta package directory");
     process.exit(2);
 }
 const tsc = process.env.TSRS_CODEC_TSC;

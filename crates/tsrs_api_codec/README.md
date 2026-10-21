@@ -2,7 +2,7 @@
 
 Binary AST codec of the TypeScript native API (`--api`): a Rust port of
 `microsoft/TypeScript` `tsc/internal/api/encoder`. The workspace tracks source commit
-`5237fd46890956e4bb8177a1a05dcd69e4166560`; the checked-in codec goldens were recorded during the
+`3e9236361fa97a9e6c685f4833ac457ae2d8c50a`; the checked-in codec goldens were recorded during the
 upgrade at `2f9fd09a104ef14268944a0aeb9cdc4d80abb6a6`. The codec produces the reference Go server's bytes for
 `getSourceFile` / `createSourceFile` / `typeToTypeNode` / …, which the reference JavaScript client
 (`packages/typescript/src/api/node`, `RemoteSourceFile`/`RemoteNode`) decodes lazily, and decodes the bytes the

@@ -5,13 +5,14 @@ change are identified separately from measurements of the packaged release. For 
 see the [compatibility table](COMPATIBILITY.md); detailed investigations are indexed in the
 [engineering notes](../notes/README.md). The early development log follows the release entries.
 
-## 2026-10-21: 0.19.0 source upgrade candidate
+## 2026-10-22: 0.19.0 source upgrade candidate
 
-The source and package metadata now target `microsoft/TypeScript@5237fd46890956e4bb8177a1a05dcd69e4166560`
-(`7.1.0-dev.20261018`), with the matching npm nightly `7.1.0-dev.20261018.1`. All 112 upstream commits in
+The source and package metadata now target `microsoft/TypeScript@3e9236361fa97a9e6c685f4833ac457ae2d8c50a`
+(`v7.1-beta`), with the matching npm package `7.1.0-beta`. All 112 upstream commits in
 [#623](https://github.com/oxc-project/tsrs/issues/623) have a corresponding tsrs commit and evidence in the
-[port log](../notes/typescript-623-ports.md). The candidate package version is
-`0.19.0-ts7.1.0-dev.20261018`; 0.18.0 remains the latest published release until this candidate ships.
+[port log](../notes/typescript-623-ports.md); the beta-tag follow-ups are in their own
+[port log](../notes/typescript-7.1-beta-ports.md). The candidate package version is
+`0.19.0-ts7.1.0-beta`; 0.18.0 remains the latest published release until this candidate ships.
 
 The pinned compiler passes 13,696 of 13,700 error baselines and all 12,998 `.types` and `.symbols` baselines in
 both checker histories. Emit passes all 13,626 `.js`, 149 `.js.map`, and 156 `.sourcemap.txt` baselines. The

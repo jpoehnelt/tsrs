@@ -1,5 +1,5 @@
 // Decodes Rust-produced encodings with the real pinned JavaScript client (RemoteSourceFile / decodeNode from
-// typescript@7.1.0-dev.20261018.1) and compares everything the client exposes with the same view of the Go
+// typescript@7.1.0-beta) and compares everything the client exposes with the same view of the Go
 // server's encoding of the same file. Driven by tests/node_client.rs.
 //
 // Usage: node node_client.mjs <typescript package dir> <rust output dir> <golden dir>

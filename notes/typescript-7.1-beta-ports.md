@@ -1,0 +1,70 @@
+# TypeScript 7.1 beta follow-up ports
+
+The 112 commits in [issue #623](https://github.com/oxc-project/tsrs/issues/623) end at
+`5237fd46890956e4bb8177a1a05dcd69e4166560` and retain their original evidence in
+[the source-upgrade log](typescript-623-ports.md). The upstream `v7.1-beta` tag is
+`3e9236361fa97a9e6c685f4833ac457ae2d8c50a`. It merges the release branch's
+`942a59d3081b005869bc2938953520b3f22b4702` version bump with the final main-branch
+compiler state; the remaining commits on the tag's first-parent path change CI workflow
+files only. These follow-ups have separate corresponding tsrs commits in upstream order.
+
+## 1. `942a59d308` — Bump version to 7.1.0-beta
+
+The upstream release branch changes `tsc/internal/core/version.go` from `7.1.0-dev` to
+`7.1.0-beta` and sets the native preview release version in `Herebyfile.mjs`. Comparing
+the prior pin with the final tag under `tsc/` and `packages/typescript/` shows only that
+Go version-constant change; there are no compiler algorithm, SDK, or testdata changes.
+The published `typescript@7.1.0-beta` package's `gitHead` is the final tag, so this
+step advances the active source pin directly to the tag while retaining a corresponding
+commit for each remaining workflow-only upstream commit.
+
+Rust's unstamped version default is now `7.1.0-beta`. `Cargo.toml`, the npm package
+version and lockfile, benchmark reference, vendored SDK manifest, generated SDK method
+inventory, and current release-facing documentation all name the beta tag and package.
+The SDK copy remains byte-identical, and `sync-upstream.mjs --check` validates its 194
+files against the tag. The pnpm lockfile's first resolution omitted the beta package's
+declared native optional dependencies, so its `tsc` launcher could not run. A pnpm
+`--fix-lockfile` resolution restored them and added the two minimum-release-age
+exceptions required by the fresh native package versions. A frozen reinstall and
+`node npm/build.mjs --sdk-only` then passed. The `tsrs_execute` build script now
+canonicalizes the workspace `Cargo.toml` path before registering its rerun trigger:
+Cargo had reused a build-script output from another worktree, stamping the old source
+commit even though the compiler core had rebuilt. Both dev and release CLI binaries
+now report `Version 7.1.0-beta (tsrs 0.19.0-ts7.1.0-beta,
+microsoft/TypeScript@3e9236361fa9)`; the exact-tag Go binary reports
+`Version 7.1.0-beta`.
+
+The exact-beta full compiler suite passes all 13,700 diagnostic, 12,998 `.types`,
+12,998 `.symbols`, 13,626 JavaScript/declaration, 149 JavaScript-map, and 156
+source-map baselines, with zero failures, crashes, or timeouts. The upstream SDK
+suite passes 968/968 tests against both Go and tsrs, and its freshly generated
+177-method report matches `npm/sdk/METHODS.md` byte for byte. Source lint and
+format checks pass. Warnings-denied workspace Clippy and the pinned Node
+client API-transport round trip also pass.
+
+The pre-port source-112 and beta release binaries have SHA-256 values
+`d3702668639dbeee0ac0a58fe831783199f962efb49bcf358df8202bd227175a`
+and `14de5d279e5946f7c51747ccc7fe61d4bc1872869393234eb33ba92f0a329fc2`.
+Five alternating pairs on three public projects preserved identical output
+and exit status in both modes. macOS `/usr/bin/time -l` measured instructions
+retired and peak RSS; wall time includes process launch. Medians are:
+
+| Project | Mode | Instructions, billions before → after | Peak RSS MiB before → after | Wall seconds before → after |
+| --- | --- | ---: | ---: | ---: |
+| Compiler-Unions | single | 3.224 → 3.223 | 58.98 → 59.00 | 0.230 → 0.229 |
+| Compiler-Unions | default | 3.918 → 3.913 | 82.45 → 81.91 | 0.114 → 0.112 |
+| webpack | single | 10.825 → 10.832 | 306.33 → 306.34 | 0.974 → 0.973 |
+| webpack | default | 15.211 → 15.187 | 497.23 → 495.63 | 0.163 → 0.172 |
+| VS Code | single | 81.370 → 81.365 | 1586.53 → 1586.56 | 7.938 → 7.954 |
+| VS Code | default | 93.424 → 93.549 | 2090.00 → 2085.73 | 0.996 → 1.010 |
+
+The largest instruction increase is 0.134% and the largest peak-RSS increase
+is 0.026%, both below the repository's regression threshold. webpack/default
+showed +5.388% wall time in the first short run, with 4/5 positive pairs
+(one-sided sign-test probability 0.1875). A reversed ten-pair confirmation
+measured 0.184 → 0.177 s (−3.990%), 15.190 → 15.232 billion instructions
+(+0.280%), and 495.47 → 498.34 MiB peak RSS (+0.579%). The wall increase
+did not reproduce, and no new performance regression was detected. The
+deterministic Linux `bench/count.py` counter is unavailable on this macOS
+host; macOS instruction counts include kernel work. Raw samples and matching
+output hashes are under `target/port-623/beta-942a59d308/perf/`.

@@ -89,7 +89,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--quiet", action="store_true")
     # Also compare the tsbuildinfo files (<out>.tsbuildinfo) byte for byte. With tsgo built from ts-ref
-    # (`go build ./cmd/tsc`: embedded libs, version 7.1.0-dev) the default tsrs build matches as is. With the npm
+    # (`go build ./cmd/tsc`: embedded libs, version 7.1.0-beta) the default tsrs build matches as is. With the npm
     # (noembed) tsgo, tsrs reads the libraries from tsgo's directory (TSRS_LIB_PATH) and must be built with
     # TSRS_TS_VERSION=<tsgo --version>.
     ap.add_argument("--buildinfo", action="store_true")
