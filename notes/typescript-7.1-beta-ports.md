@@ -68,3 +68,22 @@ did not reproduce, and no new performance regression was detected. The
 deterministic Linux `bench/count.py` counter is unavailable on this macOS
 host; macOS instruction counts include kernel work. Raw samples and matching
 output hashes are under `target/port-623/beta-942a59d308/perf/`.
+
+## 2. `bf8a764721` — Use supported MicroBuild source-analysis pool
+
+Upstream changes `sourceAnalysisPool` from `VSEngSS-MicroBuild2022-1ES` to
+`VSEng-MicroBuildVSStable` in four Microsoft Azure build/publish pipeline YAML
+files; one file also loses its executable bit. tsrs has no corresponding Azure
+or MicroBuild pipeline, so this is an evidence-only port. The upstream `tsc/`
+tree is `affae8248f115df1204769ecf61285cc1a1eec04` on both sides of the
+commit, and `packages/typescript/` is likewise identical. The active beta tag
+was already pinned in entry 1; no local compiler, SDK, fixture, generated
+asset, or runtime input changes here.
+
+Entry 1's exact-beta compiler, SDK, workspace lint, and API-transport checks
+therefore remain applicable, with all passing conformance sets unchanged. The
+same release binary (SHA-256
+`14de5d279e5946f7c51747ccc7fe61d4bc1872869393234eb33ba92f0a329fc2`)
+and bundled runtime assets are used, so its recorded instructions-retired,
+wall-time, and peak-RSS results also apply without another timing run. The
+local change is this evidence entry only.
