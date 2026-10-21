@@ -103,3 +103,24 @@ the same inputs and passing sets. The release binary is unchanged at SHA-256
 `14de5d279e5946f7c51747ccc7fe61d4bc1872869393234eb33ba92f0a329fc2`;
 its bundled runtime assets are unchanged too. Its recorded instructions-retired,
 wall-time, and peak-RSS measurements therefore apply without a new timing run.
+
+## 4. `3e9236361f` — Merge main into `release-7.1` (`v7.1-beta`)
+
+The beta tag merges `942a59d308` with `d7d39da5c4`. The combined merge diff is
+empty: there are no conflict-resolution edits. Compared with the original
+`5237fd4689` pin, the tag changes only `tsc/internal/core/version.go` under
+`tsc/` and `packages/typescript/`, replacing `7.1.0-dev` with `7.1.0-beta`.
+The SDK source tree is identical at both commits
+(`3dc85d2e25450bf76fdf45c426b89c762e9ca71e`). Compared with the merge's
+main-branch parent, only that Go version constant and the release branch's
+fixed `7.1.0-beta` setting in `Herebyfile.mjs` differ. The published
+`typescript@7.1.0-beta` package reports this tag as its `gitHead`.
+
+Entry 1 already pins and validates this exact tag, so the merge requires no
+additional Rust, SDK, or fixture changes. The exact-beta compiler, SDK, lint,
+and API-transport checks recorded there retain the same inputs and passing
+results. The release binary is still SHA-256
+`14de5d279e5946f7c51747ccc7fe61d4bc1872869393234eb33ba92f0a329fc2`;
+its bundled runtime assets are unchanged, so the instructions-retired,
+wall-time, and peak-RSS measurements also remain applicable. This entry is
+the corresponding evidence-only port of the upstream merge.
