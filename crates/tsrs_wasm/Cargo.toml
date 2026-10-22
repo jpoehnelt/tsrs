@@ -9,13 +9,15 @@ publish.workspace = true
 [lints]
 workspace = true
 
-# The WebAssembly build: tsc as a wasm32-wasip1 module over a host file system (notes/wasm-build.md,
-# tools/wasm/build.sh, npm/tsrs-wasm). cdylib only: cargo skips LTO for a crate that is also an rlib, and the wasm
-# profile's fat LTO needs it.
+# Rust consumers link the rlib into their own module. tools/wasm/build.sh explicitly selects
+# cdylib for standalone WASM: selecting both crate types together would disable fat LTO.
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["rlib"]
 # The tests run `run()` on native targets against an in-memory host (`host::test_host`).
 test = true
+
+[features]
+embedded = []
 
 [dependencies]
 tsrs_core.workspace = true

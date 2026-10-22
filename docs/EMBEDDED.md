@@ -45,3 +45,14 @@ Build with `tools/wasm/build.sh`; run `node tools/wasm/embedded-test.mjs` agains
 The consumer integration adds execution-based refactor tests, frozen Apps Script acceptance,
 and paired packaged Chrome workloads. Consumer results are recorded in myFunction PR 426;
 no compiler CLI speedup or renewed upstream conformance claim follows from these editor tests.
+
+
+## Rust composition
+
+`tsrs_wasm` is also an rlib. Its `embedded` feature suppresses standalone unmangled ABI symbols,
+so an embedding cdylib can provide the existing host ABI once and link other Rust services into
+the same allocator and linear memory. `abi::request_with_extension` passes a borrowed live
+`Session`, method and parameters to the embedding callback. Returning `None` preserves the normal
+compiler dispatch. The callback receives `closeSession`; compiler cleanup runs even if that
+callback reports an error. `embedded::dispatch_with_extension` supports native regression tests.
+The standalone build explicitly selects cdylib through cargo rustc, retaining fat LTO.

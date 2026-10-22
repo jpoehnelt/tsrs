@@ -17,7 +17,9 @@ fn session() -> ApiResult<Arc<Session>> {
     SESSION.with_borrow(Clone::clone).ok_or_else(|| ApiError::client("session is closed"))
 }
 
-fn call(request: &Value) -> ApiResult<Value> {
+/// An embedding consumer can serve native operations without copying compiler data through JS.
+pub type RequestExtension = fn(&Session, &str, &Value) -> Option<ApiResult<Value>>;
+fn call(request: &Value, extension: Option<RequestExtension>) -> ApiResult<Value> {
     let request = Params(request);
     request.object()?;
     let method = request.str("method")?;
@@ -42,11 +44,17 @@ fn call(request: &Value) -> ApiResult<Value> {
     }
     if method == "closeSession" {
         if let Some(s) = SESSION.with_borrow_mut(Option::take) {
+            let cleanup =
+                extension.and_then(|handler| handler(&s, "closeSession", params)).transpose();
             s.close();
+            cleanup?;
         }
         return Ok(Value::Bool(true));
     }
     let s = session()?;
+    if let Some(result) = extension.and_then(|handler| handler(&s, method, params)) {
+        return result;
+    }
     if method == "supportedCodeFixes" {
         return Ok(Value::Array(
             tsrs_ls::supported_code_fix_codes()
@@ -115,10 +123,16 @@ fn call(request: &Value) -> ApiResult<Value> {
 }
 
 pub fn dispatch(bytes: &[u8]) -> Vec<u8> {
+    dispatch_inner(bytes, None)
+}
+pub fn dispatch_with_extension(bytes: &[u8], extension: RequestExtension) -> Vec<u8> {
+    dispatch_inner(bytes, Some(extension))
+}
+fn dispatch_inner(bytes: &[u8], extension: Option<RequestExtension>) -> Vec<u8> {
     let result = std::str::from_utf8(bytes)
         .map_err(|e| ApiError::invalid_request(e.to_string()))
         .and_then(|text| json::unmarshal(text).map_err(ApiError::invalid_request))
-        .and_then(|request| call(&request));
+        .and_then(|request| call(&request, extension));
     let envelope = match result {
         Ok(value) => Obj::new().set("result", value).build(),
         Err(error) => Obj::new().set("error", Value::String(error.to_string())).build(),
@@ -314,4 +328,50 @@ fn workspace_edit(uri: &lsp::DocumentUri, changes: Vec<lsp::TextEdit>) -> Value 
     let mut files = tsrs_core::collections::OrderedMap::default();
     files.insert(uri.clone(), changes);
     lsp::WorkspaceEdit { changes: Some(files), ..Default::default() }.to_json()
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CLOSED: AtomicUsize = AtomicUsize::new(0);
+    fn extension(session: &Session, method: &str, _: &Value) -> Option<ApiResult<Value>> {
+        match method {
+            "embedded/test" => Some(Ok(Value::String(session.id().to_string()))),
+            "closeSession" => {
+                CLOSED.fetch_add(1, Ordering::SeqCst);
+                Some(Ok(Value::Null))
+            }
+            _ => None,
+        }
+    }
+    fn send(method: &str) -> Value {
+        let request = format!(r#"{{"method":"{method}","params":{{}}}}"#);
+        let bytes = dispatch_with_extension(request.as_bytes(), extension);
+        json::unmarshal(std::str::from_utf8(&bytes).unwrap()).unwrap()
+    }
+    #[test]
+    fn a_failing_extension_cleanup_still_closes_the_compiler_session() {
+        fn reject_close(_: &Session, method: &str, _: &Value) -> Option<ApiResult<Value>> {
+            (method == "closeSession").then(|| Err(ApiError::client("extension cleanup failed")))
+        }
+        let opened =
+            dispatch_with_extension(br#"{"method":"openSession","params":{}}"#, reject_close);
+        assert!(std::str::from_utf8(&opened).unwrap().contains("result"));
+        let reply =
+            dispatch_with_extension(br#"{"method":"closeSession","params":{}}"#, reject_close);
+        assert!(std::str::from_utf8(&reply).unwrap().contains("extension cleanup failed"));
+        let closed = send("embedded/test");
+        assert!(Params(&closed).str("error").unwrap().contains("session is closed"));
+    }
+    #[test]
+    fn extension_borrows_the_live_compiler_session_and_receives_close() {
+        let opened = send("openSession");
+        assert_eq!(send("embedded/test"), opened);
+        assert_eq!(send("collectIdle"), Obj::new().set("result", Value::Bool(true)).build());
+        assert_eq!(send("closeSession"), Obj::new().set("result", Value::Bool(true)).build());
+        assert_eq!(CLOSED.load(Ordering::SeqCst), 1);
+        let closed = send("embedded/test");
+        assert!(Params(&closed).str("error").unwrap().contains("session is closed"));
+    }
 }

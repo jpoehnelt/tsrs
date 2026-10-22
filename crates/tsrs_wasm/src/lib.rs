@@ -10,10 +10,10 @@
 // REQUEST_* bits. A panic prints Rust's message on stderr and exits with status 5 (native tsrs's status for a panicked
 // driver thread). A trap (shadow-stack overflow, allocation failure) never returns here; the JS host maps it to 5 too.
 
+#[path = "prototype.rs"]
+pub mod embedded;
 mod host;
 mod json;
-#[cfg(target_arch = "wasm32")]
-mod prototype;
 mod sys;
 
 use std::io::Write;
@@ -70,7 +70,7 @@ fn run_with_output(request: &[u8], out: Box<dyn Write + Send>) -> (i32, Vec<u8>)
 }
 
 #[cfg(target_family = "wasm")]
-mod abi {
+pub mod abi {
     use std::cell::RefCell;
 
     thread_local! {
@@ -78,7 +78,7 @@ mod abi {
         static OUTPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     }
 
-    #[unsafe(no_mangle)]
+    #[cfg_attr(not(feature = "embedded"), unsafe(no_mangle))]
     pub extern "C" fn tsrs_input(len: usize) -> *mut u8 {
         INPUT.with_borrow_mut(|input| {
             input.clear();
@@ -87,7 +87,7 @@ mod abi {
         })
     }
 
-    #[unsafe(no_mangle)]
+    #[cfg_attr(not(feature = "embedded"), unsafe(no_mangle))]
     pub extern "C" fn tsrs_run() -> i32 {
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -100,19 +100,26 @@ mod abi {
         status
     }
 
-    #[unsafe(no_mangle)]
+    #[cfg_attr(not(feature = "embedded"), unsafe(no_mangle))]
     pub extern "C" fn tsrs_session_request() {
         let request = INPUT.with_borrow_mut(std::mem::take);
-        let reply = super::prototype::dispatch(&request);
+        let reply = super::embedded::dispatch(&request);
         OUTPUT.with_borrow_mut(|output| *output = reply);
     }
 
-    #[unsafe(no_mangle)]
+    /// Compose additional native services in the same reactor, allocator and linear memory.
+    pub fn request_with_extension(extension: super::embedded::RequestExtension) {
+        let request = INPUT.with_borrow_mut(std::mem::take);
+        let reply = super::embedded::dispatch_with_extension(&request, extension);
+        OUTPUT.with_borrow_mut(|output| *output = reply);
+    }
+
+    #[cfg_attr(not(feature = "embedded"), unsafe(no_mangle))]
     pub extern "C" fn tsrs_output() -> *const u8 {
         OUTPUT.with_borrow(Vec::as_ptr)
     }
 
-    #[unsafe(no_mangle)]
+    #[cfg_attr(not(feature = "embedded"), unsafe(no_mangle))]
     pub extern "C" fn tsrs_output_len() -> usize {
         OUTPUT.with_borrow(Vec::len)
     }
