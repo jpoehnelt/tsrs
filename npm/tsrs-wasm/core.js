@@ -201,7 +201,13 @@ function prepare(module, request, host, io) {
         memory = instance.exports.memory;
         return finish();
     };
-    return { imports, start };
+    const attach = (inst) => {
+        instance = inst;
+        memory = instance.exports.memory;
+        instance.exports._initialize?.();
+        return instance.exports;
+    };
+    return { imports, start, attach };
 
     function finish() {
     let exitCode;
@@ -353,4 +359,57 @@ export function memoryFileSystem(files = {}, { caseInsensitive = false } = {}) {
 /** Parses the JSON reply of a REQUEST_JSON_DIAGNOSTICS run. */
 export function parseReply(reply) {
     return reply.length === 0 ? [] : JSON.parse(decoder.decode(reply));
+}
+
+// Prototype: retain one reactor instance and API session across editor requests.
+export async function createSession(module, host, io = {}) {
+    const run = prepare(module, { cwd: "/", args: [], flags: 0 }, host, io);
+    const wasm = run.attach(await WebAssembly.instantiate(module, run.imports));
+    let poisoned = false;
+    return {
+        request(method, params = {}) {
+            if (poisoned) throw new Error("WASM session trapped; discard its worker");
+            let envelope;
+            try {
+                const input = encoder.encode(JSON.stringify({ method, params }));
+                const ptr = wasm.tsrs_input(input.length);
+                new Uint8Array(wasm.memory.buffer).set(input, ptr);
+                wasm.tsrs_session_request();
+                envelope = JSON.parse(decoder.decode(new Uint8Array(
+                    wasm.memory.buffer, wasm.tsrs_output(), wasm.tsrs_output_len(),
+                )));
+            } catch (error) {
+                poisoned = true;
+                throw error;
+            }
+            if (envelope.error) throw new Error(envelope.error);
+            return envelope.result;
+        },
+    };
+}
+
+export function createSessionSync(module, host, io = {}) {
+    const run = prepare(module, { cwd: "/", args: [], flags: 0 }, host, io);
+    const wasm = run.attach(new WebAssembly.Instance(module, run.imports));
+    let poisoned = false;
+    return {
+        request(method, params = {}) {
+            if (poisoned) throw new Error("WASM session trapped; discard its worker");
+            let envelope;
+            try {
+                const input = encoder.encode(JSON.stringify({ method, params }));
+                const ptr = wasm.tsrs_input(input.length);
+                new Uint8Array(wasm.memory.buffer).set(input, ptr);
+                wasm.tsrs_session_request();
+                envelope = JSON.parse(decoder.decode(new Uint8Array(
+                    wasm.memory.buffer, wasm.tsrs_output(), wasm.tsrs_output_len(),
+                )));
+            } catch (error) {
+                poisoned = true;
+                throw error;
+            }
+            if (envelope.error) throw new Error(envelope.error);
+            return envelope.result;
+        },
+    };
 }

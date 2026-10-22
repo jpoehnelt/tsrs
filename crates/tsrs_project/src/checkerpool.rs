@@ -12,7 +12,9 @@ use tsrs_core::context::{CheckerLifetime, Context, get_checker_lifetime, get_req
 use crate::memregions::{log_region, programOwner};
 use tsrs_core::P;
 
-use crate::background::{Timer, after_func};
+use crate::background::Timer;
+#[cfg(not(target_family = "wasm"))]
+use crate::background::after_func;
 
 // checkerHeldAnonymous is a sentinel stored in heldBy when a checker is held
 // by a caller that has no request ID (e.g., context.Background()). This
@@ -699,6 +701,13 @@ impl checkerPool {
     // the earliest pending checker-expiration deadline among all currently idle,
     // unheld checkers.
     // Must be called with p.mu held. Must NOT be called on discarded pools.
+    // Prototype: a browser worker has no OS timer threads. Keep idle checkers until
+    // their snapshot is released; the host must release snapshots and terminate the
+    // worker at project teardown. Production needs host-driven idle eviction.
+    #[cfg(target_family = "wasm")]
+    fn schedule_cleanup_locked(&self, _st: &mut checkerPoolState) {}
+
+    #[cfg(not(target_family = "wasm"))]
     fn schedule_cleanup_locked(&self, st: &mut checkerPoolState) {
         let mut earliest_deadline: Option<Instant> = None;
         for i in 0..st.checkers.len() {
@@ -739,7 +748,7 @@ impl checkerPool {
     // checkerpool.go:405
     // cleanupIdleCheckers disposes checkers that have been idle for longer than
     // the idle timeout. The API checker is separate and never idle-cleaned.
-    fn cleanup_idle_checkers(&self) {
+    pub(crate) fn cleanup_idle_checkers(&self) {
         // Region hook: the program (and so the checkers' regions) must outlive the disposals below.
         let owner = (*self.owner.lock().unwrap()).as_ref().map(Weak::upgrade);
         if matches!(owner, Some(None)) {

@@ -12,6 +12,7 @@
 
 mod host;
 mod json;
+mod prototype;
 mod sys;
 
 use std::io::Write;
@@ -96,6 +97,13 @@ mod abi {
         let (status, reply) = super::run(&request);
         OUTPUT.with_borrow_mut(|output| *output = reply);
         status
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn tsrs_session_request() {
+        let request = INPUT.with_borrow_mut(std::mem::take);
+        let reply = super::prototype::dispatch(&request);
+        OUTPUT.with_borrow_mut(|output| *output = reply);
     }
 
     #[unsafe(no_mangle)]

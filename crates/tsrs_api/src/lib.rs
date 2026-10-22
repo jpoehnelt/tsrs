@@ -32,3 +32,5 @@ pub(crate) mod checker;
 
 pub use handler::{ApiError, ApiResult, ClientConn, ErrorKind, Handler, Response};
 pub use session::{Session, SessionOptions};
+
+pub use diagnostics::with_compact_diagnostics;

@@ -28,7 +28,22 @@ fn category_number(c: Category) -> f64 {
     }
 }
 
+thread_local! {
+    static COMPACT_DIAGNOSTICS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Embedded hosts already hold source text; avoid repeating entire minified lines per diagnostic.
+pub fn with_compact_diagnostics<T>(operation: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { COMPACT_DIAGNOSTICS.set(self.0); }
+    }
+    let _restore = Restore(COMPACT_DIAGNOSTICS.replace(true));
+    operation()
+}
+
 fn source_lines(file: &SourceFile, first_line: usize, last_line: usize) -> Option<Value> {
+    if COMPACT_DIAGNOSTICS.get() { return None; }
     let line_map = file.ecma_line_map();
     if line_map.is_empty() {
         return None;

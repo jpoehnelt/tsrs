@@ -1,0 +1,190 @@
+// Experimental synchronous, transport-free API session in one WASM instance.
+// No stdio server, filesystem watcher, background worker, or external code execution.
+use std::cell::RefCell;
+use std::sync::Arc;
+use tsrs_api::wire::{Obj, Params};
+use tsrs_api::{ApiError, ApiResult, Handler, Response, Session, SessionOptions};
+use tsrs_core::context::Context;
+use tsrs_core::json::{self, Value};
+use tsrs_lsproto::{self as lsp, Json};
+use tsrs_vfs::bundled;
+
+thread_local! {
+    static SESSION: RefCell<Option<Arc<Session>>> = const { RefCell::new(None) };
+}
+
+fn session() -> ApiResult<Arc<Session>> {
+    SESSION.with_borrow(|s| s.clone()).ok_or_else(|| ApiError::client("session is closed"))
+}
+
+fn call(request: &Value) -> ApiResult<Value> {
+    let request = Params(request);
+    request.object()?;
+    let method = request.str("method")?;
+    let params = request.get("params");
+    if method == "openSession" {
+        if SESSION.with_borrow(Option::is_some) {
+            return Err(ApiError::client("session already open"));
+        }
+        tsrs_compiler::worker_pool();
+        let s = Session::new_with_position_encoding(
+            SessionOptions::new(
+                "/".into(),
+                bundled::lib_path(),
+                Arc::new(bundled::wrap_fs(crate::host::HostFs::new(true))),
+                false,
+            ),
+            lsp::PositionEncodingKind::UTF16,
+        );
+        let id = s.id().to_string();
+        SESSION.with_borrow_mut(|slot| *slot = Some(s));
+        return Ok(Value::String(id));
+    }
+    if method == "closeSession" {
+        if let Some(s) = SESSION.with_borrow_mut(Option::take) {
+            s.close();
+        }
+        return Ok(Value::Bool(true));
+    }
+    let s = session()?;
+    if method == "collectIdle" {
+        s.collect_idle_checkers();
+        return Ok(Value::Bool(true));
+    }
+    if method == "editor" { return editor(&s, params); }
+    if method == "textDocument/hover" {
+        let p = Params(params);
+        p.object()?;
+        let data = s.snapshot_data(p.u64("snapshot")?)?;
+        let project = p.str("project")?;
+        let file = p.str("file")?;
+        let program = data.get_program(&tsrs_project::ID(project.to_string()))?;
+        if program.get_source_file(file).is_none() {
+            return Err(ApiError::client("file is not in the snapshot"));
+        }
+        let host: Arc<dyn tsrs_ls::Host> = data.snapshot.clone();
+        let ls = tsrs_ls::new_language_service(
+            tsrs_ls::autoimport::ProjectID(project.to_string()),
+            program,
+            host,
+            file,
+        );
+        let position = lsp::Position {
+            line: p
+                .u64("line")?
+                .try_into()
+                .map_err(|_| ApiError::invalid_request("line too large"))?,
+            character: p
+                .u64("character")?
+                .try_into()
+                .map_err(|_| ApiError::invalid_request("character too large"))?,
+        };
+        let mut caps = lsp::ResolvedClientCapabilities::default();
+        caps.text_document.hover.content_format = vec![lsp::MarkupKind::Markdown];
+        let ctx = lsp::with_client_capabilities(&Context::background(), Arc::new(caps));
+        let hover = ls
+            .provide_hover(
+                &ctx,
+                &lsp::HoverParams {
+                    text_document: lsp::TextDocumentIdentifier {
+                        uri: tsrs_ls::lsconv::file_name_to_document_uri(file),
+                    },
+                    position,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| ApiError::internal(e.message))?;
+        return Ok(hover.to_json());
+    }
+    let bytes = json::marshal(params).map_err(ApiError::invalid_request)?;
+    match tsrs_api::with_compact_diagnostics(|| s.handle_request(method, bytes.as_bytes()))? {
+        Response::Json(text) => json::unmarshal(&text).map_err(ApiError::internal),
+        Response::Binary(_) => Err(ApiError::internal("unexpected binary response")),
+    }
+}
+
+pub fn dispatch(bytes: &[u8]) -> Vec<u8> {
+    let result = std::str::from_utf8(bytes)
+        .map_err(|e| ApiError::invalid_request(e.to_string()))
+        .and_then(|text| json::unmarshal(text).map_err(ApiError::invalid_request))
+        .and_then(|request| call(&request));
+    let envelope = match result {
+        Ok(value) => Obj::new().set("result", value).build(),
+        Err(error) => Obj::new().set("error", Value::String(error.to_string())).build(),
+    };
+    json::marshal(&envelope).unwrap().into_bytes()
+}
+
+fn decode<T: Json>(value: &Value) -> ApiResult<T> {
+    T::from_json(value).map_err(|error| ApiError::invalid_request(error.to_string()))
+}
+fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
+    let p = Params(params);
+    p.object()?;
+    let data = s.snapshot_data(p.u64("snapshot")?)?;
+    let project = p.str("project")?;
+    let file = p.str("file")?;
+    struct Prepared(Option<Arc<tsrs_project::Snapshot>>);
+    impl Drop for Prepared {
+        fn drop(&mut self) { if let Some(snapshot) = self.0.take() { snapshot.deref(); } }
+    }
+    let operation = p.str("operation")?;
+    let prepared = Prepared(if matches!(operation, "codeActions" | "completion" | "completionResolve") {
+        Some(s.embedded_auto_import_snapshot(&data.snapshot, file))
+    } else { None });
+    let snapshot = prepared.0.as_ref().unwrap_or(&data.snapshot);
+    let project_data = snapshot.project_collection.get_project(&tsrs_project::ID(project.into()))
+        .ok_or_else(|| ApiError::client("missing prepared project"))?;
+    let program = project_data.get_program().ok_or_else(|| ApiError::client("missing prepared program"))?;
+    let source = program.get_source_file(file).ok_or_else(|| ApiError::client("file is not in snapshot"))?;
+    let host: Arc<dyn tsrs_ls::Host> = snapshot.clone();
+    let mut ls = tsrs_ls::new_language_service(tsrs_ls::autoimport::ProjectID(project.into()), program, host, file);
+    let mut preferences = tsrs_ls::lsutil::new_default_user_preferences();
+    preferences.unmarshal_json_from(p.get("preferences")).map_err(ApiError::invalid_request)?;
+    ls.set_user_preferences(preferences);
+    let mut caps = lsp::ResolvedClientCapabilities::default();
+    caps.text_document.hover.content_format = vec![lsp::MarkupKind::Markdown];
+    caps.text_document.definition.link_support = true;
+    caps.text_document.document_symbol.hierarchical_document_symbol_support = true;
+    let ctx = lsp::with_client_capabilities(&Context::background(), Arc::new(caps));
+    let request = p.get("request");
+    let uri = tsrs_ls::lsconv::file_name_to_document_uri(file);
+    let position = || -> ApiResult<lsp::Position> { decode(Params(request).get("position")) };
+    let result: Result<Value, lsp::Error> = match p.str("operation")? {
+        "hover" => ls.provide_hover(&ctx, &decode(request)?).map(|v| v.to_json()),
+        "completion" => {
+            let r: lsp::CompletionParams = decode(request)?;
+            ls.provide_completion(&ctx, &uri, r.position, r.context.as_ref()).map(|v| v.to_json())
+        }
+        "completionResolve" => {
+            let item: lsp::CompletionItem = decode(request)?;
+            let item_data: lsp::CompletionItemData = decode(Params(request).get("data"))?;
+            ls.resolve_completion_item(&ctx, item, Some(&item_data)).map(|v| v.to_json())
+        }
+        "definition" => ls.provide_definition(&ctx, &uri, position()?).map(|v| v.to_json()),
+        "references" => ls.provide_references(&ctx, &decode(request)?, None).map(|v| v.to_json()),
+        "rename" => ls.provide_rename(&ctx, &decode(request)?, None).map(|v| v.to_json()),
+        "renameInfo" => {
+            let info = ls.get_rename_info(&ctx, "__myfunction_rename__", &uri, position()?);
+            Ok(Obj::new().set("canRename", Value::Bool(info.can_rename))
+                .set("localizedErrorMessage", Value::String(info.localized_error_message))
+                .set("displayName", Value::String(info.display_name))
+                .set("triggerRange", info.trigger_span.to_json()).build())
+        }
+        "signatureHelp" => ls.provide_signature_help(&ctx, &uri, position()?, None).map(|v| v.to_json()),
+        "symbols" => ls.provide_document_symbols(&ctx, &uri).map(|v| v.to_json()),
+        "format" => {
+            let r: lsp::DocumentRangeFormattingParams = decode(request)?;
+            ls.provide_format_document_range(&ctx, &uri, r.options, r.range).map(|v| v.to_json())
+        }
+        "inlayHints" => ls.provide_inlay_hint(&ctx, &decode(request)?).map(|v| v.to_json()),
+        "codeActions" => ls.provide_code_actions(&ctx, &decode(request)?).map(|v| v.to_json()),
+        "docComment" => {
+            let offset = Params(request).u64("offset")?.try_into().map_err(|_| ApiError::invalid_request("offset too large"))?;
+            let internal = source.get_position_map().utf16_to_utf8(offset);
+            Ok(ls.doc_comment_template(source, internal).map(Value::String).unwrap_or(Value::Null))
+        }
+        _ => return Err(ApiError::invalid_request("unsupported editor operation")),
+    };
+    result.map_err(|error| ApiError::internal(error.message))
+}

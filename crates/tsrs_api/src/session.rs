@@ -125,14 +125,30 @@ pub struct Session {
 
 impl Session {
     /// Go `NewStandaloneSession`.
+    /// Prepare the same auto-import view used by the native language-service handlers.
+    pub fn embedded_auto_import_snapshot(&self, base: &Snapshot, file: &str) -> Arc<Snapshot> {
+        self.snapshot_host.clone_snapshot_with_auto_imports(
+            &Context::background(), base,
+            &tsrs_ls::lsconv::file_name_to_document_uri(file), None,
+        )
+    }
+
     pub fn new(options: SessionOptions) -> Arc<Session> {
+        Self::new_with_position_encoding(options, tsrs_lsproto::PositionEncodingKind::UTF8)
+    }
+
+    /// Embedded editor hosts select their cursor and range encoding explicitly.
+    pub fn new_with_position_encoding(
+        options: SessionOptions,
+        position_encoding: tsrs_lsproto::PositionEncodingKind,
+    ) -> Arc<Session> {
         let init = tsrs_project::SessionInit {
             background_ctx: Context::background(),
             options: Arc::new(tsrs_project::SessionOptions {
                 current_directory: options.cwd,
                 default_library_path: options.default_library_path,
                 typings_location: String::new(),
-                position_encoding: tsrs_lsproto::PositionEncodingKind::UTF8,
+                position_encoding,
                 watch_enabled: false,
                 logging_enabled: false,
                 telemetry_enabled: false,
@@ -175,6 +191,16 @@ impl Session {
             source_files: crate::sourcefiles::SourceFileState::default(),
             build_backend: Mutex::new(None),
         })
+    }
+
+    /// Browser workers drive idle cleanup from host timers instead of OS threads.
+    pub fn collect_idle_checkers(&self) {
+        let snapshots = self.snapshots.read().unwrap();
+        for (data, _) in snapshots.values() {
+            for project in data.snapshot.project_collection.projects() {
+                project.cleanup_idle_checkers();
+            }
+        }
     }
 
     pub fn id(&self) -> &str {

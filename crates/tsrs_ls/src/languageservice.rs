@@ -46,6 +46,11 @@ pub fn new_language_service(
 }
 
 impl LanguageService {
+    /// Per-request preferences supplied by an embedded editor host.
+    pub fn set_user_preferences(&mut self, preferences: UserPreferences) {
+        self.active_config = preferences;
+    }
+
     // languageservice.go:41
     pub(crate) fn to_path(&self, file_name: &str) -> Path {
         tspath::to_path(
