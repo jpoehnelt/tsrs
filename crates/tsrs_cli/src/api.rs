@@ -101,6 +101,9 @@ impl transport::Handler for SessionHandler {
     ) -> Result<transport::Response, transport::ApiError> {
         // Go: errors are CodeInternalError with err.Error().
         match self.0.handle_nested_request(method, params, cx.depth) {
+            Ok(tsrs_api::Response::Value(value)) => tsrs_core::json::marshal(&value)
+                .map(|s| transport::Response::Json(s.into_bytes()))
+                .map_err(transport::ApiError::internal),
             Ok(tsrs_api::Response::Json(s)) => Ok(transport::Response::Json(s.into_bytes())),
             Ok(tsrs_api::Response::Binary(b)) => Ok(transport::Response::Binary(b)),
             Err(e) => Err(transport::ApiError::internal(e.to_string())),

@@ -60,10 +60,12 @@ impl std::error::Error for ApiError {}
 pub type ApiResult<T> = Result<T, ApiError>;
 
 /// A request result. Go returns `any`: either a JSON-marshalable value or `RawBinary`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Response {
     /// Serialized JSON text (`null` for Go `nil`).
     Json(String),
+    /// Owned native result; serialized only by the legacy wire boundary.
+    Value(tsrs_core::json::Value),
     /// Go `RawBinary`: written as a msgpack `bin` payload. Only produced when the session was created with
     /// `binary_responses` (sync `MessagePack` protocol). An empty vec is Go `RawBinary(nil)`.
     Binary(Vec<u8>),
@@ -71,7 +73,7 @@ pub enum Response {
 
 impl Response {
     pub fn null() -> Response {
-        Response::Json("null".to_string())
+        Response::Value(tsrs_core::json::Value::Null)
     }
 }
 

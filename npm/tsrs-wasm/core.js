@@ -1,3 +1,4 @@
+import { encodeFrame, decodeFrame } from "./binary.js";
 // Runtime-agnostic host for tsrs.wasm (crates/tsrs_wasm): a small WASI preview1 shim (clocks, random, stdout/stderr,
 // environ, proc_exit; no file system), the host file-system bridge (`tsrs_host.fs` / `tsrs_host.fs_take`), and
 // `runTsc`. Node (node.js) and browsers (browser.js) build on it. No dependencies.
@@ -412,4 +413,35 @@ export function createSessionSync(module, host, io = {}) {
             return envelope.result;
         },
     };
+}
+
+function binarySession(wasm) {
+    if (typeof wasm.tsrs_session_request_binary !== 'function') throw new Error('Missing embedded binary ABI');
+    let poisoned = false;
+    return {
+        request(method, params = {}) {
+            if (poisoned) throw new Error('WASM session trapped; discard its worker');
+            const input = encodeFrame({ method, params });
+            let envelope;
+            try {
+                const ptr = wasm.tsrs_input(input.length);
+                new Uint8Array(wasm.memory.buffer).set(input, ptr);
+                wasm.tsrs_session_request_binary();
+                envelope = decodeFrame(new Uint8Array(wasm.memory.buffer, wasm.tsrs_output(), wasm.tsrs_output_len()));
+            } catch (error) {
+                if (isTrap(error) || error instanceof WasiExit) poisoned = true;
+                throw error;
+            }
+            if (envelope.error) throw new Error(envelope.error);
+            return envelope.result;
+        },
+    };
+}
+export async function createBinarySession(module, host, io = {}) {
+    const run = prepare(module, { cwd: '/', args: [], flags: 0 }, host, io);
+    return binarySession(run.attach(await WebAssembly.instantiate(module, run.imports)));
+}
+export function createBinarySessionSync(module, host, io = {}) {
+    const run = prepare(module, { cwd: '/', args: [], flags: 0 }, host, io);
+    return binarySession(run.attach(new WebAssembly.Instance(module, run.imports)));
 }

@@ -107,6 +107,15 @@ pub mod abi {
         OUTPUT.with_borrow_mut(|output| *output = reply);
     }
 
+    #[cfg_attr(not(feature = "embedded"), unsafe(no_mangle))]
+    pub extern "C" fn tsrs_session_request_binary() {
+        request_binary_with_extension(None);
+    }
+    pub fn request_binary_with_extension(extension: Option<super::embedded::RequestExtension>) {
+        let request = INPUT.with_borrow_mut(std::mem::take);
+        let response = super::embedded::binary::dispatch(&request, extension);
+        OUTPUT.with_borrow_mut(|output| *output = response);
+    }
     /// Compose additional native services in the same reactor, allocator and linear memory.
     pub fn request_with_extension(extension: super::embedded::RequestExtension) {
         let request = INPUT.with_borrow_mut(std::mem::take);

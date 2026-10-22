@@ -73,6 +73,14 @@ enum IntRange {
 /// A JSON number decoded into a Go integer: plain integer syntax (no fraction or exponent) within range,
 /// checked on the exact literal (f64 would round `i64::MAX` / `u64::MAX` up to 2^63 / 2^64).
 fn int_ok(v: &Value, lexeme: Option<&str>, range: IntRange) -> bool {
+    if let Value::Integer(n) = v {
+        return match range {
+            IntRange::I32 => i32::try_from(*n).is_ok(),
+            IntRange::I64 => true,
+            IntRange::U32 => u32::try_from(*n).is_ok(),
+            IntRange::U64 => *n >= 0,
+        };
+    }
     let Value::Number(n) = v else { return false };
     let exact: Option<i128> = match lexeme {
         Some(l) if l.contains(['.', 'e', 'E']) => return false,

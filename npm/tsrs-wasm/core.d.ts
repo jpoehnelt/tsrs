@@ -103,3 +103,7 @@ export interface Diagnostic {
 }
 
 export declare function parseReply(reply: Uint8Array): Diagnostic[];
+
+/** Persistent embedded API using bounded typed frames and owned raw Uint8Array results. */
+export function createBinarySession(module: WasmModule, host: HostFileSystem, io?: RunIO): Promise<{ request(method: string, params?: unknown): unknown }>;
+export function createBinarySessionSync(module: WasmModule, host: HostFileSystem, io?: RunIO): { request(method: string, params?: unknown): unknown };

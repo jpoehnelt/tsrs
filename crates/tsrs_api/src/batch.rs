@@ -119,6 +119,9 @@ impl Session {
         // `handle_request` already turns panics into errors.
         match crate::handler::Handler::handle_request(self, &method, &params) {
             Ok(Response::Json(text)) => encode_batch_response(&method, &text, None),
+            Ok(Response::Value(value)) => {
+                encode_batch_response(&method, &json::marshal(&value).unwrap(), None)
+            }
             Ok(Response::Binary(data)) => {
                 if SOURCE_FILE_RESPONSE_METHODS.contains(&method.as_str()) {
                     if data.is_empty() {

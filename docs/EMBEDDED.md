@@ -56,3 +56,16 @@ the same allocator and linear memory. `abi::request_with_extension` passes a bor
 compiler dispatch. The callback receives `closeSession`; compiler cleanup runs even if that
 callback reports an error. `embedded::dispatch_with_extension` supports native regression tests.
 The standalone build explicitly selects cdylib through cargo rustc, retaining fat LTO.
+
+## Typed binary embedding
+
+`createBinarySession`/`createBinarySessionSync` call `tsrs_session_request_binary`. Requests use
+bounded typed frames; source-file/checker responses are raw buffers, including in paginated batches.
+The SDK must consume owned `Uint8Array` responses and supply raw AST buffers for printing.
+`abi::request_binary_with_extension` invokes native callbacks on the same borrowed session.
+`Session::handle_native_request` bypasses JSON text and preserves handler parameter validation.
+The standalone JSON/CLI adapters remain separate compatibility paths.
+
+`npm/tsrs-wasm/test/binary.test.mjs` covers framing, UTF-8, bounds, nesting, ownership and malformed
+inputs. Rust binary session tests cover recovery and independent batch errors. Consumer transport
+regressions disable JSON/base64 functions while exercising raw AST reads, printing and batches.

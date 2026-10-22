@@ -19,6 +19,26 @@ fn session() -> ApiResult<Arc<Session>> {
 
 /// An embedding consumer can serve native operations without copying compiler data through JS.
 pub type RequestExtension = fn(&Session, &str, &Value) -> Option<ApiResult<Value>>;
+#[path = "binary.rs"]
+pub mod binary;
+fn open_session(binary: bool) -> ApiResult<Value> {
+    if SESSION.with_borrow(Option::is_some) {
+        return Err(ApiError::client("session already open"));
+    }
+    tsrs_compiler::worker_pool();
+    let s = Session::new_with_position_encoding(
+        SessionOptions::new(
+            "/".into(),
+            bundled::lib_path(),
+            Arc::new(bundled::wrap_fs(crate::host::HostFs::new(true))),
+            binary,
+        ),
+        lsp::PositionEncodingKind::UTF16,
+    );
+    let id = s.id().to_string();
+    SESSION.with_borrow_mut(|slot| *slot = Some(s));
+    Ok(Value::String(id))
+}
 fn call(request: &Value, extension: Option<RequestExtension>) -> ApiResult<Value> {
     let request = Params(request);
     request.object()?;
@@ -28,19 +48,7 @@ fn call(request: &Value, extension: Option<RequestExtension>) -> ApiResult<Value
         if SESSION.with_borrow(Option::is_some) {
             return Err(ApiError::client("session already open"));
         }
-        tsrs_compiler::worker_pool();
-        let s = Session::new_with_position_encoding(
-            SessionOptions::new(
-                "/".into(),
-                bundled::lib_path(),
-                Arc::new(bundled::wrap_fs(crate::host::HostFs::new(true))),
-                false,
-            ),
-            lsp::PositionEncodingKind::UTF16,
-        );
-        let id = s.id().to_string();
-        SESSION.with_borrow_mut(|slot| *slot = Some(s));
-        return Ok(Value::String(id));
+        return open_session(false);
     }
     if method == "closeSession" {
         if let Some(s) = SESSION.with_borrow_mut(Option::take) {
@@ -118,6 +126,7 @@ fn call(request: &Value, extension: Option<RequestExtension>) -> ApiResult<Value
     let bytes = json::marshal(params).map_err(ApiError::invalid_request)?;
     match tsrs_api::with_compact_diagnostics(|| s.handle_request(method, bytes.as_bytes()))? {
         Response::Json(text) => json::unmarshal(&text).map_err(ApiError::internal),
+        Response::Value(value) => Ok(value),
         Response::Binary(_) => Err(ApiError::internal("unexpected binary response")),
     }
 }

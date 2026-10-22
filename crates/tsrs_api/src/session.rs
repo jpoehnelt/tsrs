@@ -346,6 +346,44 @@ impl Session {
         Ok(())
     }
 
+    /// In-process dispatch validates the same fields without encoding JSON text.
+    pub fn handle_native_request(&self, method: &str, params: &Value) -> ApiResult<Response> {
+        let info = method_info(method)
+            .ok_or_else(|| ApiError::invalid_request(format!("unknown API method {method:?}")))?;
+        let empty = Value::Object(tsrs_core::collections::OrderedMap::default());
+        let params = if matches!(params, Value::Null) { &empty } else { params };
+        if !matches!(params, Value::Object(_)) {
+            return Err(ApiError::invalid_request("params must be an object"));
+        }
+        let lexemes = match crate::methods::params_type(method) {
+            Some(t) => crate::predecode::predecode(method, t, params, &[])?,
+            None => rustc_hash::FxHashMap::default(),
+        };
+        self.dispatch_parsed(method, params, info.owner, &[], lexemes)
+    }
+    /// Printing receives an existing binary AST slice without base64 or an object tree of bytes.
+    pub fn handle_native_binary_request(
+        &self,
+        method: &str,
+        params: &Value,
+        data: &[u8],
+    ) -> ApiResult<Response> {
+        let mut validation = params.clone();
+        let Value::Object(fields) = &mut validation else {
+            return Err(ApiError::invalid_request("params must be an object"));
+        };
+        fields.insert("data".into(), Value::String(String::new()));
+        let params_type = crate::methods::params_type(method)
+            .ok_or_else(|| ApiError::invalid_request("unknown binary method"))?;
+        crate::predecode::predecode(method, params_type, &validation, &[])?;
+        let p = Params(&validation);
+        let answer = match method {
+            "printNode" => self.handle_print_node_bytes(p, data)?,
+            "formatNodeForInsertion" => self.handle_format_node_bytes(p, data)?,
+            _ => return Err(ApiError::invalid_request("unsupported binary input method")),
+        };
+        Ok(Response::Value(answer))
+    }
     fn dispatch(&self, method: &str, params: &[u8]) -> ApiResult<Response> {
         match method {
             "echo" => {
@@ -422,17 +460,16 @@ impl Session {
         raw: &[u8],
         lexemes: rustc_hash::FxHashMap<String, String>,
     ) -> ApiResult<Response> {
-        let params = params.clone();
         // Raw payload and exact number literals of this request, for the objects of this params tree (by address).
-        let _request = crate::predecode::enter_request(raw, lexemes, &params);
+        let _request = crate::predecode::enter_request(raw, lexemes, params);
         if *self.closed.lock().unwrap() {
             return Err(ApiError::client("session is closed"));
         }
         if owner == Owner::Checker {
-            return checker::handle(self, method, &params)
+            return checker::handle(self, method, params)
                 .unwrap_or_else(|| Err(ApiError::unsupported(method)));
         }
-        let p = Params(&params);
+        let p = Params(params);
         if method == "batchRequests" {
             if !matches!(params, Value::Null) {
                 p.object()?;
@@ -537,7 +574,12 @@ impl Handler for Session {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.dispatch(method, params)
         })) {
-            Ok(result) => result,
+            Ok(result) => match result? {
+                Response::Value(value) => {
+                    json::marshal(&value).map(Response::Json).map_err(ApiError::internal)
+                }
+                other => Ok(other),
+            },
             Err(panic) => {
                 let message = panic
                     .downcast_ref::<String>()
@@ -584,6 +626,10 @@ pub fn parse_params(params: &[u8]) -> ApiResult<Value> {
     json::unmarshal(text).map_err(ApiError::invalid_request)
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Shared handler response helper keeps the fallible API signature for all transports."
+)]
 pub fn json_response(value: &Value) -> ApiResult<Response> {
-    json::marshal(value).map(Response::Json).map_err(ApiError::internal)
+    Ok(Response::Value(value.clone()))
 }

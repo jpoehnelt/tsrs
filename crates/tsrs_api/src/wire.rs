@@ -147,6 +147,7 @@ pub fn as_u64(v: &Value, key: &str) -> ApiResult<u64> {
         Value::Number(x) if *x >= 0.0 && x.fract() == 0.0 && *x < 18_446_744_073_709_551_616.0 => {
             Ok(*x as u64)
         }
+        Value::Integer(n) if *n >= 0 => Ok(*n as u64),
         Value::Null => Ok(0),
         _ => Err(ApiError::invalid_request(format!("{key} must be a non-negative integer"))),
     }

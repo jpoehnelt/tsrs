@@ -21,7 +21,7 @@
         },
         "./tsrs.wasm": "./tsrs.wasm"
     },
-    "files": ["bin", "core.js", "core.d.ts", "node.js", "node-run.js", "node-worker.js", "node-fs.js", "browser.js", "index.d.ts", "tsrs.wasm", "README.md", "NOTICE.txt"],
+    "files": ["bin", "binary.js", "core.js", "core.d.ts", "node.js", "node-run.js", "node-worker.js", "node-fs.js", "browser.js", "index.d.ts", "tsrs.wasm", "README.md", "NOTICE.txt"],
     "scripts": {
         "test": "node --test test/*.test.mjs"
     }

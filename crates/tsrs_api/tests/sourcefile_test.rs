@@ -35,7 +35,7 @@ fn get_source_file_binary_and_json_and_checker_handles() {
         .unwrap()
     {
         Response::Binary(b) => b,
-        r @ Response::Json(_) => panic!("{r:?}"),
+        r @ (Response::Json(_) | Response::Value(_)) => panic!("{r:?}"),
     };
     assert!(bin.len() > 100);
     let decoded = tsrs_api_codec::decode_source_file(&bin).expect("decodes");
@@ -134,7 +134,7 @@ fn get_config_source_file_root_and_extended_repeatedly() {
     let get_bin =
         |f: &str| match s.handle_request("getConfigSourceFile", req(f).as_bytes()).unwrap() {
             Response::Binary(b) => b,
-            r @ Response::Json(_) => panic!("{r:?}"),
+            r @ (Response::Json(_) | Response::Value(_)) => panic!("{r:?}"),
         };
     let root = get_bin(&cfg);
     assert_ne!(root, [] as [u8; 0]);
