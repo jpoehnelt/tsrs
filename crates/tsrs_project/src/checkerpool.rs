@@ -701,10 +701,13 @@ impl checkerPool {
     // the earliest pending checker-expiration deadline among all currently idle,
     // unheld checkers.
     // Must be called with p.mu held. Must NOT be called on discarded pools.
-    // Prototype: a browser worker has no OS timer threads. Keep idle checkers until
-    // their snapshot is released; the host must release snapshots and terminate the
-    // worker at project teardown. Production needs host-driven idle eviction.
+    // A browser reactor has no OS timer threads. Its host calls collectIdle and releases
+    // snapshots, rather than scheduling a thread for each pool's cleanup deadline.
     #[cfg(target_family = "wasm")]
+    #[expect(
+        clippy::unused_self,
+        reason = "Shares the native pool method signature; the WASM host drives cleanup explicitly."
+    )]
     fn schedule_cleanup_locked(&self, _st: &mut checkerPoolState) {}
 
     #[cfg(not(target_family = "wasm"))]

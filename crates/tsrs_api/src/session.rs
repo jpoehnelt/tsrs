@@ -128,8 +128,10 @@ impl Session {
     /// Prepare the same auto-import view used by the native language-service handlers.
     pub fn embedded_auto_import_snapshot(&self, base: &Snapshot, file: &str) -> Arc<Snapshot> {
         self.snapshot_host.clone_snapshot_with_auto_imports(
-            &Context::background(), base,
-            &tsrs_ls::lsconv::file_name_to_document_uri(file), None,
+            &Context::background(),
+            base,
+            &tsrs_ls::lsconv::file_name_to_document_uri(file),
+            None,
         )
     }
 
@@ -196,7 +198,9 @@ impl Session {
     /// Browser workers drive idle cleanup from host timers instead of OS threads.
     pub fn collect_idle_checkers(&self) {
         let snapshots = self.snapshots.read().unwrap();
-        for (data, _) in snapshots.values() {
+        let mut ordered: Vec<_> = snapshots.iter().collect();
+        ordered.sort_unstable_by_key(|(id, _)| **id);
+        for (_, (data, _)) in ordered {
             for project in data.snapshot.project_collection.projects() {
                 project.cleanup_idle_checkers();
             }

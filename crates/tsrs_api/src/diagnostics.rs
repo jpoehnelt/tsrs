@@ -36,14 +36,18 @@ thread_local! {
 pub fn with_compact_diagnostics<T>(operation: impl FnOnce() -> T) -> T {
     struct Restore(bool);
     impl Drop for Restore {
-        fn drop(&mut self) { COMPACT_DIAGNOSTICS.set(self.0); }
+        fn drop(&mut self) {
+            COMPACT_DIAGNOSTICS.set(self.0);
+        }
     }
     let _restore = Restore(COMPACT_DIAGNOSTICS.replace(true));
     operation()
 }
 
 fn source_lines(file: &SourceFile, first_line: usize, last_line: usize) -> Option<Value> {
-    if COMPACT_DIAGNOSTICS.get() { return None; }
+    if COMPACT_DIAGNOSTICS.get() {
+        return None;
+    }
     let line_map = file.ecma_line_map();
     if line_map.is_empty() {
         return None;
@@ -81,10 +85,14 @@ pub fn diagnostic_response(d: &Diagnostic) -> Value {
         let end = end.unwrap_or(pos).min(len).max(pos);
         file_name = Some(s(file.file_name()));
         let map = file.get_position_map();
-        let (start_line, start_char) =
-            tsrs_scanner::get_ecma_line_and_utf16_character_of_position(&*file, pos);
-        let (end_line, end_char) =
-            tsrs_scanner::get_ecma_line_and_utf16_character_of_position(&*file, end);
+        // The source file already owns this version's position map. Reusing it avoids scanning
+        // the same minified line prefix for every diagnostic's start and end coordinates.
+        let coordinate = |position| {
+            let line = tsrs_scanner::get_ecma_line_of_position(&*file, position);
+            (line, map.utf8_to_utf16(position) - map.utf8_to_utf16(file.ecma_line_map()[line]))
+        };
+        let (start_line, start_char) = coordinate(pos);
+        let (end_line, end_char) = coordinate(end);
         positions = Some((
             Obj::new()
                 .set("line", n(u32::try_from(start_line).expect("line number exceeds u32")))

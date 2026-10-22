@@ -437,7 +437,9 @@ pub struct CreateProgramResult {
 
 impl Project {
     pub fn cleanup_idle_checkers(&self) {
-        if let Some(pool) = &self.checker_pool { pool.cleanup_idle_checkers(); }
+        if let Some(pool) = &self.checker_pool {
+            pool.cleanup_idle_checkers();
+        }
     }
 
     // project.go:312

@@ -12,6 +12,7 @@
 
 mod host;
 mod json;
+#[cfg(target_arch = "wasm32")]
 mod prototype;
 mod sys;
 

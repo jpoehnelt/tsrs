@@ -105,7 +105,103 @@ fn code_fix_providers() -> &'static [&'static CodeFixProvider] {
     &PROVIDERS
 }
 
+/// Embedded clients can avoid checking/serializing a file for a code with no registered fix.
+pub fn supported_code_fix_codes() -> Vec<i32> {
+    let mut codes: Vec<i32> = code_fix_providers()
+        .iter()
+        .flat_map(|provider| provider.error_codes.iter().copied())
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    codes
+}
+
 impl LanguageService {
+    /// Preserve compiler fix IDs that the LSP `CodeAction` representation does not carry.
+    pub fn embedded_code_fixes(
+        &self,
+        ctx: &Context,
+        params: &lsproto::CodeActionParams,
+    ) -> Result<Vec<CodeAction>, lsproto::Error> {
+        let (program, file) = self.get_program_and_file(&params.text_document.uri);
+        let mut actions = Vec::new();
+        for diagnostic in &params.context.diagnostics {
+            actions.extend(
+                self.code_fixes_for_diagnostic(ctx, program, file, diagnostic, params)?
+                    .into_iter()
+                    .map(|(_, action)| action),
+            );
+        }
+        Ok(actions)
+    }
+
+    pub fn embedded_combined_code_fix(
+        &self,
+        ctx: &Context,
+        uri: &lsproto::DocumentUri,
+        fix_id: &str,
+    ) -> Result<Option<CombinedCodeActions>, lsproto::Error> {
+        let provider = code_fix_providers()
+            .iter()
+            .find(|provider| provider.fix_ids.contains(&fix_id))
+            .ok_or_else(|| lsproto::Error::new(format!("Unknown compiler fix ID: {fix_id}")))?;
+        let Some(get_all) = provider.get_all_code_actions else {
+            return Ok(None);
+        };
+        let (program, file) = self.get_program_and_file(uri);
+        get_all(
+            ctx,
+            &CodeFixContext {
+                source_file: file,
+                span: TextRange::default(),
+                error_code: 0,
+                program,
+                ls: self,
+                diagnostic: None,
+                params: None,
+            },
+        )
+    }
+
+    fn code_fixes_for_diagnostic(
+        &self,
+        ctx: &Context,
+        program: &'static Program,
+        file: P<SourceFile>,
+        diagnostic: &lsproto::Diagnostic,
+        params: &lsproto::CodeActionParams,
+    ) -> Result<Vec<(&'static CodeFixProvider, CodeAction)>, lsproto::Error> {
+        let Some(error_code) = diagnostic.code.as_ref().and_then(|code| code.integer) else {
+            return Ok(Vec::new());
+        };
+        let mut result = Vec::new();
+        for &provider in code_fix_providers() {
+            if !code_fix_provider_matches_lsp_diagnostic(provider, diagnostic) {
+                continue;
+            }
+            for mapped in self.converters.from_lsp_range_for_source_file(
+                file,
+                diagnostic.range,
+                Feature::CodeActions,
+            ) {
+                let context = CodeFixContext {
+                    source_file: mapped.script,
+                    span: mapped.span,
+                    error_code,
+                    program,
+                    ls: self,
+                    diagnostic: Some(diagnostic),
+                    params: Some(params),
+                };
+                result.extend(
+                    (provider.get_code_actions)(ctx, &context)?
+                        .into_iter()
+                        .map(|action| (provider, action)),
+                );
+            }
+        }
+        Ok(result)
+    }
     // codeactions.go:80
     // ProvideCodeActions returns code actions for the given range and context
     pub fn provide_code_actions(
@@ -143,47 +239,21 @@ impl LanguageService {
             let mut seen: Vec<CodeAction> = Vec::new(); // sorted for binary search dedup, dedup across all diagnostics and providers so if multiple diags produce the same codefix, only one is returned
 
             for diag in &params.context.diagnostics {
-                let Some(error_code) = diag.code.as_ref().and_then(|c| c.integer) else {
-                    continue;
-                };
-
-                for &provider in code_fix_providers() {
-                    if !code_fix_provider_matches_lsp_diagnostic(provider, diag) {
+                for (provider, action) in
+                    self.code_fixes_for_diagnostic(ctx, program, file, diag, params)?
+                {
+                    let Err(i) = seen.binary_search_by(|probe| probe.compare(&action)) else {
                         continue;
+                    };
+                    actions.push(convert_to_lsp_code_action(
+                        &action,
+                        diag,
+                        &params.text_document.uri,
+                    ));
+                    if !action.fix_id.is_empty() {
+                        fix_id_seen.insert(action.fix_id.clone(), provider);
                     }
-
-                    for mapped in self.converters.from_lsp_range_for_source_file(
-                        file,
-                        diag.range,
-                        Feature::CodeActions,
-                    ) {
-                        let fix_context = CodeFixContext {
-                            source_file: mapped.script,
-                            span: mapped.span,
-                            error_code,
-                            program,
-                            ls: self,
-                            diagnostic: Some(diag),
-                            params: Some(params),
-                        };
-
-                        let provider_actions = (provider.get_code_actions)(ctx, &fix_context)?;
-                        for action in provider_actions {
-                            let Err(i) = seen.binary_search_by(|probe| probe.compare(&action))
-                            else {
-                                continue;
-                            };
-                            actions.push(convert_to_lsp_code_action(
-                                &action,
-                                diag,
-                                &params.text_document.uri,
-                            ));
-                            if !action.fix_id.is_empty() {
-                                fix_id_seen.insert(action.fix_id.clone(), provider);
-                            }
-                            seen.insert(i, action);
-                        }
-                    }
+                    seen.insert(i, action);
                 }
             }
 

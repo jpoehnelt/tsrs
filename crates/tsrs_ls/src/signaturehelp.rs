@@ -58,6 +58,40 @@ pub(crate) struct invocation {
 }
 
 impl LanguageService {
+    /// Keep the apparent argument count/index and edit span that LSP's clamped activeParameter loses.
+    pub fn embedded_signature_arguments(
+        &self,
+        ctx: &Context,
+        uri: &lsproto::DocumentUri,
+        position: lsproto::Position,
+    ) -> Option<(u32, u32, TextRange)> {
+        let (program, file) = self.get_program_and_file(uri);
+        for projection in self.converters.from_lsp_position_for_source_file(
+            file,
+            position,
+            Feature::SignatureHelp,
+        ) {
+            if !projection.fidelity.is_single_segment() {
+                continue;
+            }
+            let token = astnav::find_preceding_token(projection.script, projection.position)?;
+            let mut checker = program.get_type_checker_for_file(ctx, projection.script);
+            let info = get_containing_argument_info(
+                token,
+                projection.script,
+                &mut checker,
+                true,
+                projection.position,
+            )?;
+            return Some((
+                u32::try_from(info.argument_index).expect("argument index exceeds u32"),
+                u32::try_from(info.argument_count).expect("argument count exceeds u32"),
+                info.arguments_span,
+            ));
+        }
+        None
+    }
+
     // signaturehelp.go:49
     pub fn provide_signature_help(
         &self,

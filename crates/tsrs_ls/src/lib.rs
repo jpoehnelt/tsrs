@@ -23,6 +23,7 @@ mod definition;
 mod diagnostics;
 mod displaypartswriter;
 mod documenthighlights;
+mod embedded_refactors;
 mod file_rename;
 mod findallreferences;
 #[cfg(test)]
@@ -59,7 +60,9 @@ mod symbols;
 mod utilities;
 
 pub use api::{ERR_NO_SOURCE_FILE, ERR_NO_TOKEN_AT_POSITION};
-pub use codeactions::{CodeAction, CodeFixContext, CodeFixProvider, CombinedCodeActions};
+pub use codeactions::{
+    CodeAction, CodeFixContext, CodeFixProvider, CombinedCodeActions, supported_code_fix_codes,
+};
 pub use completions::{
     COMPLETION_TRIGGER_CHARACTERS, CompletionItem, CompletionKind, CompletionList,
     ERR_NEEDS_AUTO_IMPORTS, KeywordCompletionFilters, SORT_TEXT_AUTO_IMPORT_SUGGESTIONS,
@@ -76,6 +79,7 @@ pub use completions_3::{
     SOURCE_TYPE_ONLY_ALIAS, compare_completion_entries,
 };
 pub use crossproject::*;
+pub use embedded_refactors::EmbeddedRefactor;
 pub use findallreferences::{
     Definition, DefinitionKind, ReferenceEntry, SignatureUsage, SymbolAndEntries,
     SymbolAndEntriesData,

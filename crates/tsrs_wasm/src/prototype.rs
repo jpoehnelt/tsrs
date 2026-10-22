@@ -14,7 +14,7 @@ thread_local! {
 }
 
 fn session() -> ApiResult<Arc<Session>> {
-    SESSION.with_borrow(|s| s.clone()).ok_or_else(|| ApiError::client("session is closed"))
+    SESSION.with_borrow(Clone::clone).ok_or_else(|| ApiError::client("session is closed"))
 }
 
 fn call(request: &Value) -> ApiResult<Value> {
@@ -47,11 +47,21 @@ fn call(request: &Value) -> ApiResult<Value> {
         return Ok(Value::Bool(true));
     }
     let s = session()?;
+    if method == "supportedCodeFixes" {
+        return Ok(Value::Array(
+            tsrs_ls::supported_code_fix_codes()
+                .into_iter()
+                .map(|code| Value::Number(f64::from(code)))
+                .collect(),
+        ));
+    }
     if method == "collectIdle" {
         s.collect_idle_checkers();
         return Ok(Value::Bool(true));
     }
-    if method == "editor" { return editor(&s, params); }
+    if method == "editor" {
+        return editor(&s, params);
+    }
     if method == "textDocument/hover" {
         let p = Params(params);
         p.object()?;
@@ -62,7 +72,8 @@ fn call(request: &Value) -> ApiResult<Value> {
         if program.get_source_file(file).is_none() {
             return Err(ApiError::client("file is not in the snapshot"));
         }
-        let host: Arc<dyn tsrs_ls::Host> = data.snapshot.clone();
+        let host = Arc::clone(&data.snapshot);
+        let host: Arc<dyn tsrs_ls::Host> = host;
         let ls = tsrs_ls::new_language_service(
             tsrs_ls::autoimport::ProjectID(project.to_string()),
             program,
@@ -126,19 +137,40 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
     let file = p.str("file")?;
     struct Prepared(Option<Arc<tsrs_project::Snapshot>>);
     impl Drop for Prepared {
-        fn drop(&mut self) { if let Some(snapshot) = self.0.take() { snapshot.deref(); } }
+        fn drop(&mut self) {
+            if let Some(snapshot) = self.0.take() {
+                snapshot.deref();
+            }
+        }
     }
     let operation = p.str("operation")?;
-    let prepared = Prepared(if matches!(operation, "codeActions" | "completion" | "completionResolve") {
-        Some(s.embedded_auto_import_snapshot(&data.snapshot, file))
-    } else { None });
+    let prepared = Prepared(
+        if matches!(
+            operation,
+            "codeActions" | "codeFixes" | "combinedCodeFix" | "completion" | "completionResolve"
+        ) {
+            Some(s.embedded_auto_import_snapshot(&data.snapshot, file))
+        } else {
+            None
+        },
+    );
     let snapshot = prepared.0.as_ref().unwrap_or(&data.snapshot);
-    let project_data = snapshot.project_collection.get_project(&tsrs_project::ID(project.into()))
+    let project_data = snapshot
+        .project_collection
+        .get_project(&tsrs_project::ID(project.into()))
         .ok_or_else(|| ApiError::client("missing prepared project"))?;
-    let program = project_data.get_program().ok_or_else(|| ApiError::client("missing prepared program"))?;
-    let source = program.get_source_file(file).ok_or_else(|| ApiError::client("file is not in snapshot"))?;
-    let host: Arc<dyn tsrs_ls::Host> = snapshot.clone();
-    let mut ls = tsrs_ls::new_language_service(tsrs_ls::autoimport::ProjectID(project.into()), program, host, file);
+    let program =
+        project_data.get_program().ok_or_else(|| ApiError::client("missing prepared program"))?;
+    let source =
+        program.get_source_file(file).ok_or_else(|| ApiError::client("file is not in snapshot"))?;
+    let host = Arc::clone(snapshot);
+    let host: Arc<dyn tsrs_ls::Host> = host;
+    let mut ls = tsrs_ls::new_language_service(
+        tsrs_ls::autoimport::ProjectID(project.into()),
+        program,
+        host,
+        file,
+    );
     let mut preferences = tsrs_ls::lsutil::new_default_user_preferences();
     preferences.unmarshal_json_from(p.get("preferences")).map_err(ApiError::invalid_request)?;
     ls.set_user_preferences(preferences);
@@ -166,12 +198,38 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
         "rename" => ls.provide_rename(&ctx, &decode(request)?, None).map(|v| v.to_json()),
         "renameInfo" => {
             let info = ls.get_rename_info(&ctx, "__myfunction_rename__", &uri, position()?);
-            Ok(Obj::new().set("canRename", Value::Bool(info.can_rename))
+            Ok(Obj::new()
+                .set("canRename", Value::Bool(info.can_rename))
                 .set("localizedErrorMessage", Value::String(info.localized_error_message))
                 .set("displayName", Value::String(info.display_name))
-                .set("triggerRange", info.trigger_span.to_json()).build())
+                .set("triggerRange", info.trigger_span.to_json())
+                .build())
         }
-        "signatureHelp" => ls.provide_signature_help(&ctx, &uri, position()?, None).map(|v| v.to_json()),
+        "signatureHelp" => {
+            let position = position()?;
+            ls.provide_signature_help(&ctx, &uri, position, None).map(|response| {
+                let mut value = response.to_json();
+                if let (Value::Object(fields), Some((index, count, range))) =
+                    (&mut value, ls.embedded_signature_arguments(&ctx, &uri, position))
+                {
+                    fields.insert("argumentIndex".to_string(), Value::Number(f64::from(index)));
+                    fields.insert("argumentCount".to_string(), Value::Number(f64::from(count)));
+                    let map = source.get_position_map();
+                    let start =
+                        map.utf8_to_utf16(range.pos().expect_source("signature argument span"));
+                    let end =
+                        map.utf8_to_utf16(range.end().expect_source("signature argument span"));
+                    fields.insert(
+                        "applicableSpan".to_string(),
+                        Obj::new()
+                            .set("start", Value::Number(f64::from(start)))
+                            .set("length", Value::Number(f64::from(end - start)))
+                            .build(),
+                    );
+                }
+                value
+            })
+        }
         "symbols" => ls.provide_document_symbols(&ctx, &uri).map(|v| v.to_json()),
         "format" => {
             let r: lsp::DocumentRangeFormattingParams = decode(request)?;
@@ -179,12 +237,81 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
         }
         "inlayHints" => ls.provide_inlay_hint(&ctx, &decode(request)?).map(|v| v.to_json()),
         "codeActions" => ls.provide_code_actions(&ctx, &decode(request)?).map(|v| v.to_json()),
+        "codeFixes" => ls.embedded_code_fixes(&ctx, &decode(request)?).map(|actions| {
+            Value::Array(
+                actions
+                    .into_iter()
+                    .map(|action| {
+                        Obj::new()
+                            .set("description", Value::String(action.description.clone()))
+                            .set(
+                                "fixName",
+                                Value::String(if action.fix_id.is_empty() {
+                                    action.description
+                                } else {
+                                    action.fix_id.clone()
+                                }),
+                            )
+                            .set_opt(
+                                "fixId",
+                                (!action.fix_id.is_empty()).then(|| Value::String(action.fix_id)),
+                            )
+                            .set_opt(
+                                "fixAllDescription",
+                                (!action.fix_all_description.is_empty())
+                                    .then(|| Value::String(action.fix_all_description)),
+                            )
+                            .set("edit", workspace_edit(&uri, action.changes))
+                            .build()
+                    })
+                    .collect(),
+            )
+        }),
+        "combinedCodeFix" => {
+            ls.embedded_combined_code_fix(&ctx, &uri, Params(request).str("fixId")?).map(|action| {
+                workspace_edit(&uri, action.map(|action| action.changes).unwrap_or_default())
+            })
+        }
+        "refactors" => {
+            let offset = |key| -> ApiResult<u32> {
+                Params(request)
+                    .u64(key)?
+                    .try_into()
+                    .map_err(|_| ApiError::invalid_request("refactor offset too large"))
+            };
+            let start = source.get_position_map().utf16_to_utf8(offset("start")?);
+            let end = source.get_position_map().utf16_to_utf8(offset("end")?);
+            ls.embedded_refactors(&ctx, &uri, start, end).map(|actions| {
+                Value::Array(
+                    actions
+                        .into_iter()
+                        .map(|action| {
+                            Obj::new()
+                                .set("name", Value::String(action.name.to_string()))
+                                .set("description", Value::String(action.description))
+                                .set("kind", Value::String(action.kind.to_string()))
+                                .set("edit", workspace_edit(&uri, action.changes))
+                                .build()
+                        })
+                        .collect(),
+                )
+            })
+        }
         "docComment" => {
-            let offset = Params(request).u64("offset")?.try_into().map_err(|_| ApiError::invalid_request("offset too large"))?;
+            let offset = Params(request)
+                .u64("offset")?
+                .try_into()
+                .map_err(|_| ApiError::invalid_request("offset too large"))?;
             let internal = source.get_position_map().utf16_to_utf8(offset);
-            Ok(ls.doc_comment_template(source, internal).map(Value::String).unwrap_or(Value::Null))
+            Ok(ls.doc_comment_template(source, internal).map_or(Value::Null, Value::String))
         }
         _ => return Err(ApiError::invalid_request("unsupported editor operation")),
     };
     result.map_err(|error| ApiError::internal(error.message))
+}
+
+fn workspace_edit(uri: &lsp::DocumentUri, changes: Vec<lsp::TextEdit>) -> Value {
+    let mut files = tsrs_core::collections::OrderedMap::default();
+    files.insert(uri.clone(), changes);
+    lsp::WorkspaceEdit { changes: Some(files), ..Default::default() }.to_json()
 }

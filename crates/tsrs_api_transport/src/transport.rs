@@ -82,14 +82,18 @@ impl PipeListener {
     }
 
     #[cfg(not(unix))]
+    #[expect(
+        clippy::unused_self,
+        reason = "Shares the Unix listener API; bind always returns Unsupported on this target."
+    )]
     pub fn accept(&self) -> std::io::Result<Stream> {
         unreachable!("PipeListener cannot be bound on this platform")
     }
 }
 
+#[cfg(unix)]
 impl Drop for PipeListener {
     fn drop(&mut self) {
-        #[cfg(unix)]
         let _ = std::fs::remove_file(&self.path);
     }
 }
