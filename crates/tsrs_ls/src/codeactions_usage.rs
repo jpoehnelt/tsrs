@@ -830,6 +830,7 @@ fn missing_member_all(
     fix: &CodeFixContext,
 ) -> Result<Option<crate::codeactions::CombinedCodeActions>, lsp::Error> {
     let mut changes = tsrs_core::collections::OrderedMap::default();
+    let mut seen = rustc_hash::FxHashSet::default();
     for diagnostic in crate::diagnostics::get_all_diagnostics(ctx, fix.program, fix.source_file) {
         if !MISSING_MEMBER_PROVIDER.error_codes.contains(&diagnostic.code()) {
             continue;
@@ -838,11 +839,22 @@ fn missing_member_all(
             continue;
         };
         let local = CodeFixContext { span, error_code: diagnostic.code(), ..*fix };
-        for a in missing_member(ctx, &local)?
-            .into_iter()
-            .filter(|a| Some(a.fix_name.as_deref().unwrap_or("")) == fix.fix_id)
+        // A fix-all chooses the declaration alternative; it must not combine
+        // mutually exclusive method, property and index-signature actions.
+        if let Some(a) =
+            missing_member(ctx, &local)?.into_iter().find(|a| a.fix_name.as_deref() == fix.fix_id)
         {
             for (file, edits) in a.changes_by_file {
+                if let Some(first) = edits.first() {
+                    if !seen.insert((
+                        file.clone(),
+                        a.description.clone(),
+                        first.range.start.line,
+                        first.range.start.character,
+                    )) {
+                        continue;
+                    }
+                }
                 let existing: &mut Vec<lsp::TextEdit> = changes.entry(file).or_default();
                 for edit in edits {
                     if !existing.contains(&edit) {

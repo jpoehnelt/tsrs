@@ -104,7 +104,8 @@ compatibility work, not exhaustive coverage of every branch of every TypeScript 
 
 A planner retains the emit context associated with its synthesized nodes. Alternative actions
 share that metadata but have independent edit lists, preserving generated identifiers and
-formatting flags. Unused-declaration fix-all removes nested deletion plans when an enclosing
+formatting flags. Member fix-all chooses one declaration alternative and deduplicates repeated
+uses instead of combining mutually exclusive methods, properties and index signatures. Unused-declaration fix-all removes nested deletion plans when an enclosing
 declaration is already being deleted; the tracker's overlap checks remain enabled.
 
 An embedded host can set the `configurationFileName` preference to the original configuration

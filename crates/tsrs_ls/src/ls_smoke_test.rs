@@ -1204,3 +1204,21 @@ fn embedded_migrations_preserve_methods_and_generated_names() {
         );
     }
 }
+
+#[test]
+fn combined_missing_members_choose_one_alternative() {
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        (
+            "/index.ts",
+            "interface Transport {} const client: Transport = {}; client.deliver(3); client.deliver(4);",
+        ),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let combined = ls.embedded_combined_code_fix(&ctx, &uri, "fixMissingMember").unwrap().unwrap();
+    let edits = combined.workspace_edit(&uri).changes.unwrap();
+    assert_eq!(edits[&uri].len(), 2);
+    assert!(
+        edits[&uri].iter().any(|edit| edit.new_text.contains("deliver(arg0: number): unknown;"))
+    );
+}
