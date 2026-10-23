@@ -2539,7 +2539,21 @@ impl Printer {
             }
             Kind::JSDocTypeExpression => {
                 self.writer().write("{");
-                self.emit_type_node_outside_extends(node.as_jsdoc_type_expression().type_);
+                let typ = node.as_jsdoc_type_expression().type_;
+                if typ.kind() == Kind::JSDocTypeLiteral {
+                    let tags =
+                        self.emit_context.factory.node_factory.new_node_list(
+                            typ.as_jsdoc_type_literal().jsdoc_property_tags().to_vec(),
+                        );
+                    self.emit_list(
+                        Printer::emit_jsdoc_node,
+                        typ,
+                        Some(tags),
+                        ListFormat::JSDocComment,
+                    );
+                } else {
+                    self.emit_type_node_outside_extends(typ);
+                }
                 self.writer().write("}");
             }
             Kind::JSDocText | Kind::JSDocLink | Kind::JSDocLinkCode | Kind::JSDocLinkPlain => {
@@ -2569,7 +2583,7 @@ impl Printer {
                     if param.is_bracketed {
                         self.writer().write("[");
                     }
-                    self.emit_identifier_name(param.name);
+                    self.emit_entity_name(param.name);
                     if param.is_bracketed {
                         self.writer().write("]");
                     }

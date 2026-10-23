@@ -515,13 +515,40 @@ fn missing_member(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>
         } else {
             Kind::AnyKeyword
         });
+        let mut parameters = Vec::new();
+        if kind == 0 {
+            if let Some(call) = access
+                .parent()
+                .filter(|n| ast::is_call_expression(*n) && n.expression() == Some(access))
+            {
+                for (index, &argument) in call.arguments().iter().enumerate() {
+                    let t = c.get_type_at_location(argument);
+                    let t = c.get_base_type_of_literal_type(t);
+                    let t = c.get_widened_type(t);
+                    let parameter_type = type_node(&mut c, &changes, t, declaration);
+                    let name = if ast::is_identifier(argument) {
+                        argument.text().to_string()
+                    } else {
+                        format!("arg{index}")
+                    };
+                    parameters.push(changes.new_parameter_declaration(
+                        None,
+                        None,
+                        changes.new_identifier(changes.alloc_text(&name)),
+                        None,
+                        parameter_type,
+                        None,
+                    ));
+                }
+            }
+        }
         let member = match kind {
             0 => changes.new_method_signature_declaration(
                 None,
                 changes.new_identifier(name),
                 None,
                 None,
-                Some(changes.new_node_list(Vec::new())),
+                Some(changes.new_node_list(parameters)),
                 Some(typ),
             ),
             1 => changes.new_property_signature_declaration(

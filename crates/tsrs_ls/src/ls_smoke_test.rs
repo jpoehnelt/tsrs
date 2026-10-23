@@ -714,3 +714,65 @@ fn embedded_quick_info_budget_isolated_from_normal_serialization() {
         .unwrap();
     assert_eq!(display.as_type_literal_node().members.nodes().len(), 13);
 }
+
+#[test]
+fn embedded_inference_preserves_nested_jsdoc() {
+    let text = "/** @param {object} options\n * @param {string} options.name\n */\nfunction convert(options, value) { return value.repeat(2); }";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let start = text.find("value)").unwrap() as u32;
+    let fix = crate::codeactions::CodeFixContext {
+        source_file: file,
+        span: tsrs_core::TextRange::new(start, start + 5),
+        error_code: 7006,
+        fix_id: None,
+        program: ls.get_program(),
+        ls: &ls,
+        diagnostic: None,
+        params: None,
+    };
+    let actions =
+        (crate::codeactions_usage::INFER_USAGE_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].changes_by_file[0].1.iter().any(
+        |e| e.new_text.contains("options.name") && e.new_text.contains("@param {string} value")
+    ));
+}
+#[test]
+fn embedded_missing_method_infers_call_parameters() {
+    let text = "/** @type {Widget} */ let widget; widget.render(1, 'x');";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js","types.d.ts"]}"#,
+        ),
+        ("/index.js", text),
+        ("/types.d.ts", "interface Widget { existing():void; }"),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let start = text.find("render").unwrap() as u32;
+    let fix = crate::codeactions::CodeFixContext {
+        source_file: file,
+        span: tsrs_core::TextRange::new(start, start + 6),
+        error_code: 2339,
+        fix_id: None,
+        program: ls.get_program(),
+        ls: &ls,
+        diagnostic: None,
+        params: None,
+    };
+    let actions =
+        (crate::codeactions_usage::MISSING_MEMBER_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+    assert!(
+        actions[0].changes_by_file[0]
+            .1
+            .iter()
+            .any(|e| e.new_text.contains("arg0: number") && e.new_text.contains("arg1: string"))
+    );
+}

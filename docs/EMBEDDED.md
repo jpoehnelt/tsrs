@@ -25,7 +25,8 @@ renameInfo, signatureHelp, symbols, format, inlayHints, codeActions, and codeFix
   parameter and `this` usage inference, missing required/optional parameters, missing interface
   methods/properties/index signatures, and implicit-`this` arrow conversion. Usage inference and
   missing-parameter providers support their own fix-all IDs and retain cross-file edits. These
-  editor providers follow TypeScript 5.9; this is not the complete TypeScript code-fix catalogue.
+  editor providers follow TypeScript 5.9; nested JSDoc tags and call-argument types are retained
+  when generating edits. This is not the complete TypeScript code-fix catalogue.
 - `quickInfo` preserves the TypeScript 5 display budget and called-property presentation; `hover`
   retains the native expandable-hover behavior. CommonJS assignment navigation and constructor
   function instance members are available to embedded editor queries.
@@ -50,9 +51,9 @@ Run `cargo test --profile dev -p tsrs_api -p tsrs_ls` with the pinned `ts-ref` f
 positions across emoji, CRLF, CR, U+2028 and U+2029, including invalid-request recovery.
 
 Build with `tools/wasm/build.sh`; run `node tools/wasm/embedded-test.mjs` against that module.
-The consumer integration adds execution-based refactor tests, frozen Apps Script acceptance,
-and paired packaged Chrome workloads. Consumer results are recorded in myFunction PR 426;
-no compiler CLI speedup or renewed upstream conformance claim follows from these editor tests.
+A large private monorepo adds execution-based editor tests, sealed acceptance and packaged
+browser workloads. Those consumer checks do not establish a compiler CLI speedup or renewed
+upstream conformance.
 
 
 ## Rust composition
