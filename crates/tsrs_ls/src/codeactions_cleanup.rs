@@ -458,10 +458,15 @@ fn apply(ctx: &Context, fix: &CodeFixContext, changes: &mut change::Tracker, edi
                 };
                 let assignment = parent.kind() == Kind::BinaryExpression
                     && parent.as_binary_expression().left == reference;
-                let increment = matches!(
-                    parent.kind(),
-                    Kind::PrefixUnaryExpression | Kind::PostfixUnaryExpression
-                ) && parent.expression() == Some(reference);
+                let increment = match parent.kind() {
+                    Kind::PrefixUnaryExpression => {
+                        parent.as_prefix_unary_expression().operand == reference
+                    }
+                    Kind::PostfixUnaryExpression => {
+                        parent.as_postfix_unary_expression().operand == reference
+                    }
+                    _ => false,
+                };
                 if (assignment || increment)
                     && parent.parent().is_some_and(ast::is_expression_statement)
                 {
