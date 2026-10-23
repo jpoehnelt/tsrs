@@ -10,24 +10,28 @@ use tsrs_core::{P, TextRange};
 use tsrs_lsproto as lsp;
 
 pub static INFER_USAGE_PROVIDER: CodeFixProvider = CodeFixProvider {
+    requires_auto_imports: false,
     error_codes: &[7006, 7019, 7044, 2683],
     get_code_actions: infer_usage,
     fix_ids: &["inferFromUsage"],
     get_all_code_actions: Some(infer_usage_all),
 };
 pub static IMPLICIT_THIS_PROVIDER: CodeFixProvider = CodeFixProvider {
+    requires_auto_imports: false,
     error_codes: &[2683],
     get_code_actions: implicit_this,
     fix_ids: &[],
     get_all_code_actions: None,
 };
 pub static MISSING_PARAMETER_PROVIDER: CodeFixProvider = CodeFixProvider {
+    requires_auto_imports: false,
     error_codes: &[2554],
     get_code_actions: missing_parameter,
     fix_ids: &["addMissingParam", "addOptionalParam"],
     get_all_code_actions: Some(missing_parameter_all),
 };
 pub static MISSING_MEMBER_PROVIDER: CodeFixProvider = CodeFixProvider {
+    requires_auto_imports: false,
     error_codes: &[2339],
     get_code_actions: missing_member,
     fix_ids: &[],

@@ -39,6 +39,7 @@ fn fix_class_incorrectly_implements_interface_error_codes() -> &'static [i32] {
 pub(crate) static FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_PROVIDER: std::sync::LazyLock<
     CodeFixProvider,
 > = std::sync::LazyLock::new(|| CodeFixProvider {
+    requires_auto_imports: true,
     error_codes: fix_class_incorrectly_implements_interface_error_codes(),
     get_code_actions: get_code_actions_to_fix_class_incorrectly_implements_interface,
     fix_ids: &[FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_FIX_ID],

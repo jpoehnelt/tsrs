@@ -27,6 +27,10 @@ renameInfo, signatureHelp, symbols, format, inlayHints, codeActions, and codeFix
   missing-parameter providers support their own fix-all IDs and retain cross-file edits. These
   editor providers follow TypeScript 5.9; nested JSDoc tags and call-argument types are retained
   when generating edits. This is not the complete TypeScript code-fix catalogue.
+- Usage inference limits parameter references to their lexical function, including captured
+  uses in nested closures. Other names use source candidates checked against compiler tokens
+  and symbol identity. Escaped identifiers retain AST traversal. Pure inference/member fixes
+  do not prepare auto-import exports; import-dependent, unknown and mixed providers still do.
 - `quickInfo` preserves the TypeScript 5 display budget and called-property presentation; `hover`
   retains the native expandable-hover behavior. CommonJS assignment navigation and constructor
   function instance members are available to embedded editor queries.

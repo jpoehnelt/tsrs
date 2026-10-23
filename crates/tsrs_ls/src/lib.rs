@@ -62,7 +62,9 @@ mod utilities;
 
 pub use api::{ERR_NO_SOURCE_FILE, ERR_NO_TOKEN_AT_POSITION};
 pub use codeactions::{
-    CodeAction, CodeFixContext, CodeFixProvider, CombinedCodeActions, supported_code_fix_codes,
+    CodeAction, CodeFixContext, CodeFixProvider, CombinedCodeActions,
+    code_fix_requires_auto_imports, combined_code_fix_requires_auto_imports,
+    supported_code_fix_codes,
 };
 pub use completions::{
     COMPLETION_TRIGGER_CHARACTERS, CompletionItem, CompletionKind, CompletionList,

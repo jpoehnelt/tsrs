@@ -17,6 +17,8 @@ use crate::spanmap::Feature;
 // CodeFixProvider represents a provider for a specific type of code fix
 pub struct CodeFixProvider {
     pub error_codes: &'static [i32],
+    /// Whether this provider reads the prepared package-export/auto-import view.
+    pub requires_auto_imports: bool,
     pub get_code_actions:
         fn(ctx: &Context, fix_context: &CodeFixContext) -> Result<Vec<CodeAction>, lsproto::Error>,
     pub fix_ids: &'static [&'static str],
@@ -160,6 +162,26 @@ pub fn supported_code_fix_codes() -> Vec<i32> {
     codes.sort_unstable();
     codes.dedup();
     codes
+}
+
+/// Unknown providers retain the conservative prepared-snapshot behavior.
+pub fn code_fix_requires_auto_imports(code: i32) -> bool {
+    let mut found = false;
+    for provider in code_fix_providers() {
+        if provider.error_codes.contains(&code) {
+            found = true;
+            if provider.requires_auto_imports {
+                return true;
+            }
+        }
+    }
+    !found
+}
+pub fn combined_code_fix_requires_auto_imports(id: &str) -> bool {
+    code_fix_providers()
+        .iter()
+        .find(|provider| provider.fix_ids.contains(&id))
+        .is_none_or(|provider| provider.requires_auto_imports)
 }
 
 impl LanguageService {

@@ -81,8 +81,47 @@ impl Inference<'_> {
                 false
             });
         }
-        for &file in self.files {
-            visit(self.c, file.as_node(), name.text(), symbol, &mut matches);
+        let parameter_scope = name
+            .parent()
+            .filter(|node| node.kind() == Kind::Parameter)
+            .and_then(|parameter| parameter.parent())
+            .filter(|node| ast::is_function_like_declaration(*node));
+        if let Some(scope) = parameter_scope {
+            // A parameter's identity cannot escape its function, including nested closures.
+            visit(self.c, scope, name.text(), symbol, &mut matches);
+        } else if !name.text().is_empty() {
+            for &file in self.files {
+                let text = file.text();
+                // Escaped identifiers need the original AST walk, not a literal text search.
+                if text.contains("\\u") {
+                    visit(self.c, file.as_node(), name.text(), symbol, &mut matches);
+                    continue;
+                }
+                for (position, _) in text.match_indices(name.text()) {
+                    let end = position + name.text().len();
+                    if text[..position]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| tsrs_scanner::is_identifier_part(u32::from(c)))
+                        || text[end..]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| tsrs_scanner::is_identifier_part(u32::from(c)))
+                    {
+                        continue;
+                    }
+                    let position = u32::try_from(position).expect("source reference position");
+                    let node = tsrs_astnav::get_touching_property_name(file, position);
+                    if ast::is_identifier(node)
+                        && !node.flags().intersects(NodeFlags::JSDoc)
+                        && node.text() == name.text()
+                        && tsrs_astnav::get_start_of_node(node, file, false) == position
+                        && self.c.get_symbol_at_location_exported(node) == Some(symbol)
+                    {
+                        matches.push(node);
+                    }
+                }
+            }
         }
         self.references.insert(symbol, matches.clone());
         matches

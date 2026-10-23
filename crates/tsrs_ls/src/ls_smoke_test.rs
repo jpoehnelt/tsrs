@@ -636,6 +636,47 @@ fn embedded_usage_inference_edits_and_unicode_positions() {
 }
 
 #[test]
+fn embedded_usage_reference_scopes() {
+    let sources = [
+        "function convert(value) { function nested() { return value.repeat(2); } function shadow(value) { return value + 1; } return nested(); } convert('x');",
+        r"function convert(\u0076alue) { return \u0076alue.repeat(2); } convert('x');",
+        "function convert(value) { return value; } // value and convert are not references here",
+    ];
+    for text in sources {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js","other.js"]}"#,
+            ),
+            ("/index.js", text),
+            ("/other.js", "convert('external'); function shadow(value) { return value + 1; }"),
+        ]);
+        let file = ls.get_program().get_source_file("/index.js").unwrap();
+        let start = text.find("value)").or_else(|| text.find(r"\u0076alue)")).unwrap() as u32;
+        let fix = crate::codeactions::CodeFixContext {
+            source_file: file,
+            span: tsrs_core::TextRange::new(start, start + 5),
+            error_code: 7006,
+            fix_id: None,
+            program: ls.get_program(),
+            ls: &ls,
+            diagnostic: None,
+            params: None,
+        };
+        let actions =
+            (crate::codeactions_usage::INFER_USAGE_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+        assert_eq!(actions.len(), 1, "{text}");
+        assert!(
+            actions[0].changes_by_file[0]
+                .1
+                .iter()
+                .any(|e| e.new_text.contains("@param {string} value")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn embedded_commonjs_export_assignment_symbol() {
     let text = "!function(root, factory) { typeof module !== 'undefined' ? module.exports = factory() : root.library = factory(); }(this, function() { function library() {} library.version = '1'; return library; });";
     let (ls, ctx) = setup(&[

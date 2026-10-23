@@ -59,6 +59,7 @@ const FIX_MISSING_TYPE_ANNOTATION_ON_EXPORTS_FIX_ID: &str = "fixMissingTypeAnnot
 // IsolatedDeclarationsFixProvider is the CodeFixProvider for isolatedDeclarations-related type annotation fixes.
 pub(crate) static ISOLATED_DECLARATIONS_FIX_PROVIDER: std::sync::LazyLock<CodeFixProvider> =
     std::sync::LazyLock::new(|| CodeFixProvider {
+        requires_auto_imports: true,
         error_codes: isolated_declarations_fix_error_codes(),
         get_code_actions: get_isolated_declarations_code_actions,
         fix_ids: &[FIX_MISSING_TYPE_ANNOTATION_ON_EXPORTS_FIX_ID],

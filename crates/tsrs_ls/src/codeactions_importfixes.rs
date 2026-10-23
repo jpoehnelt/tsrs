@@ -51,6 +51,7 @@ const IMPORT_FIX_ID: &str = "fixMissingImport";
 // ImportFixProvider is the CodeFixProvider for import-related fixes
 pub(crate) static IMPORT_FIX_PROVIDER: std::sync::LazyLock<CodeFixProvider> =
     std::sync::LazyLock::new(|| CodeFixProvider {
+        requires_auto_imports: true,
         error_codes: import_fix_error_codes(),
         get_code_actions: get_import_code_actions,
         fix_ids: &[IMPORT_FIX_ID],

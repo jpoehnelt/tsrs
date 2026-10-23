@@ -167,16 +167,29 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
         }
     }
     let operation = p.str("operation")?;
-    let prepared = Prepared(
-        if matches!(
-            operation,
-            "codeActions" | "codeFixes" | "combinedCodeFix" | "completion" | "completionResolve"
-        ) {
-            Some(s.embedded_auto_import_snapshot(&data.snapshot, file))
-        } else {
-            None
-        },
-    );
+    let request = p.get("request");
+    let requires_auto_imports = match operation {
+        "codeFixes" => {
+            let request: lsp::CodeActionParams = decode(request)?;
+            request.context.diagnostics.iter().any(|diagnostic| {
+                diagnostic
+                    .code
+                    .as_ref()
+                    .and_then(|code| code.integer)
+                    .is_none_or(tsrs_ls::code_fix_requires_auto_imports)
+            })
+        }
+        "combinedCodeFix" => {
+            tsrs_ls::combined_code_fix_requires_auto_imports(Params(request).str("fixId")?)
+        }
+        "codeActions" | "completion" | "completionResolve" => true,
+        _ => false,
+    };
+    let prepared = Prepared(if requires_auto_imports {
+        Some(s.embedded_auto_import_snapshot(&data.snapshot, file))
+    } else {
+        None
+    });
     let snapshot = prepared.0.as_ref().unwrap_or(&data.snapshot);
     let project_data = snapshot
         .project_collection
@@ -202,7 +215,6 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
     caps.text_document.definition.link_support = true;
     caps.text_document.document_symbol.hierarchical_document_symbol_support = true;
     let ctx = lsp::with_client_capabilities(&Context::background(), Arc::new(caps));
-    let request = p.get("request");
     let uri = tsrs_ls::lsconv::file_name_to_document_uri(file);
     let position = || -> ApiResult<lsp::Position> { decode(Params(request).get("position")) };
     let result: Result<Value, lsp::Error> = match p.str("operation")? {
