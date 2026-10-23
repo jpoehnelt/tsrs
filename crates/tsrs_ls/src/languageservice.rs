@@ -26,6 +26,7 @@ pub struct LanguageService {
     // Go mutates a plain map through the *LanguageService (one goroutine per service); a Mutex keeps the service
     // Sync so it can be shared like Go's pointer.
     document_position_mappers: Mutex<FxHashMap<String, Option<Arc<DocumentPositionMapper>>>>,
+    read_only_files: rustc_hash::FxHashSet<Path>,
 }
 
 // languageservice.go:25
@@ -42,10 +43,22 @@ pub fn new_language_service(
         host,
         program,
         document_position_mappers: Mutex::new(FxHashMap::default()),
+        read_only_files: rustc_hash::FxHashSet::default(),
     }
 }
 
 impl LanguageService {
+    /// Embedders can load declaration libraries as explicit roots without losing edit protection.
+    pub fn set_read_only_files(&mut self, files: &[String]) {
+        self.read_only_files = files.iter().map(|file| self.to_path(file)).collect();
+    }
+
+    pub(crate) fn is_read_only_file(&self, file: P<tsrs_ast::SourceFile>) -> bool {
+        self.read_only_files.contains(file.path())
+            || self.program.is_source_file_default_library(file.path())
+            || self.program.is_source_file_from_external_library(file)
+    }
+
     /// Per-request preferences supplied by an embedded editor host.
     pub fn set_user_preferences(&mut self, preferences: UserPreferences) {
         self.active_config = preferences;

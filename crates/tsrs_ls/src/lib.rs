@@ -7,6 +7,7 @@ mod autoinsert;
 mod callhierarchy;
 pub mod change;
 mod codeactions;
+mod codeactions_cleanup;
 mod codeactions_fixclassincorrectlyimplementsinterface;
 mod codeactions_fixmissingtypeannotation;
 mod codeactions_importfixes;

@@ -869,6 +869,126 @@ fn embedded_spelling_edits_and_fix_all() {
 }
 
 #[test]
+fn embedded_cleanup_providers_and_fix_all() {
+    for (text, code, name, id) in [
+        (
+            "const count = 1; count = 2; count = 3;",
+            2588,
+            "fixConvertConstToLet",
+            "fixConvertConstToLet",
+        ),
+        (
+            "function read(unused: number) { return 1; } read(2);",
+            6133,
+            "unusedIdentifier",
+            "unusedIdentifier_prefix",
+        ),
+        (
+            "function read() { await 1; await 2; }",
+            1308,
+            "fixAwaitInSyncFunction",
+            "fixAwaitInSyncFunction",
+        ),
+        (
+            "class Counter { value = 1; read() { return value; } }",
+            2663,
+            "forgottenThisPropertyAccess",
+            "forgottenThisPropertyAccess",
+        ),
+        (
+            "function read() { return 1; let unused = 2; unused++; }",
+            7027,
+            "fixUnreachableCode",
+            "fixUnreachableCode",
+        ),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"strict":true,"noUnusedLocals":true,"noUnusedParameters":true,"allowUnreachableCode":false},"files":["index.ts"]}"#,
+            ),
+            ("/index.ts", text),
+        ]);
+        let uri = lsconv::file_name_to_document_uri("/index.ts");
+        let diagnostics = ls
+            .provide_diagnostics(&ctx, &uri)
+            .unwrap()
+            .full_document_diagnostic_report
+            .unwrap()
+            .items;
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| d.code.as_ref().and_then(|c| c.integer) == Some(code))
+            .unwrap();
+        assert!(crate::supported_code_fix_codes().contains(&code));
+        let file = ls.get_program().get_source_file("/index.ts").unwrap();
+        let span = crate::diagnostics::get_all_diagnostics(&ctx, ls.get_program(), file)
+            .into_iter()
+            .find(|d| d.code() == code)
+            .unwrap()
+            .loc()
+            .unwrap();
+        // This minimal host has no auto-import registry. The prepared embedded
+        // transport tests separately cover dispatch shared with import providers.
+        let actions = (crate::codeactions_cleanup::CLEANUP_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span,
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: Some(diagnostic),
+                params: None,
+            },
+        )
+        .unwrap();
+        assert!(actions.iter().any(|a| a.fix_name.as_deref() == Some(name)), "{name}");
+        let combined = ls.embedded_combined_code_fix(&ctx, &uri, id).unwrap().unwrap();
+        let changes = combined.workspace_edit(&uri).changes.unwrap();
+        assert!(!changes[&uri].is_empty(), "{id}");
+        if code == 2588 || code == 1308 {
+            assert_eq!(changes[&uri].len(), 1);
+        }
+    }
+}
+
+#[test]
+fn embedded_missing_member_respects_explicit_read_only_roots() {
+    let text = "declare const item: LibraryItem; item.missing();";
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true},"files":["index.ts","types.d.ts"]}"#,
+        ),
+        ("/index.ts", text),
+        ("/types.d.ts", "interface LibraryItem { read(): void; }"),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let start = text.find("missing").unwrap() as u32;
+    let actions = |ls: &LanguageService| {
+        (crate::codeactions_usage::MISSING_MEMBER_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(start, start + 7),
+                error_code: 2339,
+                fix_id: None,
+                program: ls.get_program(),
+                ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(actions(&ls).len(), 3);
+    ls.set_read_only_files(&["/types.d.ts".into()]);
+    assert!(actions(&ls).is_empty());
+}
+
+#[test]
 fn embedded_quick_info_structured_documentation() {
     let text = "/** Reads a value.\n * @returns The value.\n * @example\n * const value = read();\n * @see https://example.com/reference\n */\ndeclare function read(): string;\nread();";
     let (ls, ctx) = setup(&[

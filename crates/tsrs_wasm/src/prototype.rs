@@ -210,6 +210,9 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
     let mut preferences = tsrs_ls::lsutil::new_default_user_preferences();
     preferences.unmarshal_json_from(p.get("preferences")).map_err(ApiError::invalid_request)?;
     ls.set_user_preferences(preferences);
+    if !matches!(p.get("readOnlyFiles"), Value::Null) {
+        ls.set_read_only_files(&decode::<Vec<String>>(p.get("readOnlyFiles"))?);
+    }
     let mut caps = lsp::ResolvedClientCapabilities::default();
     caps.text_document.hover.content_format = vec![lsp::MarkupKind::Markdown];
     caps.text_document.definition.link_support = true;

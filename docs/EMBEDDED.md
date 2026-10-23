@@ -84,3 +84,11 @@ The standalone JSON/CLI adapters remain separate compatibility paths.
 `npm/tsrs-wasm/test/binary.test.mjs` covers framing, UTF-8, bounds, nesting, ownership and malformed
 inputs. Rust binary session tests cover recovery and independent batch errors. Consumer transport
 regressions disable JSON/base64 functions while exercising raw AST reads, printing and batches.
+
+## Declaration and cleanup fixes
+
+The editor API includes const-to-let, unused-identifier deletion/prefixing, missing async modifiers, instance/static member qualification and unreachable-code removal. Each family exposes its own fix-all IDs. The tracker deduplicates repeated edits to a declaration; multiple assigned bindings in one const list produce one replacement. Parameter renames also update their JSDoc names.
+
+An embedding host can pass `readOnlyFiles` as a string array in an `editor` request. These are file identities, not compiler observations. Native language-service policy excludes default libraries, external libraries and these explicit roots from missing-member declaration edits. User-owned declaration interfaces remain eligible. Omitting the array preserves normal program library classification.
+
+Unused and unreachable suggestions must be included with syntactic and semantic diagnostics when a host requests `codeFixes`. The native providers use the same dispatch for those categories. Focused native cleanup/fix-all and explicit-read-only-root regressions cover the added paths.

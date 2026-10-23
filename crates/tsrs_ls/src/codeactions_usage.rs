@@ -510,6 +510,9 @@ fn missing_member(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>
         return Ok(Vec::new());
     };
     let file = ast::get_source_file_of_node(declaration).unwrap();
+    if fix.ls.is_read_only_file(file) {
+        return Ok(Vec::new());
+    }
     let name = token.text();
     let mut result = Vec::new();
     for kind in 0..3 {
