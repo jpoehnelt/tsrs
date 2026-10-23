@@ -66,6 +66,64 @@ impl LanguageService {
         self.provide_hover_worker(ctx, params, true)
     }
 
+    /// Preserve source `JSDoc` tags for embedding clients that own documentation rendering.
+    /// This shares the live program and checker; no Markdown is parsed back into tags.
+    pub fn quick_info_documentation(
+        &self,
+        ctx: &Context,
+        params: &lsproto::HoverParams,
+    ) -> (String, Vec<crate::jsdoc::JSDocTagInfo>) {
+        let (program, file) = self.get_program_and_file(&params.text_document.uri);
+        let positions = self.converters.from_lsp_position_for_source_file(
+            file,
+            params.position,
+            Feature::Hover,
+        );
+        for projection in positions {
+            if !projection.fidelity.is_single_segment() {
+                continue;
+            }
+            let node = get_node_for_quick_info(astnav::get_touching_property_name(
+                projection.script,
+                projection.position,
+            ));
+            let mut c = program.get_type_checker_for_file(ctx, projection.script);
+            let symbol = get_symbol_at_location_for_quick_info(&mut c, node);
+            let declaration = get_call_or_new_expression(node)
+                .and_then(|call| c.get_resolved_signature_exported(call).declaration())
+                .or_else(|| {
+                    let s = symbol?;
+                    s.value_declaration().or_else(|| s.declarations().first().copied())
+                });
+            let mapper = self.documentation_location_mapper(Feature::Hover);
+            let documentation = get_documentation_for_symbol(
+                &mapper,
+                &mut c,
+                symbol,
+                node,
+                declaration,
+                lsproto::MarkupKind::Markdown,
+                true,
+            )
+            .trim()
+            .to_string();
+            let mut tags = declaration.map_or_else(
+                || crate::jsdoc::get_symbol_jsdoc_tags(symbol),
+                crate::jsdoc::get_declaration_jsdoc_tag_info,
+            );
+            if tags.is_empty() {
+                if let Some(symbol) = symbol.filter(|s| s.flags().intersects(SymbolFlags::Alias)) {
+                    let target = c.get_aliased_symbol(symbol);
+                    tags = crate::jsdoc::get_symbol_jsdoc_tags(Some(target));
+                }
+            }
+            if !documentation.is_empty() || !tags.is_empty() {
+                return (documentation, tags);
+            }
+        }
+        (String::new(), Vec::new())
+    }
+
     #[expect(
         clippy::unnecessary_wraps,
         reason = "Shared fallible response signature for embedded and LSP callers"

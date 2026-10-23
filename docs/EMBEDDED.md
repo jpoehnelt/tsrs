@@ -31,6 +31,8 @@ renameInfo, signatureHelp, symbols, format, inlayHints, codeActions, and codeFix
   uses in nested closures. Other names use source candidates checked against compiler tokens
   and symbol identity. Escaped identifiers retain AST traversal. Pure inference/member fixes
   do not prepare auto-import exports; import-dependent, unknown and mixed providers still do.
+- `codeFixes` includes checker-backed property, name and namespace spelling suggestions with `fixSpelling` fix-all edits. Optional access and UTF-16 positions retain their source semantics; localized diagnostic text is never used as an edit oracle.
+- `quickInfo` includes separate `documentation` and `tags` fields for renderers; `contents` retains its LSP Markdown.
 - `quickInfo` preserves the TypeScript 5 display budget and called-property presentation; `hover`
   retains the native expandable-hover behavior. CommonJS assignment navigation and constructor
   function instance members are available to embedded editor queries.

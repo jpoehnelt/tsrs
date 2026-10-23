@@ -147,6 +147,7 @@ fn code_fix_providers() -> &'static [&'static CodeFixProvider] {
             &crate::codeactions_usage::INFER_USAGE_PROVIDER,
             &crate::codeactions_usage::MISSING_PARAMETER_PROVIDER,
             &crate::codeactions_usage::MISSING_MEMBER_PROVIDER,
+            &crate::codeactions_spelling::SPELLING_PROVIDER,
         ]
         },
     );

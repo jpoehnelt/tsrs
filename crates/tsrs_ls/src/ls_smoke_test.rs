@@ -817,3 +817,81 @@ fn embedded_missing_method_infers_call_parameters() {
             .any(|e| e.new_text.contains("arg0: number") && e.new_text.contains("arg1: string"))
     );
 }
+
+#[test]
+fn embedded_spelling_edits_and_fix_all() {
+    let text = "// 🧪\ndeclare namespace Audit { function log(text: string): void; }\nAudit.loog('x'); Audit?.loog('y');\nconst count = 1; console.log(coutn);";
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let diagnostics =
+        ls.provide_diagnostics(&ctx, &uri).unwrap().full_document_diagnostic_report.unwrap().items;
+    let spelling: Vec<_> = diagnostics
+        .into_iter()
+        .filter(|d| d.code.as_ref().and_then(|c| c.integer).is_some_and(|c| c == 2551 || c == 2552))
+        .collect();
+    assert_eq!(spelling.len(), 3);
+    assert!(crate::supported_code_fix_codes().contains(&2552));
+    // The minimal host has no prepared auto-import registry. Property corrections
+    // exercise the registered dispatch; fix-all below also covers the name correction.
+    for diagnostic in
+        spelling.iter().filter(|d| d.code.as_ref().and_then(|c| c.integer) == Some(2551))
+    {
+        let actions = ls
+            .embedded_code_fixes(
+                &ctx,
+                &lsproto::CodeActionParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    range: diagnostic.range,
+                    context: lsproto::CodeActionContext {
+                        diagnostics: vec![diagnostic.clone()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let action = actions.iter().find(|a| a.fix_name.as_deref() == Some("spelling")).unwrap();
+        assert_eq!(action.fix_id, "fixSpelling");
+        let edits = action.workspace_edit(&uri).changes.unwrap();
+        assert_eq!(edits[&uri].len(), 1);
+        assert_eq!(edits[&uri][0].range, diagnostic.range);
+    }
+    let all = ls.embedded_combined_code_fix(&ctx, &uri, "fixSpelling").unwrap().unwrap();
+    let all_edits = all.workspace_edit(&uri).changes.unwrap();
+    assert_eq!(all_edits[&uri].len(), 3);
+    assert_eq!(
+        all_edits[&uri].iter().map(|e| e.new_text.as_str()).collect::<Vec<_>>(),
+        vec!["log", "log", "count"]
+    );
+}
+
+#[test]
+fn embedded_quick_info_structured_documentation() {
+    let text = "/** Reads a value.\n * @returns The value.\n * @example\n * const value = read();\n * @see https://example.com/reference\n */\ndeclare function read(): string;\nread();";
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ]);
+    let (documentation, tags) = ls.quick_info_documentation(
+        &ctx,
+        &lsproto::HoverParams {
+            text_document: lsproto::TextDocumentIdentifier {
+                uri: lsconv::file_name_to_document_uri("/index.ts"),
+            },
+            position: lsproto::Position { line: 7, character: 1 },
+            ..Default::default()
+        },
+    );
+    assert_eq!(documentation, "Reads a value.");
+    assert_eq!(
+        tags.iter().map(|t| (t.name.as_str(), t.text.as_str())).collect::<Vec<_>>(),
+        vec![
+            ("returns", "The value."),
+            ("example", "const value = read();"),
+            ("see", "https://example.com/reference")
+        ]
+    );
+}

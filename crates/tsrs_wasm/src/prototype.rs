@@ -219,7 +219,30 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
     let position = || -> ApiResult<lsp::Position> { decode(Params(request).get("position")) };
     let result: Result<Value, lsp::Error> = match p.str("operation")? {
         "hover" => ls.provide_hover(&ctx, &decode(request)?).map(|v| v.to_json()),
-        "quickInfo" => ls.provide_quick_info(&ctx, &decode(request)?).map(|v| v.to_json()),
+        "quickInfo" => {
+            let params: lsp::HoverParams = decode(request)?;
+            ls.provide_quick_info(&ctx, &params).map(|v| {
+                let mut value = v.to_json();
+                if let Value::Object(fields) = &mut value {
+                    let (documentation, tags) = ls.quick_info_documentation(&ctx, &params);
+                    fields.insert("documentation".into(), Value::String(documentation));
+                    fields.insert(
+                        "tags".into(),
+                        Value::Array(
+                            tags.into_iter()
+                                .map(|tag| {
+                                    Obj::new()
+                                        .set("name", Value::String(tag.name))
+                                        .set("text", Value::String(tag.text))
+                                        .build()
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
+                value
+            })
+        }
         "completion" => {
             let r: lsp::CompletionParams = decode(request)?;
             ls.provide_completion(&ctx, &uri, r.position, r.context.as_ref()).map(|v| v.to_json())

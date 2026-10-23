@@ -1606,7 +1606,7 @@ impl Checker {
     }
 
     // checker.go:16232
-    pub(crate) fn get_suggested_symbol_for_nonexistent_module(
+    pub fn get_suggested_symbol_for_nonexistent_module(
         &mut self,
         name: P<Node>,
         target_module: P<Symbol>,
