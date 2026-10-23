@@ -124,3 +124,8 @@ across later requests or memory growth. This is an owned-buffer interface, not z
 
 The embedded SDK adapter must consume raw `Uint8Array` results and supply raw printing buffers; the
 standalone SDK's JSON/base64 adapter is a different transport. No JSON fallback occurs in binary dispatch.
+
+The fork's native editor providers include parameter/this usage inference, missing required or
+optional parameters, interface member declarations, implicit-this arrow conversion and their
+provider-specific combined fixes. `quickInfo` uses TypeScript 5 display budgeting; regular `hover`
+retains expandable native presentation. This does not implement the complete TypeScript fix catalogue.

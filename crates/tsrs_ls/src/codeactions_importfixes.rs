@@ -97,6 +97,8 @@ fn get_import_code_actions(
                 description,
                 changes: edits,
                 fix_id: IMPORT_FIX_ID.to_string(),
+                fix_name: None,
+                changes_by_file: Vec::new(),
                 fix_all_description: diagnostics::Add_all_missing_imports.localize(&[]),
             })
         } else {
@@ -154,6 +156,7 @@ fn get_all_import_code_actions(
     }
 
     Ok(Some(CombinedCodeActions {
+        changes_by_file: Vec::new(),
         description: diagnostics::Add_all_missing_imports.localize(&[]),
         changes: import_adder.edits(),
     }))
@@ -174,6 +177,7 @@ fn add_import_from_diagnostic(
         source_file: fix_context.source_file,
         span: diag_loc,
         error_code: diag.code(),
+        fix_id: None,
         program: fix_context.program,
         ls: fix_context.ls,
         diagnostic: None,

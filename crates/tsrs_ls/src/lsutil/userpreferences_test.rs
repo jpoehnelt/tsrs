@@ -782,3 +782,18 @@ fn test_user_preferences_parse_ata() {
         assert!(!prefs.is_ata_disabled());
     }
 }
+
+#[test]
+fn binary_integer_preferences_preserve_zero_and_nonzero_sizes() {
+    for size in [0_i64, 2, 8] {
+        let mut fields = OrderedMap::default();
+        fields.insert("indentSize".to_string(), Value::Integer(size));
+        fields.insert("tabSize".to_string(), Value::Integer(size));
+        fields.insert("maximumHoverLength".to_string(), Value::Integer(240));
+        let mut preferences = new_default_user_preferences();
+        preferences.unmarshal_json_from(&Value::Object(fields)).unwrap();
+        assert_eq!(preferences.format_code_settings.editor_settings.indent_size, size as i32);
+        assert_eq!(preferences.format_code_settings.editor_settings.tab_size, size as i32);
+        assert_eq!(preferences.maximum_hover_length, 240);
+    }
+}

@@ -168,8 +168,10 @@ pub struct SymbolAccessibilityResult {
 pub struct VerbosityContext {
     pub level: Cell<usize>, // 0 = default (no expansion), 1+ = expansion depth
     pub max_truncation_length: Cell<usize>, // 0 = use default
+    /// Legacy quick-info has a display budget but no hover expansion state.
+    pub disable_expansion: bool,
     pub can_increase_verbosity: Cell<bool>, // output: whether increasing Level would reveal more
-    pub truncated: Cell<bool>, // output: whether output was truncated
+    pub truncated: Cell<bool>,              // output: whether output was truncated
 }
 
 // checker/symbolaccessibility.go

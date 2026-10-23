@@ -781,11 +781,28 @@ impl NodeBuilderImpl {
             self.ctx().flags.set(self.ctx().flags.get() | Flags::AllowUniqueESSymbolType);
         }
         let mut result: Option<P<Node>> = None;
+        // Legacy quick info uses the annotated syntax when it describes the observed type,
+        // including its reuse cost in the display budget. The Go pseudo checker is retained
+        // for normal compiler serialization and expandable hover.
+        if self.ctx().legacy_quick_info && try_reuse {
+            if let Some(declaration) = declaration {
+                if let Some(annotation) = ast::get_type_annotation_node(declaration) {
+                    result = self.try_reuse_existing_non_parameter_type_node(
+                        c,
+                        annotation,
+                        t,
+                        Some(declaration),
+                        None,
+                    );
+                }
+            }
+        }
         let mut reported_inference_fallback = false;
         // !!! expandable hover support
-        if !self.is_actively_expanding(c)
+        if result.is_none()
+            && !self.is_actively_expanding(c)
             && try_reuse
-            && self.ctx().enclosing_declaration.get().is_some()
+            && (self.ctx().legacy_quick_info || self.ctx().enclosing_declaration.get().is_some())
             && let Some(declaration) = declaration
             && (ast::is_accessor(declaration)
                 || (ast::has_inferred_type(declaration)
@@ -2337,6 +2354,7 @@ impl NodeBuilderImpl {
         // of types allows us to catch circular references to instantiations of the same anonymous type
 
         let key = CompositeTypeCacheIdentity {
+            legacy_quick_info: self.ctx().legacy_quick_info,
             type_id,
             flags: self.ctx().flags.get(),
             internal_flags: self.ctx().internal_flags.get(),

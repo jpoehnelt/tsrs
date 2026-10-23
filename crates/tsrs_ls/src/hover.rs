@@ -41,6 +41,7 @@ fn new_verbosity_context(level: usize, max_truncation_length: usize) -> P<Verbos
     P::new(VerbosityContext {
         level: Cell::new(level),
         max_truncation_length: Cell::new(max_truncation_length),
+        disable_expansion: false,
         can_increase_verbosity: Cell::new(false),
         truncated: Cell::new(false),
     })
@@ -48,14 +49,32 @@ fn new_verbosity_context(level: usize, max_truncation_length: usize) -> P<Verbos
 
 impl LanguageService {
     // hover.go:27
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "Language service operations share the fallible response signature used by LSP and cross-project dispatch."
-    )]
     pub fn provide_hover(
         &self,
         ctx: &Context,
         params: &lsproto::HoverParams,
+    ) -> Result<lsproto::HoverResponse, lsproto::Error> {
+        self.provide_hover_worker(ctx, params, false)
+    }
+
+    /// TSServer-style quick-info retains ordinary type serialization caches across requests.
+    pub fn provide_quick_info(
+        &self,
+        ctx: &Context,
+        params: &lsproto::HoverParams,
+    ) -> Result<lsproto::HoverResponse, lsproto::Error> {
+        self.provide_hover_worker(ctx, params, true)
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "Shared fallible response signature for embedded and LSP callers"
+    )]
+    fn provide_hover_worker(
+        &self,
+        ctx: &Context,
+        params: &lsproto::HoverParams,
+        legacy: bool,
     ) -> Result<lsproto::HoverResponse, lsproto::Error> {
         let caps = lsproto::get_client_capabilities(ctx);
         let content_format =
@@ -96,7 +115,15 @@ impl LanguageService {
                 .ok()
                 .filter(|&length| length > 0)
                 .unwrap_or(500);
-            let vc = new_verbosity_context(verbosity_level, max_trunc_len);
+            let vc = if legacy {
+                P::new(VerbosityContext {
+                    max_truncation_length: Cell::new(max_trunc_len),
+                    disable_expansion: true,
+                    ..Default::default()
+                })
+            } else {
+                new_verbosity_context(verbosity_level, max_trunc_len)
+            };
 
             let vs_capability = caps.vs_supports_visual_studio_extensions;
             let (quick_info, documentation, vs_documentation, quick_info_runs) = self
@@ -716,6 +743,9 @@ impl QuickInfoWriter {
         mut flags: TypeFormatFlags,
     ) {
         flags |= TypeFormatFlags::MultilineObjectLiterals;
+        if self.vc.disable_expansion {
+            flags.remove(TypeFormatFlags::UseInstantiationExpressions);
+        }
         if !self.vs_capability {
             let s = c.type_to_string_ex(t, enclosing, flags, Some(self.vc));
             self.dpw.write(&s);
@@ -1079,7 +1109,19 @@ impl QuickInfoWriter {
                 }
                 self.dpw.write_punctuation(": ");
             }
-            if let Some(call_node) = get_call_or_new_expression(node) {
+            let call_node = get_call_or_new_expression(node).filter(|call| {
+                if !self.vc.disable_expansion {
+                    return true;
+                }
+                let typ = c.get_type_of_symbol_at_location(symbol, Some(node)).unwrap();
+                let kind = if ast::is_new_expression(*call) {
+                    SignatureKind::Construct
+                } else {
+                    SignatureKind::Call
+                };
+                !c.get_signatures_of_type(typ, kind).is_empty()
+            });
+            if let Some(call_node) = call_node {
                 let mut flags = TYPE_FORMAT_FLAGS
                     | TypeFormatFlags::WriteTypeArgumentsOfSignature
                     | TypeFormatFlags::WriteArrowStyleSignature;

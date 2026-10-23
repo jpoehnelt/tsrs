@@ -682,7 +682,7 @@ impl Printer {
                 } else if is_punctuation_kind(node.kind()) {
                     self.emit_punctuation_node(Some(node));
                 } else if is_jsdoc_kind(node.kind()) {
-                    Self::emit_jsdoc_node(node);
+                    self.emit_jsdoc_node(node);
                 } else {
                     panic!("unhandled Node: {:?}", node.kind());
                 }

@@ -11,6 +11,7 @@ mod codeactions_fixclassincorrectlyimplementsinterface;
 mod codeactions_fixmissingtypeannotation;
 mod codeactions_importfixes;
 mod codeactions_missingmemberfixer;
+mod codeactions_usage;
 mod codelens;
 mod completions;
 mod completions_2;

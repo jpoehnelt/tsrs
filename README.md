@@ -10,7 +10,9 @@ Our goal is 100% conformance, with much lower memory use and faster type checkin
 
 This branch is based on upstream revision `79ea6d25c011a7f498e02bda7f090308f9fb9ac9`.
 It adds persistent WASM editor sessions and API diagnostic position conversion using the existing
-source-file position map. See [the embedded API contract](docs/EMBEDDED.md) for capabilities, tests,
+source-file position map. Native editor providers include parameter usage inference, missing
+parameters, interface members and implicit-this conversion, with provider-specific fix-all edits.
+Legacy quick info preserves TypeScript 5 display budgeting. See [the embedded API contract](docs/EMBEDDED.md) for capabilities, tests,
 and limits. Upstream conformance and benchmark claims below describe the upstream release; they
 are not new measurements of this fork.
 

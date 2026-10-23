@@ -204,6 +204,7 @@ fn get_all_isolated_declarations_code_actions(
     }
 
     Ok(Some(CombinedCodeActions {
+        changes_by_file: Vec::new(),
         description: diagnostics::Add_all_missing_type_annotations.localize(&[]),
         changes: file_changes,
     }))
@@ -261,6 +262,8 @@ fn try_code_action(
         description,
         changes: file_changes,
         fix_id: FIX_MISSING_TYPE_ANNOTATION_ON_EXPORTS_FIX_ID.to_string(),
+        fix_name: None,
+        changes_by_file: Vec::new(),
         fix_all_description: diagnostics::Add_all_missing_type_annotations.localize(&[]),
     })
 }

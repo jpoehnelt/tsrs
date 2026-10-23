@@ -34,6 +34,7 @@ pub struct CodeFixContext<'a> {
     pub source_file: P<SourceFile>,
     pub span: TextRange,
     pub error_code: i32,
+    pub fix_id: Option<&'a str>,
     pub program: &'static Program,
     pub ls: &'a LanguageService,
     pub diagnostic: Option<&'a lsproto::Diagnostic>,
@@ -47,10 +48,23 @@ pub struct CodeAction {
     pub description: String,
     pub changes: Vec<lsproto::TextEdit>,
     pub fix_id: String,
+    pub fix_name: Option<String>,
+    pub changes_by_file: Vec<(lsproto::DocumentUri, Vec<lsproto::TextEdit>)>,
     pub fix_all_description: String,
 }
 
 impl CodeAction {
+    pub fn workspace_edit(&self, uri: &lsproto::DocumentUri) -> lsproto::WorkspaceEdit {
+        let mut changes = OrderedMap::default();
+        if !self.changes.is_empty() {
+            changes.insert(uri.clone(), self.changes.clone());
+        }
+        for (uri, edits) in &self.changes_by_file {
+            changes.entry(uri.clone()).or_default().extend(edits.iter().cloned());
+        }
+        lsproto::WorkspaceEdit { changes: Some(changes), ..Default::default() }
+    }
+
     // codeactions.go:49
     // Compare defines a total ordering for CodeAction values, comparing description
     // then text edits lexicographically. Used with slices.BinarySearchFunc.
@@ -73,6 +87,24 @@ impl CodeAction {
         }) {
             return result;
         }
+        let c = self.changes_by_file.len().cmp(&b.changes_by_file.len());
+        if c != Ordering::Equal {
+            return c;
+        }
+        for ((uri, edits), (other_uri, other_edits)) in
+            self.changes_by_file.iter().zip(&b.changes_by_file)
+        {
+            let c = uri.cmp(other_uri).then_with(|| edits.len().cmp(&other_edits.len()));
+            if c != Ordering::Equal {
+                return c;
+            }
+            for (edit, other) in edits.iter().zip(other_edits) {
+                let c = edit.compare(other);
+                if c != Ordering::Equal {
+                    return c;
+                }
+            }
+        }
         Ordering::Equal
     }
 }
@@ -87,6 +119,17 @@ fn go_compare<T: Ord + ?Sized>(a: &T, b: &T) -> Ordering {
 pub struct CombinedCodeActions {
     pub description: String,
     pub changes: Vec<lsproto::TextEdit>,
+    pub changes_by_file: Vec<(lsproto::DocumentUri, Vec<lsproto::TextEdit>)>,
+}
+impl CombinedCodeActions {
+    pub fn workspace_edit(&self, uri: &lsproto::DocumentUri) -> lsproto::WorkspaceEdit {
+        CodeAction {
+            changes: self.changes.clone(),
+            changes_by_file: self.changes_by_file.clone(),
+            ..Default::default()
+        }
+        .workspace_edit(uri)
+    }
 }
 
 // codeactions.go:72
@@ -98,7 +141,10 @@ fn code_fix_providers() -> &'static [&'static CodeFixProvider] {
             &*crate::codeactions_importfixes::IMPORT_FIX_PROVIDER,
             &*crate::codeactions_fixmissingtypeannotation::ISOLATED_DECLARATIONS_FIX_PROVIDER,
             &*crate::codeactions_fixclassincorrectlyimplementsinterface::FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_PROVIDER,
-            // Add more code fix providers here as they are implemented
+            &crate::codeactions_usage::IMPLICIT_THIS_PROVIDER,
+            &crate::codeactions_usage::INFER_USAGE_PROVIDER,
+            &crate::codeactions_usage::MISSING_PARAMETER_PROVIDER,
+            &crate::codeactions_usage::MISSING_MEMBER_PROVIDER,
         ]
         },
     );
@@ -155,6 +201,7 @@ impl LanguageService {
                 source_file: file,
                 span: TextRange::default(),
                 error_code: 0,
+                fix_id: Some(fix_id),
                 program,
                 ls: self,
                 diagnostic: None,
@@ -188,6 +235,7 @@ impl LanguageService {
                     source_file: mapped.script,
                     span: mapped.span,
                     error_code,
+                    fix_id: None,
                     program,
                     ls: self,
                     diagnostic: Some(diagnostic),
@@ -283,14 +331,7 @@ impl LanguageService {
     ) -> Result<Vec<lsproto::CommandOrCodeAction>, lsproto::Error> {
         let mut actions = Vec::new();
 
-        // Deduplicate providers; multiple fixIds may map to the same provider.
-        let mut seen: Vec<&'static CodeFixProvider> = Vec::new();
-        for &provider in fix_id_seen.values() {
-            if seen.iter().any(|&p| std::ptr::eq(p, provider)) {
-                continue;
-            }
-            seen.push(provider);
-
+        for (fix_id, &provider) in fix_id_seen {
             let Some(get_all_code_actions) = provider.get_all_code_actions else {
                 continue;
             };
@@ -303,6 +344,7 @@ impl LanguageService {
                 source_file: file,
                 span: TextRange::default(),
                 error_code: 0,
+                fix_id: Some(fix_id),
                 program,
                 ls: self,
                 diagnostic: None,
@@ -310,18 +352,14 @@ impl LanguageService {
             };
             let combined = get_all_code_actions(ctx, &fix_context)?;
             if let Some(combined) = combined {
-                if !combined.changes.is_empty() {
+                if !combined.changes.is_empty() || !combined.changes_by_file.is_empty() {
                     let kind = lsproto::CodeActionKind::QuickFix;
-                    let mut changes = OrderedMap::default();
-                    changes.insert(uri.clone(), combined.changes);
+                    let edit = combined.workspace_edit(uri);
                     actions.push(lsproto::CommandOrCodeAction {
                         code_action: Some(lsproto::CodeAction {
                             title: combined.description,
                             kind: Some(kind),
-                            edit: Some(lsproto::WorkspaceEdit {
-                                changes: Some(changes),
-                                ..Default::default()
-                            }),
+                            edit: Some(edit),
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -356,6 +394,7 @@ impl LanguageService {
                 source_file: file,
                 span: TextRange::default(),
                 error_code: 0,
+                fix_id: None,
                 program,
                 ls: self,
                 diagnostic: None,
@@ -364,8 +403,10 @@ impl LanguageService {
 
             let combined = get_all_code_actions(ctx, &fix_context)?;
             if let Some(combined) = combined {
-                if !combined.changes.is_empty() {
-                    lsp_changes.entry(uri.clone()).or_default().extend(combined.changes);
+                if let Some(changes) = combined.workspace_edit(uri).changes {
+                    for (uri, edits) in changes {
+                        lsp_changes.entry(uri).or_default().extend(edits);
+                    }
                 }
             }
         }
@@ -543,15 +584,13 @@ fn convert_to_lsp_code_action(
     uri: &lsproto::DocumentUri,
 ) -> lsproto::CommandOrCodeAction {
     let kind = lsproto::CodeActionKind::QuickFix;
-    let mut changes = OrderedMap::default();
-    changes.insert(uri.clone(), action.changes.clone());
     let diagnostics = vec![diag.clone()];
 
     lsproto::CommandOrCodeAction {
         code_action: Some(lsproto::CodeAction {
             title: action.description.clone(),
             kind: Some(kind),
-            edit: Some(lsproto::WorkspaceEdit { changes: Some(changes), ..Default::default() }),
+            edit: Some(action.workspace_edit(uri)),
             diagnostics: Some(diagnostics),
             ..Default::default()
         }),

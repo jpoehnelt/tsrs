@@ -89,6 +89,8 @@ fn get_code_actions_to_fix_class_incorrectly_implements_interface(
                 .localize(&[&scanner::get_text_of_node(implemented_type_node)]),
             changes,
             fix_id: FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_FIX_ID.to_string(),
+            fix_name: None,
+            changes_by_file: Vec::new(),
             fix_all_description: diagnostics::Implement_all_unimplemented_interfaces.localize(&[]),
         });
     }
@@ -148,6 +150,7 @@ fn get_all_code_actions_to_fix_class_incorrectly_implements_interface(
     }
 
     Ok(Some(CombinedCodeActions {
+        changes_by_file: Vec::new(),
         description: diagnostics::Implement_all_unimplemented_interfaces.localize(&[]),
         changes,
     }))

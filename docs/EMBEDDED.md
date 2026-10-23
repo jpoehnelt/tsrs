@@ -13,7 +13,7 @@ and calls `collectIdle`; WASM has no watcher or timer thread.
 ## Editor operations
 
 `editor` takes `{snapshot, project, file, operation, request, preferences?}`. `request` uses
-LSP UTF-16 positions for hover, completion, completionResolve, definition, references, rename,
+LSP UTF-16 positions for hover, quickInfo, completion, completionResolve, definition, references, rename,
 renameInfo, signatureHelp, symbols, format, inlayHints, codeActions, and codeFixes.
 
 - `signatureHelp` additionally returns the true `argumentIndex`, `argumentCount`, and UTF-16
@@ -21,8 +21,16 @@ renameInfo, signatureHelp, symbols, format, inlayHints, codeActions, and codeFix
 - `codeFixes` preserves provider `fixId` and `fixAllDescription` alongside its workspace edit.
   `supportedCodeFixes` returns registered diagnostic codes without checking the project.
 - `combinedCodeFix` takes `{fixId}` and calls that provider only. Unknown IDs produce an error.
-  The available compiler providers remain imports, isolated-declaration annotations, and
-  incorrectly implemented interfaces; this fork does not add TypeScript 5's parameter-inference provider.
+  Providers include imports, isolated-declaration annotations, incorrectly implemented interfaces,
+  parameter and `this` usage inference, missing required/optional parameters, missing interface
+  methods/properties/index signatures, and implicit-`this` arrow conversion. Usage inference and
+  missing-parameter providers support their own fix-all IDs and retain cross-file edits. These
+  editor providers follow TypeScript 5.9; this is not the complete TypeScript code-fix catalogue.
+- `quickInfo` preserves the TypeScript 5 display budget and called-property presentation; `hover`
+  retains the native expandable-hover behavior. CommonJS assignment navigation and constructor
+  function instance members are available to embedded editor queries.
+- Integer formatting preferences accept both binary integer and JSON numeric representations,
+  including explicit zero indentation. Position conversion and edit ownership stay native.
 - `refactors` takes `{start, end}` in absolute UTF-16 offsets. It offers expression extraction
   to a global function or an enclosing-block constant, and concatenation-to-template rewriting.
   These are tsrs-only file-local providers. Context-sensitive selections are rejected; this

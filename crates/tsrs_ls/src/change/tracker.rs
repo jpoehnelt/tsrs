@@ -995,7 +995,7 @@ impl Tracker {
         }
 
         let mut indent_size = self.format_settings.indent_size;
-        if indent_size <= 0 {
+        if indent_size < 0 {
             indent_size = 4;
         }
         find_indentation_column(source_file.text(), line_start, node_start, tab_size).unwrap_or(0)

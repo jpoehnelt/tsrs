@@ -1359,8 +1359,10 @@ pub(crate) fn set_field_from_value(field: FieldMut<'_>, val: &Value) {
         }
         FieldMut::Int(f) => {
             // Go accepts int and float64; JSON numbers are float64.
-            if let Value::Number(v) = val {
-                *f = *v as i64 as i32;
+            match val {
+                Value::Number(v) => *f = *v as i64 as i32,
+                Value::Integer(v) => *f = *v as i32,
+                _ => {}
             }
         }
         FieldMut::String(f) => {

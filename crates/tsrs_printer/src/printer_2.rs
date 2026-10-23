@@ -2510,9 +2510,82 @@ impl Printer {
 //
 
 impl Printer {
-    pub(crate) fn emit_jsdoc_node(_node: P<Node>) {
-        // !!!
-        panic!("not implemented");
+    // TypeScript 5.9 printer JSDoc emission, used by language-service edits.
+    pub(crate) fn emit_jsdoc_node(&mut self, node: P<Node>) {
+        match node.kind() {
+            Kind::JSDoc => {
+                let doc = node.as_jsdoc();
+                self.writer().write("/**");
+                let comment = doc.comment.nodes().iter().map(|n| n.text()).collect::<String>();
+                for line in comment.lines() {
+                    self.write_line();
+                    self.writer().write(" * ");
+                    self.writer().write(line);
+                }
+                let tags = doc.tags.map_or(&[][..], |tags| tags.nodes());
+                if comment.is_empty() && tags.len() == 1 && tags[0].kind() == Kind::JSDocTypeTag {
+                    self.write_space();
+                    self.emit_jsdoc_node(tags[0]);
+                } else if doc.tags.is_some() {
+                    self.emit_list(
+                        Printer::emit_jsdoc_node,
+                        node,
+                        doc.tags,
+                        ListFormat::JSDocComment,
+                    );
+                }
+                self.write_space();
+                self.writer().write("*/");
+            }
+            Kind::JSDocTypeExpression => {
+                self.writer().write("{");
+                self.emit_type_node_outside_extends(node.as_jsdoc_type_expression().type_);
+                self.writer().write("}");
+            }
+            Kind::JSDocText | Kind::JSDocLink | Kind::JSDocLinkCode | Kind::JSDocLinkPlain => {
+                self.writer().write(node.text());
+            }
+            _ => {
+                self.writer().write("@");
+                self.emit_identifier_name(node.tag_name());
+                if matches!(
+                    node.kind(),
+                    Kind::JSDocParameterTag
+                        | Kind::JSDocPropertyTag
+                        | Kind::JSDocThisTag
+                        | Kind::JSDocTypeTag
+                        | Kind::JSDocReturnTag
+                        | Kind::JSDocThrowsTag
+                        | Kind::JSDocSatisfiesTag
+                ) {
+                    if let Some(expression) = node.type_expression() {
+                        self.write_space();
+                        self.emit_jsdoc_node(expression);
+                    }
+                }
+                if matches!(node.kind(), Kind::JSDocParameterTag | Kind::JSDocPropertyTag) {
+                    let param = node.as_jsdoc_parameter_or_property_tag();
+                    self.write_space();
+                    if param.is_bracketed {
+                        self.writer().write("[");
+                    }
+                    self.emit_identifier_name(param.name);
+                    if param.is_bracketed {
+                        self.writer().write("]");
+                    }
+                } else if let Some(name) = node.name() {
+                    self.write_space();
+                    self.emit_identifier_name(name);
+                }
+                if let Some(comment) = node.comment_list() {
+                    let text = comment.nodes().iter().map(|n| n.text()).collect::<String>();
+                    if !text.is_empty() {
+                        self.write_space();
+                        self.writer().write(&text);
+                    }
+                }
+            }
+        }
     }
 }
 

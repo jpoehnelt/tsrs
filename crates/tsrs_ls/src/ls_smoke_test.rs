@@ -603,3 +603,114 @@ fn semantic_tokens_property_of_lazily_resolved_interface() {
         r#"{"data":[0,10,1,3,1,0,2,1,5,1,0,6,1,7,1,0,12,1,3,0,0,2,1,5,0,0,4,3,9,1,0,5,1,3,0,0,2,1,5,0,0,4,3,14,1,1,17,6,13,1,0,7,1,5,1,0,3,1,7,1,0,3,1,5,0,0,4,1,3,0,0,2,1,5,0,1,0,6,13,0,0,10,3,9,0,0,4,3,14,0]}"#
     );
 }
+
+#[test]
+fn embedded_usage_inference_edits_and_unicode_positions() {
+    let text = "// 🧪\nfunction repeat(value) { return value.repeat(2); } repeat('x');";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let start = text.find("value)").unwrap() as u32;
+    let fix = crate::codeactions::CodeFixContext {
+        source_file: file,
+        span: tsrs_core::TextRange::new(start, start + 5),
+        error_code: 7006,
+        fix_id: None,
+        program: ls.get_program(),
+        ls: &ls,
+        diagnostic: None,
+        params: None,
+    };
+    let actions =
+        (crate::codeactions_usage::INFER_USAGE_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].fix_name.as_deref(), Some("inferFromUsage"));
+    let edits = &actions[0].changes_by_file[0].1;
+    assert!(edits.iter().any(|e| e.new_text.contains("@param {string} value")), "{edits:?}");
+    assert!(edits.iter().all(|e| e.range.start.line >= 1));
+}
+
+#[test]
+fn embedded_commonjs_export_assignment_symbol() {
+    let text = "!function(root, factory) { typeof module !== 'undefined' ? module.exports = factory() : root.library = factory(); }(this, function() { function library() {} library.version = '1'; return library; });";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let node =
+        crate::astnav::get_touching_property_name(file, text.find("exports").unwrap() as u32 + 1);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let symbol = c.get_symbol_at_location_exported(node).unwrap();
+    assert!(
+        symbol.declarations().iter().any(|d| tsrs_ast::is_binary_expression(*d)),
+        "{:?}",
+        symbol.declarations().iter().map(|d| d.kind()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn embedded_constructor_this_has_instance_fields() {
+    let text = "function Item(n) { this._n = n; this._data = {}; this._bubble(); }";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let node =
+        crate::astnav::get_touching_property_name(file, text.find("this._bubble").unwrap() as u32);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let t = c.get_type_at_location(node);
+    let names: Vec<_> = c.get_properties_of_type(t).iter().map(|s| s.name()).collect();
+    assert!(names.contains(&"_n") && names.contains(&"_data"), "{names:?}");
+}
+
+#[test]
+fn embedded_quick_info_budget_isolated_from_normal_serialization() {
+    use std::cell::Cell;
+    use tsrs_checker::{self as checker, Flags, InternalFlags, VerbosityContext};
+    let members =
+        (0..32).map(|i| format!("readonly PROPERTY_{i}: Item;")).collect::<Vec<_>>().join("\n");
+    let declarations = format!(
+        "declare namespace Catalog {{ type Item = {{readonly brand: unique symbol}}; const Item: {{ {members} }}; }}"
+    );
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true},"files":["index.ts","types.d.ts"]}"#,
+        ),
+        ("/index.ts", "Catalog.Item;"),
+        ("/types.d.ts", &declarations),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let node = crate::astnav::get_touching_property_name(file, 9);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let typ = c.get_type_at_location(node);
+    let builder = checker::new_node_builder(&c, tsrs_printer::new_emit_context());
+    let flags = Flags::MultilineObjectLiterals | Flags::UseAliasDefinedOutsideCurrentScope;
+    builder
+        .type_to_type_node(&mut c, typ, Some(file.as_node()), flags, InternalFlags::None, None)
+        .unwrap();
+    builder.verbosity.set(Some(P::new(VerbosityContext {
+        level: Cell::new(0),
+        max_truncation_length: Cell::new(500),
+        disable_expansion: true,
+        can_increase_verbosity: Cell::new(false),
+        truncated: Cell::new(false),
+    })));
+    let display = builder
+        .type_to_type_node(&mut c, typ, Some(file.as_node()), flags, InternalFlags::None, None)
+        .unwrap();
+    assert_eq!(display.as_type_literal_node().members.nodes().len(), 13);
+}

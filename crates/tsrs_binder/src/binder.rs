@@ -1813,7 +1813,10 @@ impl Binder {
         let mut symbol_table = None;
         match this_container.kind() {
             Kind::FunctionDeclaration | Kind::FunctionExpression => {
-                // !!! constructor functions
+                class_symbol = this_container.symbol();
+                if let Some(symbol) = class_symbol {
+                    symbol_table = Some(ast::get_members(symbol));
+                }
             }
             Kind::Constructor
             | Kind::PropertyDeclaration

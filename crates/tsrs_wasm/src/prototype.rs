@@ -207,6 +207,7 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
     let position = || -> ApiResult<lsp::Position> { decode(Params(request).get("position")) };
     let result: Result<Value, lsp::Error> = match p.str("operation")? {
         "hover" => ls.provide_hover(&ctx, &decode(request)?).map(|v| v.to_json()),
+        "quickInfo" => ls.provide_quick_info(&ctx, &decode(request)?).map(|v| v.to_json()),
         "completion" => {
             let r: lsp::CompletionParams = decode(request)?;
             ls.provide_completion(&ctx, &uri, r.position, r.context.as_ref()).map(|v| v.to_json())
@@ -269,22 +270,25 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
                             .set("description", Value::String(action.description.clone()))
                             .set(
                                 "fixName",
-                                Value::String(if action.fix_id.is_empty() {
-                                    action.description
-                                } else {
-                                    action.fix_id.clone()
-                                }),
+                                Value::String(action.fix_name.clone().unwrap_or_else(|| {
+                                    if action.fix_id.is_empty() {
+                                        action.description.clone()
+                                    } else {
+                                        action.fix_id.clone()
+                                    }
+                                })),
                             )
                             .set_opt(
                                 "fixId",
-                                (!action.fix_id.is_empty()).then(|| Value::String(action.fix_id)),
+                                (!action.fix_id.is_empty())
+                                    .then(|| Value::String(action.fix_id.clone())),
                             )
                             .set_opt(
                                 "fixAllDescription",
                                 (!action.fix_all_description.is_empty())
-                                    .then(|| Value::String(action.fix_all_description)),
+                                    .then(|| Value::String(action.fix_all_description.clone())),
                             )
-                            .set("edit", workspace_edit(&uri, action.changes))
+                            .set("edit", action.workspace_edit(&uri).to_json())
                             .build()
                     })
                     .collect(),
@@ -292,7 +296,10 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
         }),
         "combinedCodeFix" => {
             ls.embedded_combined_code_fix(&ctx, &uri, Params(request).str("fixId")?).map(|action| {
-                workspace_edit(&uri, action.map(|action| action.changes).unwrap_or_default())
+                action.map_or_else(
+                    || workspace_edit(&uri, Vec::new()),
+                    |action| action.workspace_edit(&uri).to_json(),
+                )
             })
         }
         "refactors" => {
