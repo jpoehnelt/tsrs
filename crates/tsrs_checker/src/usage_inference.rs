@@ -91,6 +91,10 @@ impl Inference<'_> {
             visit(self.c, scope, name.text(), symbol, &mut matches);
         } else if !name.text().is_empty() {
             for &file in self.files {
+                // Reuse the source-owned identifier set; unrelated declarations need no text scan.
+                if !file.has_identifier(name.text()) {
+                    continue;
+                }
                 let text = file.text();
                 // Escaped identifiers need the original AST walk, not a literal text search.
                 if text.contains("\\u") {
