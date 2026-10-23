@@ -92,3 +92,27 @@ The editor API includes const-to-let, unused-identifier deletion/prefixing, miss
 An embedding host can pass `readOnlyFiles` as a string array in an `editor` request. These are file identities, not compiler observations. Native language-service policy excludes default libraries, external libraries and these explicit roots from missing-member declaration edits. User-owned declaration interfaces remain eligible. Omitting the array preserves normal program library classification.
 
 Unused and unreachable suggestions must be included with syntactic and semantic diagnostics when a host requests `codeFixes`. The native providers use the same dispatch for those categories. Focused native cleanup/fix-all and explicit-read-only-root regressions cover the added paths.
+
+## Additional TypeScript 5 editor repairs
+
+The native providers also cover local syntax repairs, missing `await`/`new`/`super`, return
+corrections, property initialization, abstract members, mapped types, JSDoc migrations and
+module/import repairs. Constructor-function and simple Promise-`then` migrations use compiler
+bindings and synthesized nodes. Fix-all requests enumerate eligible native syntax when the
+TypeScript 7 checker does not emit the corresponding TypeScript 5 suggestion. This is sampled
+compatibility work, not exhaustive coverage of every branch of every TypeScript provider.
+
+A planner retains the emit context associated with its synthesized nodes. Alternative actions
+share that metadata but have independent edit lists, preserving generated identifiers and
+formatting flags. Unused-declaration fix-all removes nested deletion plans when an enclosing
+declaration is already being deleted; the tracker's overlap checks remain enabled.
+
+An embedded host can set the `configurationFileName` preference to the original configuration
+file in its virtual filesystem. Configuration fixes parse that JSON source natively and edit its
+original URI and offsets. Synthetic host configuration files should be included in
+`readOnlyFiles`. No compiler observations or expected edits are accepted through this preference.
+
+Focused native regressions cover suggestions without native diagnostics, multiple code-fix
+alternatives, generated-name metadata, retained prototype methods and nested unused declarations.
+The independent consumer catalogue also compares individual and combined edits without changing
+its oracle answers. These checks do not establish complete provider or upstream conformance.

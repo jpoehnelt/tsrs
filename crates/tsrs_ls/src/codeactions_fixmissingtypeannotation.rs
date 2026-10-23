@@ -197,9 +197,10 @@ fn get_all_isolated_declarations_code_actions(
     }
 
     let (mut changes, _) = change_tracker.get_changes();
-    let file_changes = changes
+    let mut file_changes = changes
         .shift_remove(crate::lsconv::Script::original_file_name(&fix_context.source_file))
         .unwrap_or_default();
+    file_changes.dedup();
     if file_changes.is_empty() {
         return Ok(None);
     }
@@ -251,10 +252,11 @@ fn try_code_action(
     }
 
     let (mut changes, _) = change_tracker.get_changes();
-    let file_changes = changes
+    let mut file_changes = changes
         .shift_remove(crate::lsconv::Script::original_file_name(&fix_context.source_file))
         .unwrap_or_default();
 
+    file_changes.dedup();
     if file_changes.is_empty() {
         return None;
     }
@@ -263,7 +265,7 @@ fn try_code_action(
         description,
         changes: file_changes,
         fix_id: FIX_MISSING_TYPE_ANNOTATION_ON_EXPORTS_FIX_ID.to_string(),
-        fix_name: None,
+        fix_name: Some("add-annotation".into()),
         changes_by_file: Vec::new(),
         fix_all_description: diagnostics::Add_all_missing_type_annotations.localize(&[]),
     })
@@ -592,6 +594,12 @@ impl isolatedDeclarationsFixer<'_> {
     // codeactions_fixmissingtypeannotation.go:568
     fn fix_isolated_declaration_error(&mut self, node: P<Node>) -> String {
         // Avoid creating duplicate fixes for the same node
+        if matches!(
+            node.kind(),
+            Kind::Parameter | Kind::PropertyDeclaration | Kind::VariableDeclaration
+        ) {
+            return self.add_type_to_variable_like(node);
+        }
         let fixed = self.fixed_nodes.entry(node).or_default();
         if *fixed {
             return String::new();
@@ -1442,6 +1450,9 @@ impl isolatedDeclarationsFixer<'_> {
 
     // codeactions_fixmissingtypeannotation.go:1262
     fn add_type_to_variable_like(&mut self, decl: P<Node>) -> String {
+        if self.fixed_nodes.insert(decl, true) == Some(true) {
+            return String::new();
+        }
         let Some(type_node) = self.infer_type(decl, None) else {
             return String::new();
         };
@@ -1449,14 +1460,6 @@ impl isolatedDeclarationsFixer<'_> {
             self.change_tracker.replace_node(self.source_file, decl_type, type_node, None);
         } else {
             self.change_tracker.try_insert_type_annotation(self.source_file, decl, type_node);
-            // Parenthesize paren-less arrow function parameters (`x => ...`) so the inserted `: T`
-            // produces `(x: T) => ...` instead of the invalid `x: T => ...`. Queued after the type
-            // annotation so that the `)` edit at param.End() sorts after the annotation insertion.
-            if ast::is_parameter_declaration(decl) {
-                if let Some(parent) = decl.parent().filter(|p| ast::is_arrow_function(*p)) {
-                    self.change_tracker.parenthesize_arrow_parameters(self.source_file, parent);
-                }
-            }
         }
         diagnostics::Add_annotation_of_type_0.localize(&[&type_to_string_for_diag(
             type_node,
@@ -1697,7 +1700,7 @@ fn type_param_has_default(tp: P<Type>) -> bool {
 // It reuses the change tracker's EmitContext so that generated identifier names are resolved
 // consistently with the actual code edits, and passes the source file so that the printer's
 // name generator can check for conflicts with existing file-level identifiers.
-fn type_to_string_for_diag(
+pub(crate) fn type_to_string_for_diag(
     type_node: P<Node>,
     source_file: P<SourceFile>,
     ct: &change::Tracker,

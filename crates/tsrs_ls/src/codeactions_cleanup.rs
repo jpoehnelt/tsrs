@@ -565,6 +565,16 @@ fn apply(ctx: &Context, fix: &CodeFixContext, changes: &mut change::Tracker, edi
     }
 }
 fn delete(changes: &mut change::Tracker, file: P<SourceFile>, node: P<Node>) {
+    if ast::is_property_declaration(node) {
+        changes.delete_range(
+            file,
+            TextRange::new(
+                node.pos().expect_source("property trivia"),
+                node.end().expect_source("property end"),
+            ),
+        );
+        return;
+    }
     if ast::is_parameter_declaration(node)
         && node.parent().is_some_and(|f| {
             f.kind() == Kind::ArrowFunction
@@ -645,6 +655,7 @@ fn all_actions(
     let mut changes = tracker(ctx, fix);
     let mut seen = FxHashSet::default();
     let mut description = String::new();
+    let mut pending = Vec::new();
     for diagnostic in crate::diagnostics::get_all_diagnostics(ctx, fix.program, fix.source_file) {
         if !crate::codeactions::is_fixable_diagnostic(diagnostic, CLEANUP_PROVIDER.error_codes) {
             continue;
@@ -655,10 +666,61 @@ fn all_actions(
         let local = CodeFixContext { span, error_code: diagnostic.code(), ..*fix };
         for plan in plans(ctx, &local, true).into_iter().filter(|p| Some(p.id) == fix.fix_id) {
             if seen.insert(plan.key()) {
-                apply(ctx, &local, &mut changes, &plan.edit);
-                description = plan.all_description.into();
+                pending.push((span, diagnostic.code(), plan));
             }
         }
+    }
+    if fix.fix_id == Some("unusedIdentifier_delete") {
+        fn private_fields(n: P<Node>, out: &mut Vec<P<Node>>) {
+            if ast::is_property_declaration(n) && n.name().is_some_and(ast::is_private_identifier) {
+                out.push(n);
+            }
+            n.for_each_child(&mut |child| {
+                private_fields(child, out);
+                false
+            });
+        }
+        let mut fields = Vec::new();
+        private_fields(fix.source_file.as_node(), &mut fields);
+        for field in fields {
+            let name = field.name().unwrap();
+            // An invalid bare private identifier is not a read of the instance field.
+            if !symbol_references_in_file(ctx, fix, name).iter().any(|n| {
+                n.parent()
+                    .is_some_and(|p| ast::is_property_access_expression(p) && p.name() == Some(*n))
+            }) {
+                let span = TextRange::new(
+                    astnav::get_start_of_node(name, fix.source_file, false),
+                    name.end().expect_source("private declaration"),
+                );
+                let local = CodeFixContext { span, error_code: 6133, ..*fix };
+                for p in plans(ctx, &local, true)
+                    .into_iter()
+                    .filter(|p| p.id == "unusedIdentifier_delete")
+                {
+                    if seen.insert(p.key()) {
+                        pending.push((span, 6133, p));
+                    }
+                }
+            }
+        }
+    }
+    for (span, error_code, plan) in &pending {
+        // A declaration deletion subsumes its parameters, locals and member diagnostics.
+        // Keep the tracker overlap invariant: do not schedule competing edits at all.
+        let key = plan.key();
+        if pending.iter().any(|(_, _, ancestor)| {
+            let (Edit::Delete(root) | Edit::DeleteUnused { declaration: root, .. }) = ancestor.edit
+            else {
+                return false;
+            };
+            root != key && ast::find_ancestor(key, |n| n == root).is_some()
+        }) {
+            continue;
+        }
+        let local = CodeFixContext { span: *span, error_code: *error_code, ..*fix };
+        apply(ctx, &local, &mut changes, &plan.edit);
+        description = plan.all_description.into();
     }
     let changes_by_file = edits(&mut changes);
     Ok((!changes_by_file.is_empty()).then(|| CombinedCodeActions {

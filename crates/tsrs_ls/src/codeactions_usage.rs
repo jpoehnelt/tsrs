@@ -20,8 +20,8 @@ pub static IMPLICIT_THIS_PROVIDER: CodeFixProvider = CodeFixProvider {
     requires_auto_imports: false,
     error_codes: &[2683],
     get_code_actions: implicit_this,
-    fix_ids: &[],
-    get_all_code_actions: None,
+    fix_ids: &["fixImplicitThis"],
+    get_all_code_actions: Some(implicit_this_all),
 };
 pub static MISSING_PARAMETER_PROVIDER: CodeFixProvider = CodeFixProvider {
     requires_auto_imports: false,
@@ -32,10 +32,10 @@ pub static MISSING_PARAMETER_PROVIDER: CodeFixProvider = CodeFixProvider {
 };
 pub static MISSING_MEMBER_PROVIDER: CodeFixProvider = CodeFixProvider {
     requires_auto_imports: false,
-    error_codes: &[2339],
+    error_codes: &[2339, 2304],
     get_code_actions: missing_member,
-    fix_ids: &[],
-    get_all_code_actions: None,
+    fix_ids: &["fixMissingMember", "fixMissingFunctionDeclaration"],
+    get_all_code_actions: Some(missing_member_all),
 };
 fn tracker(ctx: &Context, fix: &CodeFixContext) -> change::Tracker {
     change::new_tracker(
@@ -87,11 +87,12 @@ fn type_node(
         None,
     )
 }
-fn add_jsdoc(
+pub(crate) fn update_jsdoc(
     changes: &mut change::Tracker,
     file: P<SourceFile>,
     node: P<Node>,
-    new_tags: Vec<P<Node>>,
+    new_tags: &[P<Node>],
+    retain_existing_tags: bool,
 ) {
     let docs = node.jsdoc(None);
     let mut tags = Vec::new();
@@ -100,7 +101,7 @@ fn add_jsdoc(
     let ranges = tsrs_parser::get_jsdoc_comment_ranges(&mut factory, &[], node, file.text());
     for (&doc, range) in docs.iter().zip(ranges) {
         comment.extend_from_slice(doc.as_jsdoc().comment.nodes());
-        if let Some(old) = doc.as_jsdoc().tags {
+        if let Some(old) = doc.as_jsdoc().tags.filter(|_| retain_existing_tags) {
             tags.extend_from_slice(old.nodes());
         }
         let (start, end) = (range.pos(), range.end());
@@ -114,7 +115,7 @@ fn add_jsdoc(
         };
         changes.delete_range(file, TextRange::new(start as u32, end));
     }
-    for tag in new_tags {
+    for &tag in new_tags {
         if let Some(existing) = tags.iter_mut().find(|old| {
             old.kind() == tag.kind()
                 && (old.kind() != Kind::JSDocParameterTag
@@ -152,11 +153,46 @@ fn infer_function(
     if include_this {
         let t = c.infer_this_from_usage(function, fix.program.get_source_files());
         if let Some(typ) = type_node(&mut c, changes, t, function) {
-            tags.push(changes.new_jsdoc_this_tag(
-                changes.new_identifier("this"),
-                changes.new_jsdoc_type_expression(typ),
-                None,
-            ));
+            if ast::is_in_js_file(function) {
+                tags.push(changes.new_jsdoc_this_tag(
+                    changes.new_identifier("this"),
+                    changes.new_jsdoc_type_expression(typ),
+                    None,
+                ));
+            } else {
+                let at = function.parameters().first().copied().map_or_else(
+                    || {
+                        astnav::get_token_at_position(
+                            fix.source_file,
+                            function.parameter_list().unwrap().end().expect_source("parameters"),
+                        )
+                        .pos()
+                        .expect_source("closing parenthesis")
+                    },
+                    |p| bounds(fix.source_file, p).0,
+                );
+                let parameter = changes.new_parameter_declaration(
+                    None,
+                    None,
+                    changes.new_identifier("this"),
+                    None,
+                    Some(typ),
+                    None,
+                );
+                changes.insert_node_at(
+                    fix.source_file,
+                    at,
+                    parameter,
+                    change::NodeOptions {
+                        suffix: if function.parameters().is_empty() {
+                            String::new()
+                        } else {
+                            ", ".into()
+                        },
+                        ..Default::default()
+                    },
+                );
+            }
         }
     }
     if include_parameters {
@@ -175,16 +211,18 @@ fn infer_function(
             {
                 continue;
             }
-            if !param.jsdoc(None).is_empty()
-                || function.jsdoc(None).iter().any(|doc| {
-                    doc.as_jsdoc().tags.is_some_and(|tags| {
-                        tags.nodes().iter().any(|tag| {
-                            tag.kind() == Kind::JSDocParameterTag
-                                && tag.name().map(|n| n.text()) == param.name().map(|n| n.text())
-                                && tag.type_expression().is_some()
+            if ast::is_in_js_file(function)
+                && (!param.jsdoc(None).is_empty()
+                    || function.jsdoc(None).iter().any(|doc| {
+                        doc.as_jsdoc().tags.is_some_and(|tags| {
+                            tags.nodes().iter().any(|tag| {
+                                tag.kind() == Kind::JSDocParameterTag
+                                    && tag.name().map(|n| n.text())
+                                        == param.name().map(|n| n.text())
+                                    && tag.type_expression().is_some()
+                            })
                         })
-                    })
-                })
+                    }))
             {
                 continue;
             }
@@ -236,11 +274,15 @@ fn infer_function(
                 }
             } else {
                 changes.try_insert_type_annotation(fix.source_file, param, typ);
+                if bare_arrow && !inserted_arrow {
+                    changes.parenthesize_arrow_parameters(fix.source_file, function);
+                    inserted_arrow = true;
+                }
             }
         }
     }
     if !tags.is_empty() {
-        add_jsdoc(changes, fix.source_file, function, tags);
+        update_jsdoc(changes, fix.source_file, function, &tags, true);
     }
 }
 #[expect(
@@ -319,6 +361,9 @@ fn implicit_this(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>,
     else {
         return Ok(Vec::new());
     };
+    if ast::get_this_container(function, false, false).kind() == Kind::SourceFile {
+        return Ok(Vec::new());
+    }
     let mut changes = tracker(ctx, fix);
     let (start, _) = bounds(fix.source_file, function);
     let name = function.name().unwrap();
@@ -495,6 +540,9 @@ fn missing_parameter(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeActi
 )]
 fn missing_member(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>, lsp::Error> {
     let token = token(fix);
+    if fix.error_code == 2304 {
+        return Ok(missing_function(ctx, fix, token));
+    }
     let Some(access) = token
         .parent()
         .filter(|n| ast::is_property_access_expression(*n) && n.name() == Some(token))
@@ -503,10 +551,12 @@ fn missing_member(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>
     };
     let mut c = fix.program.get_type_checker_for_file(ctx, fix.source_file);
     let typ = c.get_type_at_location(access.expression().unwrap());
-    let Some(declaration) = typ
-        .symbol()
-        .and_then(|s| s.declarations().iter().copied().find(|n| ast::is_interface_declaration(*n)))
-    else {
+    let Some(declaration) = typ.symbol().and_then(|s| {
+        s.declarations()
+            .iter()
+            .copied()
+            .find(|n| ast::is_interface_declaration(*n) || ast::is_class_like(*n))
+    }) else {
         return Ok(Vec::new());
     };
     let file = ast::get_source_file_of_node(declaration).unwrap();
@@ -514,6 +564,36 @@ fn missing_member(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>
         return Ok(Vec::new());
     }
     let name = token.text();
+    if ast::is_class_like(declaration) {
+        let Some(call) = access
+            .parent()
+            .filter(|p| ast::is_call_expression(*p) && p.expression() == Some(access))
+        else {
+            return Ok(Vec::new());
+        };
+        let mut changes = tracker(ctx, fix);
+        let parameters =
+            method_parameters(&mut c, &changes, call, declaration, ast::is_in_js_file(declaration));
+        let body = unimplemented_body(&changes, "Method not implemented.");
+        let method = changes.new_method_declaration(
+            None,
+            None,
+            changes.new_identifier(name),
+            None,
+            None,
+            Some(changes.new_node_list(parameters)),
+            None,
+            None,
+            Some(body),
+        );
+        changes.insert_member_at_start(file, declaration, method);
+        let mut actions =
+            action(&mut changes, "fixMissingMember", format!("Declare method '{name}'"));
+        for a in &mut actions {
+            a.fix_id = "fixMissingMember".into();
+        }
+        return Ok(actions);
+    }
     let mut result = Vec::new();
     for kind in 0..3 {
         let mut changes = tracker(ctx, fix);
@@ -626,5 +706,154 @@ fn missing_parameter_all(
         description: description.to_string(),
         changes: Vec::new(),
         changes_by_file: all.into_iter().collect(),
+    }))
+}
+
+fn implicit_this_all(
+    ctx: &Context,
+    fix: &CodeFixContext,
+) -> Result<Option<crate::codeactions::CombinedCodeActions>, lsp::Error> {
+    let mut changes = tsrs_core::collections::OrderedMap::default();
+    for diagnostic in crate::diagnostics::get_all_diagnostics(ctx, fix.program, fix.source_file) {
+        if diagnostic.code() != 2683 {
+            continue;
+        }
+        let Some(span) = diagnostic.loc() else {
+            continue;
+        };
+        let local = CodeFixContext { span, error_code: 2683, ..*fix };
+        for action in implicit_this(ctx, &local)? {
+            for (uri, edits) in action.changes_by_file {
+                let current: &mut Vec<lsp::TextEdit> = changes.entry(uri).or_default();
+                for edit in edits {
+                    if !current.contains(&edit) {
+                        current.push(edit);
+                    }
+                }
+            }
+        }
+    }
+    Ok(Some(crate::codeactions::CombinedCodeActions {
+        changes_by_file: changes.into_iter().collect(),
+        ..Default::default()
+    }))
+}
+
+fn unimplemented_body(changes: &change::Tracker, message: &str) -> P<Node> {
+    let literal = changes.new_string_literal(changes.alloc_text(message), ast::TokenFlags::None);
+    let error = changes.new_new_expression(
+        changes.new_identifier("Error"),
+        None,
+        Some(changes.new_node_list(vec![literal])),
+    );
+    changes.new_block(changes.new_node_list(vec![changes.new_throw_statement(error)]), true)
+}
+fn method_parameters(
+    c: &mut Checker,
+    changes: &change::Tracker,
+    call: P<Node>,
+    location: P<Node>,
+    js: bool,
+) -> Vec<P<Node>> {
+    call.arguments()
+        .iter()
+        .enumerate()
+        .map(|(index, &arg)| {
+            let typ = if js {
+                None
+            } else {
+                let v = c.get_type_at_location(arg);
+                let v = c.get_base_type_of_literal_type(v);
+                let v = c.get_widened_type(v);
+                type_node(c, changes, v, location)
+            };
+            let name = if ast::is_identifier(arg) {
+                arg.text().to_string()
+            } else {
+                format!("arg{index}")
+            };
+            changes.new_parameter_declaration(
+                None,
+                None,
+                changes.new_identifier(changes.alloc_text(&name)),
+                None,
+                typ,
+                None,
+            )
+        })
+        .collect()
+}
+fn missing_function(ctx: &Context, fix: &CodeFixContext, name: P<Node>) -> Vec<CodeAction> {
+    if !ast::is_identifier(name) {
+        return Vec::new();
+    }
+    let Some(call) =
+        name.parent().filter(|p| ast::is_call_expression(*p) && p.expression() == Some(name))
+    else {
+        return Vec::new();
+    };
+    let mut c = fix.program.get_type_checker_for_file(ctx, fix.source_file);
+    if c.get_symbol_at_location_exported(name).is_some() {
+        return Vec::new();
+    }
+    let mut changes = tracker(ctx, fix);
+    let parameters = method_parameters(&mut c, &changes, call, call, ast::is_in_js_file(name));
+    let body = unimplemented_body(&changes, "Function not implemented.");
+    let function = changes.new_function_declaration(
+        None,
+        None,
+        Some(changes.new_identifier(name.text())),
+        None,
+        Some(changes.new_node_list(parameters)),
+        None,
+        None,
+        Some(body),
+    );
+    changes.insert_node_at(
+        fix.source_file,
+        fix.source_file.text().len() as u32,
+        function,
+        change::NodeOptions { prefix: "\n\n".into(), suffix: "\n".into(), ..Default::default() },
+    );
+    let mut actions = action(
+        &mut changes,
+        "fixMissingFunctionDeclaration",
+        format!("Add missing function declaration '{}'", name.text()),
+    );
+    for a in &mut actions {
+        a.fix_id = "fixMissingFunctionDeclaration".into();
+    }
+    actions
+}
+fn missing_member_all(
+    ctx: &Context,
+    fix: &CodeFixContext,
+) -> Result<Option<crate::codeactions::CombinedCodeActions>, lsp::Error> {
+    let mut changes = tsrs_core::collections::OrderedMap::default();
+    for diagnostic in crate::diagnostics::get_all_diagnostics(ctx, fix.program, fix.source_file) {
+        if !MISSING_MEMBER_PROVIDER.error_codes.contains(&diagnostic.code()) {
+            continue;
+        }
+        let Some(span) = diagnostic.loc() else {
+            continue;
+        };
+        let local = CodeFixContext { span, error_code: diagnostic.code(), ..*fix };
+        for a in missing_member(ctx, &local)?
+            .into_iter()
+            .filter(|a| Some(a.fix_name.as_deref().unwrap_or("")) == fix.fix_id)
+        {
+            for (file, edits) in a.changes_by_file {
+                let existing: &mut Vec<lsp::TextEdit> = changes.entry(file).or_default();
+                for edit in edits {
+                    if !existing.contains(&edit) {
+                        existing.push(edit);
+                    }
+                }
+            }
+        }
+    }
+    Ok(Some(crate::codeactions::CombinedCodeActions {
+        changes_by_file: changes.into_iter().collect(),
+        ..Default::default()
     }))
 }

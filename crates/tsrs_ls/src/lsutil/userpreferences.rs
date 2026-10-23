@@ -186,6 +186,8 @@ pub struct UserPreferences {
 
     // CustomConfigFileName specifies a custom config file name to use before defaulting to tsconfig.json/jsconfig.json.
     pub custom_config_file_name: String,
+    /// Original configuration source identity supplied by an embedded editor.
+    pub configuration_file_name: String,
 }
 
 // userpreferences.go:47 (the struct tags of UserPreferences and the structs it embeds, flattened in declaration order)
@@ -700,6 +702,7 @@ pub(crate) static USER_PREFERENCES_FIELD_TAGS: &[FieldTag] = &[
         "automaticTypeAcquisitionEnabled",
         "tsserver.automaticTypeAcquisition.enabled"
     ),
+    field_tag!(String, configuration_file_name, "configurationFileName", ""),
     field_tag!(String, custom_config_file_name, "customConfigFileName", "customConfigFileName"),
 ];
 

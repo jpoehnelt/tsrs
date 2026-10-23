@@ -194,10 +194,11 @@ fn test_user_preferences_field_table_covers_every_field() {
         disable_automatic_type_acquisition: _,
         automatic_type_acquisition_enabled: _,
         custom_config_file_name: _,
+        configuration_file_name: _,
     } = UserPreferences::default();
     // Leaf fields: 7 (EditorSettings) + 20 (FormatCodeSettings) + 8 (InlayHints) + 5 (CodeLens) + 43 (UserPreferences
     // without its three struct fields).
-    assert_eq!(USER_PREFERENCES_FIELD_TAGS.len(), 7 + 20 + 8 + 5 + 43);
+    assert_eq!(USER_PREFERENCES_FIELD_TAGS.len(), 7 + 20 + 8 + 5 + 44);
 
     // Every entry has a tag (collectFieldInfos panics otherwise).
     assert_eq!(field_info_cache().len(), USER_PREFERENCES_FIELD_TAGS.len());

@@ -98,7 +98,7 @@ fn get_import_code_actions(
                 description,
                 changes: edits,
                 fix_id: IMPORT_FIX_ID.to_string(),
-                fix_name: None,
+                fix_name: Some("import".to_string()),
                 changes_by_file: Vec::new(),
                 fix_all_description: diagnostics::Add_all_missing_imports.localize(&[]),
             })

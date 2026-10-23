@@ -1015,3 +1015,192 @@ fn embedded_quick_info_structured_documentation() {
         ]
     );
 }
+
+#[test]
+fn unused_fix_all_does_not_edit_descendants_of_deleted_declarations() {
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true,"noUnusedLocals":true,"noUnusedParameters":true},"files":["index.ts"]}"#,
+        ),
+        ("/index.ts", "export {}; class Obsolete { method(argument: number) {} }"),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let combined =
+        ls.embedded_combined_code_fix(&ctx, &uri, "unusedIdentifier_delete").unwrap().unwrap();
+    let edits = combined.workspace_edit(&uri).changes.unwrap();
+    assert_eq!(edits[&uri].len(), 1);
+    assert_eq!(edits[&uri][0].new_text, "");
+}
+
+#[test]
+fn embedded_local_syntax_repairs_use_parsed_nodes() {
+    for (text, code, name) in [
+        ("class Widget {} const instance = Widget();", 2348, "addMissingNewOperator"),
+        ("const options = {enabled = true};", 1312, "fixPropertyAssignment"),
+        ("const result = 'abc' as number;", 2352, "addConvertToUnknownForNonOverlappingTypes"),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"strict":true,"target":"esnext"},"files":["index.ts"]}"#,
+            ),
+            ("/index.ts", text),
+        ]);
+        let file = ls.get_program().get_source_file("/index.ts").unwrap();
+        let diagnostic = crate::diagnostics::get_all_diagnostics(&ctx, ls.get_program(), file)
+            .into_iter()
+            .find(|d| d.code() == code)
+            .unwrap();
+        let fixes = (crate::codeactions_syntax::SYNTAX_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: diagnostic.loc().unwrap(),
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        assert!(fixes.iter().any(|f| f.fix_name.as_deref() == Some(name)), "{name}");
+        let uri = lsconv::file_name_to_document_uri("/index.ts");
+        let all = ls.embedded_combined_code_fix(&ctx, &uri, name).unwrap().unwrap();
+        assert_ne!(
+            all.workspace_edit(&uri).changes.unwrap()[&uri],
+            [] as [tsrs_lsproto::TextEdit; 0]
+        );
+    }
+}
+
+#[test]
+fn embedded_provider_repairs_handle_suggestions_and_semantic_nodes() {
+    for (source, needle, code, name) in [
+        ("const same = 4 === NaN;", "4", 2845, "fixNaNEquality"),
+        (
+            "class A {} class B extends A { constructor() {} }",
+            "constructor",
+            2377,
+            "constructorForDerivedNeedSuperCall",
+        ),
+        ("class Unit { size: number; }", "size", 2564, "strictClassInitialization"),
+        (
+            "type Table = { [entry: 'x' | 'y']: boolean };",
+            "entry",
+            1337,
+            "fixConvertToMappedObjectType",
+        ),
+        (
+            "type Columns = 'x' | 'y'; type Row = { [Columns]: boolean };",
+            "Columns]:",
+            2690,
+            "convertLiteralTypeToMappedType",
+        ),
+        (
+            "interface Shape {} class Polygon extends Shape {}",
+            "Shape {}",
+            2689,
+            "extendsInterfaceBecomesImplements",
+        ),
+        (
+            "/** @param {string} absent */ function invoke(actual) { return actual; }",
+            "absent",
+            8024,
+            "deleteUnmatchedParameter",
+        ),
+        (
+            "/** @param {string} input @returns {string} */ function echo(input) { return input; }",
+            "echo",
+            80004,
+            "annotateWithTypeFromJSDoc",
+        ),
+        ("let choice: ?boolean;", "?", 17019, "jdocTypes"),
+        ("new Promise(done => { done(); });", "done();", 2794, "addVoidToPromise"),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"strict":true,"target":"esnext"},"files":["index.ts"]}"#,
+            ),
+            ("/index.ts", source),
+        ]);
+        let file = ls.get_program().get_source_file("/index.ts").unwrap();
+        let at = source.rfind(needle).unwrap() as u32;
+        let fixes = (crate::codeactions_syntax::SYNTAX_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(at, at + needle.len() as u32),
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        assert!(fixes.iter().any(|f| f.fix_name.as_deref() == Some(name)), "{name}: {fixes:?}");
+        assert!(fixes.iter().all(|f| !f.changes_by_file.is_empty()));
+    }
+}
+
+#[test]
+fn embedded_migrations_preserve_methods_and_generated_names() {
+    for (source, code, name, required) in [
+        (
+            "function Box() { this.total = 0; } Box.prototype.open = function() { return this.total; };",
+            80002,
+            "convertFunctionToEs6Class",
+            "open()",
+        ),
+        (
+            "function load() { return Promise.resolve(3).then(item => item * 2); }",
+            80006,
+            "convertToAsyncFunction",
+            "item_1",
+        ),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"checkJs":true,"allowJs":true,"target":"esnext"},"files":["index.js"]}"#,
+            ),
+            ("/index.js", source),
+        ]);
+        let file = ls.get_program().get_source_file("/index.js").unwrap();
+        let actions = (crate::codeactions_syntax::SYNTAX_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(9, 12),
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        let action = actions.iter().find(|a| a.fix_name.as_deref() == Some(name)).unwrap();
+        assert!(
+            action
+                .changes_by_file
+                .iter()
+                .flat_map(|(_, edits)| edits)
+                .any(|edit| edit.new_text.contains(required)),
+            "{name}: {action:?}"
+        );
+        let uri = lsconv::file_name_to_document_uri("/index.js");
+        let all = ls.embedded_combined_code_fix(&ctx, &uri, name).unwrap().unwrap();
+        assert!(
+            all.workspace_edit(&uri).changes.unwrap()[&uri]
+                .iter()
+                .any(|edit| edit.new_text.contains(required))
+        );
+    }
+}
