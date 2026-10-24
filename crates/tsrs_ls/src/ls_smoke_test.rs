@@ -1412,3 +1412,30 @@ fn legacy_raw_js_fixes_expose_suppression_without_changing_reference_lsp() {
         );
     }
 }
+
+#[test]
+fn editor_closure_callbacks_keep_typed_arguments_and_reference_defaults() {
+    for editor in [false, true, false] {
+        let config = format!(
+            r#"{{"tsrsEditorLegacyJSDocFunctionTypes":{editor},"compilerOptions":{{"allowJs":true,"checkJs":true,"strict":true}},"files":["index.js"]}}"#
+        );
+        let (ls, ctx) = setup(&[
+            ("/tsconfig.json", &config),
+            (
+                "/index.js",
+                "/** @param {function(string): boolean} callback */\nfunction use(callback) { return callback(123); }",
+            ),
+        ]);
+        let diagnostics = ls
+            .provide_diagnostics(&ctx, &lsconv::file_name_to_document_uri("/index.js"))
+            .unwrap()
+            .full_document_diagnostic_report
+            .unwrap()
+            .items;
+        let codes: Vec<_> = diagnostics.iter().filter_map(|d| d.code.as_ref()?.integer).collect();
+        assert_eq!(codes.contains(&1005), !editor, "{editor}: {diagnostics:?}");
+        if editor {
+            assert_eq!(codes, [2345], "{diagnostics:?}");
+        }
+    }
+}

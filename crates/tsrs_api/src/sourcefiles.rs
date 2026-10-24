@@ -146,6 +146,7 @@ fn parse_cache_key(d: &Value) -> Result<tsrs_project::ParseCacheKey, String> {
         )
     })?;
     let options = SourceFileParseOptions {
+        editor_legacy_jsdoc_function_types: false,
         file_name: p.str("fileName").map_err(|e| e.message)?.to_string(),
         path: tspath::Path::new(p.str("path").map_err(|e| e.message)?),
         external_module_indicator_options: tsrs_ast::ExternalModuleIndicatorOptions {

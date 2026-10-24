@@ -231,6 +231,7 @@ fn dump_unit(out: &mut String, name: &str, text: &str) {
         return;
     }
     let opts = SourceFileParseOptions {
+        editor_legacy_jsdoc_function_types: false,
         file_name: file_name.clone(),
         path: Path::new(file_name.clone()),
         external_module_indicator_options:

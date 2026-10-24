@@ -691,6 +691,7 @@ fn normalize_type(input: &str) -> String {
     let source = format!("declare var x: {input};");
     let file = tsrs_parser::parse_source_file(
         SourceFileParseOptions {
+            editor_legacy_jsdoc_function_types: false,
             file_name: "/expect-type.ts".to_string(),
             path: TsPath::new("/expect-type.ts".to_string()),
             external_module_indicator_options:

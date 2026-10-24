@@ -29,6 +29,8 @@ pub struct CompilerOptions {
     pub allow_unused_labels: Tristate,
     pub assume_changes_only_affect_direct_dependencies: Tristate,
     pub check_js: Tristate,
+    /// Explicit editor configuration; reference-default programs keep Closure types disabled.
+    pub editor_legacy_jsdoc_function_types: bool,
     pub custom_conditions: Option<Vec<String>>,
     pub composite: Tristate,
     pub emit_declaration_only: Tristate,

@@ -13,6 +13,7 @@ fn signature_diagnostic_prints_go_position_and_length() {
     let file_name = "/a.ts";
     let file = tsrs_parser::parse_source_file(
         SourceFileParseOptions {
+            editor_legacy_jsdoc_function_types: false,
             file_name: file_name.to_string(),
             path: Path::new(file_name.to_string()),
             external_module_indicator_options:

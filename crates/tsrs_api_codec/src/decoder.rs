@@ -413,6 +413,7 @@ impl<'a> Decoder<'a> {
         }
         let parse_opts = read_le32(self.raw, HEADER_OFFSET_PARSE_OPTIONS).unwrap();
         let opts = SourceFileParseOptions {
+            editor_legacy_jsdoc_function_types: false,
             file_name: file_name.to_string(),
             path: tspath::Path(path.into()),
             external_module_indicator_options: ExternalModuleIndicatorOptions {

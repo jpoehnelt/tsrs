@@ -51,6 +51,7 @@ fn print_file(mode: &str, path: &str, flags: &str) -> Result<String, &'static st
         return Err("UNREADABLE");
     };
     let opts = SourceFileParseOptions {
+        editor_legacy_jsdoc_function_types: false,
         file_name: path.to_string(),
         path: Path::new(path.to_string()),
         external_module_indicator_options: parse_flags(flags),

@@ -136,3 +136,9 @@ Ordinary compiler inspection retains the pinned reference types and symbols,
 including after an editor query on the same checker.
 
 Legacy raw compiler fixes also expose the JavaScript disable-checking action when `legacyCodeFixEdits` is selected. Hosts must apply their suppression filtering before presenting actions. Ordinary LSP and reference-default embedded calls retain their provider behavior. Missing typed class properties now infer assignment types and edit the declaring file; explicit read-only roots remain protected. Native regression tests exercise both the raw API and the unchanged reference LSP.
+
+## Legacy JSDoc callback syntax
+
+An embedded editor can set the root tsconfig property `"tsrsEditorLegacyJSDocFunctionTypes": true` for its virtual projects. This explicitly restores Closure callback annotations such as `function(string): boolean`, which the pinned Go reference removed (`ts-ref/tsc/CHANGES.md`). The native parser lowers them into ordinary typed function/constructor nodes in the same source AST, retaining original text and positions. Optional/rest parameters, nested callbacks and receiver annotations retain their type checks. The setting belongs to the project's native parse-cache identity; it does not alter default compiler/LSP programs or the reference wire parse-options keys. The property must be set on each editor project's own configuration; it is not inherited through `extends`.
+
+Parser and language-service regressions check explicit/default parsing and typed argument errors. This is an editor compatibility policy, not an upstream Go parser fix.
