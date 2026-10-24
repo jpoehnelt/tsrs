@@ -1,9 +1,10 @@
 // Run after tools/wasm/build.sh. Exercises the actual persistent reactor, without an SDK.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createSessionSync, memoryFileSystem } from '../../npm/tsrs-wasm/core.js';
+import { createSessionSync, createBinarySessionSync, memoryFileSystem } from '../../npm/tsrs-wasm/core.js';
 const source = '// é🧪\r\nfunction sum(...values: number[]) { return values.length; }\nsum(1, 2, 3';
-const transport = createSessionSync(new WebAssembly.Module(readFileSync(process.argv[2] ?? new URL('../../npm/tsrs-wasm/tsrs.wasm', import.meta.url))), memoryFileSystem({'/code.ts': source}));
+const create = process.env.TSRS_BINARY === '1' ? createBinarySessionSync : createSessionSync;
+const transport = create(new WebAssembly.Module(readFileSync(process.argv[2] ?? new URL('../../npm/tsrs-wasm/tsrs.wasm', import.meta.url))), memoryFileSystem({'/code.ts': source}));
 transport.request('openSession');
 const snapshot = transport.request('createSnapshot', {createPrograms: [{rootFiles: ['/code.ts'], compilerOptions: {strict: true, noEmit: true}}]});
 const base = {snapshot: snapshot.snapshot, project: snapshot.operation.createdPrograms[0], file: '/code.ts'};
@@ -13,6 +14,8 @@ const help = editor('signatureHelp', {textDocument, position: {line: 2, characte
 assert.equal(help.argumentIndex, 2);
 assert.equal(help.argumentCount, 3);
 assert.ok(help.applicableSpan.start > 0);
+assert.equal(editor('symbols', {textDocument})[0].name, 'sum');
+assert.throws(() => transport.request('editor', {...base, operation: 'symbols', request: {textDocument}, legacyCodeFixEdits: 'yes'}), /legacyCodeFixEdits must be a boolean/);
 assert.equal(editor('symbols', {textDocument})[0].name, 'sum');
 assert.ok(transport.request('supportedCodeFixes').includes(2420));
 assert.throws(() => editor('combinedCodeFix', {fixId: 'unknown'}), /Unknown compiler fix ID/);

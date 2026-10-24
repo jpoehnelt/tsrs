@@ -1222,3 +1222,44 @@ fn combined_missing_members_choose_one_alternative() {
         edits[&uri].iter().any(|edit| edit.new_text.contains("deliver(arg0: number): unknown;"))
     );
 }
+
+#[test]
+fn isolated_arrow_edits_keep_reference_default_and_explicit_legacy_mode() {
+    let source = "export const read = value => value.toUpperCase();";
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"isolatedDeclarations":true,"declaration":true,"target":"esnext"},"files":["index.ts"]}"#,
+        ),
+        ("/index.ts", source),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let provider =
+        &*crate::codeactions_fixmissingtypeannotation::ISOLATED_DECLARATIONS_FIX_PROVIDER;
+    for legacy in [false, true, false] {
+        ls.set_legacy_code_fix_edits(legacy);
+        let actions = (provider.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(20, 25),
+                error_code: 9007,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        let action =
+            actions.iter().find(|a| a.description == "Add annotation of type 'any'").unwrap();
+        let mut texts: Vec<_> = action.changes.iter().map(|edit| edit.new_text.as_str()).collect();
+        for (_, edits) in &action.changes_by_file {
+            texts.extend(edits.iter().map(|edit| edit.new_text.as_str()));
+        }
+        assert!(texts.contains(&": any"), "{texts:?}");
+        assert_eq!(texts.contains(&"("), !legacy, "{texts:?}");
+        assert_eq!(texts.contains(&")"), !legacy, "{texts:?}");
+    }
+}

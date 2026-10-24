@@ -181,6 +181,7 @@ fn get_all_isolated_declarations_code_actions(
         type_print_mode: TypePrintMode::Full,
         symbols_to_import: Vec::new(),
         mutated_target: false,
+        legacy_code_fix_edits: fix_context.ls.legacy_code_fix_edits,
     };
 
     for diag in all_diags {
@@ -238,6 +239,7 @@ fn try_code_action(
         type_print_mode: TypePrintMode::Full,
         symbols_to_import: Vec::new(),
         mutated_target: false,
+        legacy_code_fix_edits: fix_context.ls.legacy_code_fix_edits,
     };
 
     let description = f(&mut fixer);
@@ -281,6 +283,7 @@ struct IsolatedDeclarationsFixer<'a> {
     fixed_nodes: FxHashMap<P<Node>, bool>,
     type_print_mode: TypePrintMode,
     symbols_to_import: Vec<P<Symbol>>,
+    legacy_code_fix_edits: bool,
     mutated_target: bool, // set by inferType/relativeType when the target was mutated (e.g., spread decomposition)
 }
 
@@ -1463,7 +1466,8 @@ impl IsolatedDeclarationsFixer<'_> {
             // Parenthesize paren-less arrow function parameters (`x => ...`) so the inserted `: T`
             // produces `(x: T) => ...` instead of the invalid `x: T => ...`. Queued after the type
             // annotation so that the `)` edit at param.End() sorts after the annotation insertion.
-            if ast::is_parameter_declaration(decl)
+            if !self.legacy_code_fix_edits
+                && ast::is_parameter_declaration(decl)
                 && let Some(parent) = decl.parent().filter(|p| ast::is_arrow_function(*p))
             {
                 self.change_tracker.parenthesize_arrow_parameters(self.source_file, parent);

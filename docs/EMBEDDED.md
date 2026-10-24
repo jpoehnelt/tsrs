@@ -117,3 +117,10 @@ Focused native regressions cover suggestions without native diagnostics, multipl
 alternatives, generated-name metadata, retained prototype methods and nested unused declarations.
 The independent consumer catalogue also compares individual and combined edits without changing
 its oracle answers. These checks do not establish complete provider or upstream conformance.
+
+The optional `editor.legacyCodeFixEdits` boolean retains older TypeScript editor edit
+shapes. It defaults to false, so unparenthesized-arrow annotation fixes follow the
+pinned Go reference and insert the required parentheses. A legacy client can opt
+into the older TypeScript 5 edit shape, including that historical omission.
+The setting belongs to each newly created language service and cannot leak across
+requests. Invalid non-boolean values are rejected.

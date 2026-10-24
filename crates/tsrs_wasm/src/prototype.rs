@@ -207,6 +207,7 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
         host,
         file,
     );
+    ls.set_legacy_code_fix_edits(p.bool("legacyCodeFixEdits")?);
     let mut preferences = tsrs_ls::lsutil::new_default_user_preferences();
     preferences.unmarshal_json_from(p.get("preferences")).map_err(ApiError::invalid_request)?;
     ls.set_user_preferences(preferences);

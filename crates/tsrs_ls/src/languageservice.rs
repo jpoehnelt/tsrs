@@ -21,6 +21,7 @@ pub struct LanguageService {
     pub(crate) project_id: ProjectID,
     pub(crate) host: Arc<dyn Host>,
     active_config: UserPreferences,
+    pub(crate) legacy_code_fix_edits: bool,
     program: &'static Program,
     pub(crate) converters: Arc<Converters>,
     // Go mutates a plain map through the *LanguageService (one goroutine per service); a Mutex keeps the service
@@ -40,6 +41,7 @@ pub fn new_language_service(
         project_id,
         converters: host.converters(),
         active_config: host.get_preferences(active_file),
+        legacy_code_fix_edits: false,
         host,
         program,
         document_position_mappers: Mutex::new(FxHashMap::default()),
@@ -48,6 +50,11 @@ pub fn new_language_service(
 }
 
 impl LanguageService {
+    /// Retain older TypeScript editor edit shapes without changing the reference-default service.
+    pub fn set_legacy_code_fix_edits(&mut self, enabled: bool) {
+        self.legacy_code_fix_edits = enabled;
+    }
+
     /// Embedders can load declaration libraries as explicit roots without losing edit protection.
     pub fn set_read_only_files(&mut self, files: &[String]) {
         self.read_only_files = files.iter().map(|file| self.to_path(file)).collect();
