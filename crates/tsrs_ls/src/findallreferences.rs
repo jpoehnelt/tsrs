@@ -1830,7 +1830,7 @@ impl LanguageService {
             } else {
                 node
             };
-        let symbol = checker.get_symbol_at_location_exported(location);
+        let symbol = checker.get_editor_symbol_at_location(location);
         // Could not find a symbol e.g. unknown identifier
         let Some(symbol) = symbol else {
             // String literal might be a property (and thus have a symbol), so do this here rather than in getReferencedSymbolsSpecial.
@@ -1979,7 +1979,7 @@ pub fn is_string_literal_property_reference(
 ) -> bool {
     let parent = node.parent().unwrap();
     if ast::is_property_signature_declaration(parent) {
-        let t = checker.get_type_at_location(parent.parent().unwrap());
+        let t = checker.get_editor_type_at_location(parent.parent().unwrap());
         return checker.get_property_of_type_exported(t, node.text()).is_some();
     }
     false
@@ -2999,7 +2999,7 @@ pub fn get_reference_entries_for_shorthand_property_assignment(
     checker: &mut Checker,
     add_reference: &mut dyn FnMut(P<Node>),
 ) {
-    let Some(ref_symbol) = checker.get_symbol_at_location_exported(node) else {
+    let Some(ref_symbol) = checker.get_editor_symbol_at_location(node) else {
         return;
     };
     let Some(value_declaration) = ref_symbol.value_declaration() else {
@@ -3314,7 +3314,7 @@ impl RefState<'_> {
         }
 
         let Some(mut reference_symbol) =
-            self.checker.get_symbol_at_location_exported(reference_location)
+            self.checker.get_editor_symbol_at_location(reference_location)
         else {
             return;
         };
@@ -4102,7 +4102,7 @@ impl RefState<'_> {
         let inherits = symbol.declarations().iter().any(|&declaration| {
             let super_type_nodes = get_all_super_type_nodes(declaration);
             super_type_nodes.iter().any(|&type_reference| {
-                let typ = self.checker.get_type_at_location(type_reference);
+                let typ = self.checker.get_editor_type_at_location(type_reference);
                 typ.symbol()
                     .is_some_and(|typ_symbol| self.explicitly_inherits_from(typ_symbol, parent))
             })

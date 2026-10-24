@@ -1105,6 +1105,7 @@ pub fn parse_options_for(
     };
     let options = project_references.get_compiler_options_for_file(normalized_file_path, &path);
     SourceFileParseOptions {
+        editor_legacy_jsdoc_function_types: options.editor_legacy_jsdoc_function_types,
         file_name: normalized_file_path.to_string(),
         path,
         external_module_indicator_options: ast::get_external_module_indicator_options(

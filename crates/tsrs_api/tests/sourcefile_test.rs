@@ -35,7 +35,7 @@ fn get_source_file_binary_and_json_and_checker_handles() {
         .unwrap()
     {
         Response::Binary(b) => b,
-        r @ Response::Json(_) => panic!("{r:?}"),
+        r @ (Response::Json(_) | Response::Value(_)) => panic!("{r:?}"),
     };
     assert!(bin.len() > 100);
     let decoded = tsrs_api_codec::decode_source_file(&bin).expect("decodes");
@@ -173,7 +173,7 @@ fn get_config_source_file_root_and_extended_repeatedly() {
     let get_bin =
         |f: &str| match s.handle_request("getConfigSourceFile", req(f).as_bytes()).unwrap() {
             Response::Binary(b) => b,
-            r @ Response::Json(_) => panic!("{r:?}"),
+            r @ (Response::Json(_) | Response::Value(_)) => panic!("{r:?}"),
         };
     let root = get_bin(&cfg);
     assert_ne!(root, [] as [u8; 0]);
@@ -186,4 +186,46 @@ fn get_config_source_file_root_and_extended_repeatedly() {
         tsrs_api_codec::decode_source_file(&again).expect("decodes");
     }
     assert_eq!(get_bin(&dir.path("other.json")), [] as [u8; 0]);
+}
+
+#[test]
+fn editor_descriptors_retain_their_native_ast_when_reference_keys_match() {
+    let dir = TempDir::new("editor-descriptor");
+    let config = dir.write("tsconfig.json", r#"{"tsrsEditorLegacyJSDocFunctionTypes":true,"compilerOptions":{"allowJs":true,"checkJs":true},"files":["a.js"]}"#);
+    let text =
+        "/** @param {function(string): boolean} cb */\nfunction use(cb) { return cb('valid'); }";
+    let file = dir.write("a.js", text);
+    let s = session(&dir.dir(), false);
+    // The same text also has a reference-default AST. Its source ID must not alias
+    // the editor AST even though the six reference wire descriptor keys match.
+    call(
+        &s,
+        "createSourceFile",
+        &format!(
+            "{{\"fileName\":{},\"sourceText\":{},\"options\":{{}}}}",
+            quote(&file),
+            quote(text)
+        ),
+    );
+    let created = call(&s, "createSnapshot", &format!("{{\"openProjects\":[{}]}}", quote(&config)));
+    let snapshot = json::marshal(get(&created, "snapshot")).unwrap();
+    let project = str_of(get(&created, "projects.0.id"));
+    let symbol = call(
+        &s,
+        "getSymbolAtPosition",
+        &format!(
+            "{{\"snapshot\":{snapshot},\"project\":{},\"file\":{},\"position\":{}}}",
+            quote(project),
+            quote(&file),
+            text.find("use(cb)").unwrap()
+        ),
+    );
+    let descriptor = json::marshal(get(&symbol, "reference.file")).unwrap();
+    let index = str_of(get(&symbol, "declarations.0")).split('.').next().unwrap();
+    let from_declaration =
+        call(&s, "getSymbolOfDeclaration", &format!("{{\"file\":{descriptor},\"index\":{index}}}"));
+    assert_eq!(get(&from_declaration, "reference"), get(&symbol, "reference"));
+    let retained = call(&s, "retainSourceFile", &format!("{{\"file\":{descriptor}}}"));
+    let lease = json::marshal(get(&retained, "lease")).unwrap();
+    assert_eq!(call(&s, "releaseSourceFile", &format!("{{\"lease\":{lease}}}")), Value::Bool(true));
 }

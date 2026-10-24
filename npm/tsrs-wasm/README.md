@@ -105,3 +105,27 @@ state, and linear memory never shrinks. Compiler state is not reused between cal
 Install the `wasm32-wasip1` Rust target and Binaryen's `wasm-opt`, then run `tools/wasm/build.sh` from the repository
 root. It writes `npm/tsrs-wasm/tsrs.wasm`; run it with `node npm/tsrs-wasm/bin/tsrs-wasm.js -p .`.
 See the [build notes](https://github.com/oxc-project/tsrs/blob/main/notes/wasm-build.md) for tool versions and build options.
+
+### Embedded binary requests
+
+`createBinarySession` (async instantiation) and `createBinarySessionSync` retain one reactor and use
+`tsrs_session_request_binary`. The JSON session/CLI entry points remain available for existing consumers.
+Native embedding consumers can call `Session::handle_native_request` with a borrowed value and receive
+`Response::Value` or `Response::Binary`, without encoding JSON. Printing has a separate borrowed byte-slice
+entry point. The binary session enables raw source-file/checker responses, including buffers within batches.
+
+Frames begin with `TSRB` and version byte `1`. Values use tags null=0, false=1, true=2, f64=3,
+UTF-8 string=4, array=5, map=6, i64=8, raw bytes=9. Numbers and u32 lengths are little-endian;
+map keys are length-prefixed UTF-8 strings. Arrays/maps carry element counts; strings/buffers carry byte
+counts. Inputs are limited to 64 MiB and 128 nesting levels, with strict UTF-8, finite numbers, duplicate-key
+and trailing-byte checks. Request errors return an error envelope and leave the session usable. A WASM
+trap requires replacing the reactor. Binary output slices are copied once so callers can retain them
+across later requests or memory growth. This is an owned-buffer interface, not zero-copy memory sharing.
+
+The embedded SDK adapter must consume raw `Uint8Array` results and supply raw printing buffers; the
+standalone SDK's JSON/base64 adapter is a different transport. No JSON fallback occurs in binary dispatch.
+
+The fork's native editor providers include parameter/this usage inference, missing required or
+optional parameters, interface member declarations, implicit-this arrow conversion and their
+provider-specific combined fixes. `quickInfo` uses TypeScript 5 display budgeting; regular `hover`
+retains expandable native presentation. This does not implement the complete TypeScript fix catalogue.

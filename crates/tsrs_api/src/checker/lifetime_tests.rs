@@ -31,6 +31,9 @@ impl transport::Handler for Fwd {
         params: &[u8],
     ) -> Result<transport::Response, transport::ApiError> {
         match crate::handler::Handler::handle_request(&*self.0, method, params) {
+            Ok(crate::handler::Response::Value(_)) => {
+                panic!("legacy JSON handler returned native value")
+            }
             Ok(crate::handler::Response::Json(t)) => Ok(transport::Response::Json(t.into_bytes())),
             Ok(crate::handler::Response::Binary(b)) => Ok(transport::Response::Binary(b)),
             Err(e) => Err(transport::ApiError::internal(e.to_string())),

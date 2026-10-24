@@ -311,7 +311,8 @@ jobs:
   determinism:
     name: Determinism
     needs: build-correctness
-    runs-on: nscloud-ubuntu-24.04-amd64-8x16
+    # Namespace runners belong to upstream; forks exercise the same full gate on GitHub runners.
+    runs-on: ${{ github.repository == 'oxc-project/tsrs' && 'nscloud-ubuntu-24.04-amd64-8x16' || 'ubuntu-24.04' }}
     timeout-minutes: 300
     permissions:
       contents: read

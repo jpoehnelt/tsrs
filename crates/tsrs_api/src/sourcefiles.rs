@@ -146,6 +146,7 @@ fn parse_cache_key(d: &Value) -> Result<tsrs_project::ParseCacheKey, String> {
         )
     })?;
     let options = SourceFileParseOptions {
+        editor_legacy_jsdoc_function_types: false,
         file_name: p.str("fileName").map_err(|e| e.message)?.to_string(),
         path: tspath::Path::new(p.str("path").map_err(|e| e.message)?),
         external_module_indicator_options: tsrs_ast::ExternalModuleIndicatorOptions {
@@ -303,19 +304,27 @@ impl Session {
                 "cannot unmarshal into Go api.SourceFileDescriptor within \"/file\"",
             ));
         }
-        let key = parse_cache_key(descriptor)
+        let mut key = parse_cache_key(descriptor)
             .map_err(|e| ApiError::client(format!("invalid source file descriptor: {e}")))?;
-        let lease = self
-            .snapshot_host
-            .acquire_existing_source_file(key)
-            .ok_or_else(|| ApiError::client("source file is not available"))?;
-        if source_file_descriptor(lease.source_file()) != descriptor_normalized(descriptor) {
-            lease.release();
-            return Err(ApiError::client(
-                "source file descriptor no longer identifies the cached source file",
-            ));
+        let normalized = descriptor_normalized(descriptor);
+        let mut cached = false;
+        // Reference wire keys stay unchanged. A live editor AST also has a native
+        // parse policy, recovered only when its complete descriptor/node ID matches.
+        for legacy in [false, true] {
+            key.source_file_parse_options.editor_legacy_jsdoc_function_types = legacy;
+            if let Some(lease) = self.snapshot_host.acquire_existing_source_file(key.clone()) {
+                cached = true;
+                if source_file_descriptor(lease.source_file()) == normalized {
+                    return Ok(lease);
+                }
+                lease.release();
+            }
         }
-        Ok(lease)
+        Err(ApiError::client(if cached {
+            "source file descriptor no longer identifies the cached source file"
+        } else {
+            "source file is not available"
+        }))
     }
 
     fn create_source_file_lease(

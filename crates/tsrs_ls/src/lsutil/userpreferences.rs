@@ -185,6 +185,8 @@ pub struct UserPreferences {
 
     // CustomConfigFileName specifies a custom config file name to use before defaulting to tsconfig.json/jsconfig.json.
     pub custom_config_file_name: String,
+    /// Original configuration source identity supplied by an embedded editor.
+    pub configuration_file_name: String,
 }
 
 // userpreferences.go:47 (the struct tags of UserPreferences and the structs it embeds, flattened in declaration order)
@@ -704,6 +706,7 @@ pub static USER_PREFERENCES_FIELD_TAGS: &[FieldTag] = &[
         "automaticTypeAcquisitionEnabled",
         "tsserver.automaticTypeAcquisition.enabled"
     ),
+    field_tag!(String, configuration_file_name, "configurationFileName", ""),
     field_tag!(String, custom_config_file_name, "customConfigFileName", "customConfigFileName"),
 ];
 
@@ -1367,8 +1370,10 @@ pub fn set_field_from_value(field: FieldMut<'_>, val: &Value) {
         }
         FieldMut::Int(f) => {
             // Go accepts int and float64; JSON numbers are float64.
-            if let Value::Number(v) = val {
-                *f = *v as i64 as i32;
+            match val {
+                Value::Number(v) => *f = *v as i64 as i32,
+                Value::Integer(v) => *f = *v as i32,
+                _ => {}
             }
         }
         FieldMut::String(f) => {

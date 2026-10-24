@@ -1766,6 +1766,17 @@ fn parse_config(
         );
         own_config.options = Some(result.options);
     }
+    // A root-level editor extension is outside the reference compiler-option catalogue.
+    // It is explicit per project and therefore cannot alter default LSP/API parsing.
+    if let Some(options) = &mut own_config.options {
+        options.editor_legacy_jsdoc_function_types = matches!(
+            own_config
+                .raw
+                .as_object()
+                .and_then(|raw| raw.get("tsrsEditorLegacyJSDocFunctionTypes")),
+            Some(CompilerOptionsValue::Bool(true))
+        );
+    }
     (own_config, errors)
 }
 

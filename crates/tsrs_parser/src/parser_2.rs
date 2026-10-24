@@ -530,6 +530,12 @@ impl Parser {
 
     pub(crate) fn parse_non_array_type(&mut self) -> P<Node> {
         match self.token {
+            Kind::FunctionKeyword
+                if self.opts.editor_legacy_jsdoc_function_types
+                    && self.context_flags.intersects(NodeFlags::JSDoc) =>
+            {
+                self.parse_editor_jsdoc_function_type()
+            }
             Kind::AnyKeyword
             | Kind::UnknownKeyword
             | Kind::StringKeyword
@@ -609,6 +615,93 @@ impl Parser {
             Kind::TemplateHead => self.parse_template_type(),
             _ => self.parse_type_reference(),
         }
+    }
+
+    // The reference compiler removed Closure function syntax. Embedded editors may
+    // retain it explicitly; lower directly to ordinary typed nodes in the same AST.
+    fn parse_editor_jsdoc_function_type(&mut self) -> P<Node> {
+        let pos = self.node_pos();
+        self.next_token();
+        let list_pos = self.node_pos();
+        self.parse_expected(Kind::OpenParenToken);
+        let mut parameters = Vec::new();
+        let mut instance_type = None;
+        while self.token != Kind::CloseParenToken && self.token != Kind::EndOfFile {
+            let parameter_pos = self.node_pos();
+            let receiver = if matches!(self.token, Kind::ThisKeyword | Kind::NewKeyword)
+                && self.look_ahead(|p| p.next_token() == Kind::ColonToken)
+            {
+                let kind = self.token;
+                self.next_token();
+                self.next_token();
+                Some(kind)
+            } else {
+                None
+            };
+            let rest = self.parse_optional_token(Kind::DotDotDotToken);
+            let mut type_node = self.parse_jsdoc_type();
+            let optional = type_node.kind() == Kind::JSDocOptionalType;
+            if optional {
+                type_node = type_node.type_node().unwrap();
+            }
+            if receiver == Some(Kind::NewKeyword) {
+                instance_type = Some(type_node);
+            } else {
+                if rest.is_some() {
+                    let array = self.factory.new_array_type_node(type_node);
+                    array.set_loc(type_node.loc());
+                    type_node = array;
+                }
+                let name = self.factory.new_identifier(tsrs_core::alloc_str(&if receiver
+                    == Some(Kind::ThisKeyword)
+                {
+                    "this".into()
+                } else {
+                    format!("arg{}", parameters.len())
+                }));
+                // These names are synthesized, but source AST consumers still need
+                // a stable zero-width location in the original annotation.
+                name.set_loc(tsrs_core::new_text_range(parameter_pos, parameter_pos));
+                let question = optional.then(|| {
+                    let token = self.factory.new_token(Kind::QuestionToken);
+                    token.set_loc(tsrs_core::new_text_range(self.node_pos(), self.node_pos()));
+                    token
+                });
+                let parameter = self.factory.new_parameter_declaration(
+                    None,
+                    rest,
+                    name,
+                    question,
+                    Some(type_node),
+                    None,
+                );
+                parameters.push(self.finish_node(parameter, parameter_pos));
+            }
+            if !self.parse_optional(Kind::CommaToken) {
+                break;
+            }
+        }
+        self.parse_expected(Kind::CloseParenToken);
+        let return_type = if self.parse_optional(Kind::ColonToken) {
+            self.parse_jsdoc_type()
+        } else {
+            let any = self.factory.new_keyword_type_node(Kind::AnyKeyword);
+            any.set_loc(tsrs_core::new_text_range(self.node_pos(), self.node_pos()));
+            any
+        };
+        let parameters =
+            self.new_node_list(tsrs_core::new_text_range(list_pos, self.node_pos()), &parameters);
+        let result = if let Some(instance_type) = instance_type {
+            self.factory.new_constructor_type_node(
+                None,
+                None,
+                Some(parameters),
+                Some(instance_type),
+            )
+        } else {
+            self.factory.new_function_type_node(None, Some(parameters), Some(return_type))
+        };
+        self.finish_node(result, pos)
     }
 
     pub(crate) fn parse_keyword_type_node(&mut self) -> P<Node> {

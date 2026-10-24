@@ -51,6 +51,7 @@ fn get_current(session: &Session, params: &str) -> ApiResult<Value> {
     match session.handle_request("getCurrentLanguageServerSnapshot", params.as_bytes())? {
         Response::Json(text) => Ok(json::unmarshal(&text).unwrap()),
         Response::Binary(_) => panic!("unexpected binary response"),
+        Response::Value(_) => panic!("wire handler returned an unserialized native response"),
     }
 }
 

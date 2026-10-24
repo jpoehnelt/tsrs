@@ -19,19 +19,28 @@ use crate::wire::{Params, s};
 fn decode(encoded: &str) -> ApiResult<DecodedNode> {
     let data = base64_decode(encoded)
         .map_err(|e| ApiError::client(format!("invalid base64 data: {e}")))?;
-    decode_nodes(&data).map_err(|e| match e {
+    decode_raw(&data)
+}
+fn decode_raw(data: &[u8]) -> ApiResult<DecodedNode> {
+    decode_nodes(data).map_err(|e| match e {
         DecodeError::GoDecoderPanic(m) => ApiError::internal(format!("panic: {m}")),
         e => ApiError::client(format!("failed to decode AST: {e}")),
     })
 }
 
 impl Session {
+    pub(crate) fn handle_print_node(&self, p: Params) -> ApiResult<Value> {
+        let decoded = decode(p.str("data")?)?;
+        self.print_decoded(p, decoded)
+    }
+    pub(crate) fn handle_print_node_bytes(&self, p: Params, data: &[u8]) -> ApiResult<Value> {
+        self.print_decoded(p, decode_raw(data)?)
+    }
     #[expect(
         clippy::unused_self,
         reason = "API request handlers share the Session receiver used by the request dispatcher."
     )]
-    pub(crate) fn handle_print_node(&self, p: Params) -> ApiResult<Value> {
-        let decoded = decode(p.str("data")?)?;
+    fn print_decoded(&self, p: Params, decoded: DecodedNode) -> ApiResult<Value> {
         let options = PrinterOptions {
             preserve_source_newlines: p.bool("preserveSourceNewlines")?,
             never_ascii_escape: p.bool("neverAsciiEscape")?,
@@ -56,10 +65,15 @@ impl Session {
     }
 
     pub(crate) fn handle_format_node_for_insertion(&self, p: Params) -> ApiResult<Value> {
+        self.format_decoded(p, decode(p.str("data")?)?)
+    }
+    pub(crate) fn handle_format_node_bytes(&self, p: Params, data: &[u8]) -> ApiResult<Value> {
+        self.format_decoded(p, decode_raw(data)?)
+    }
+    fn format_decoded(&self, p: Params, decoded: DecodedNode) -> ApiResult<Value> {
         let sd = self.snapshot_data(p.u64("snapshot")?)?;
         let program = sd.get_program(&ProjectID(p.str("project")?.to_string()))?;
         let target = resolve_source_file(program, &p.document("file")?)?;
-        let decoded = decode(p.str("data")?)?;
         let position = u32::try_from(p.u64("position")?)
             .map_err(|_| ApiError::invalid_request("position exceeds uint32"))?;
         let pos = target.get_position_map().utf16_to_utf8(position);

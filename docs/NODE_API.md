@@ -502,3 +502,16 @@ real files and symlinks. No Cargo feature is needed. Fixtures and their generato
   outside these paths. Unregistered
   source texts free their memory but not their registry slot; slots are never reused, so a very long-lived
   session that parses more than 2^20 files in freeable regions falls back to the slower text lookup path.
+
+## Native embedded dispatch
+
+The standalone wire modes above retain their JSON/MessagePack behavior. Rust embeddings additionally
+call `Session::handle_native_request(method, &Value)` and receive `Response::Value` or raw
+`Response::Binary`. This validates pinned API parameter fields and uses the same session/snapshot
+handlers, with no JSON encoding/decoding and no cloned parameter tree. The legacy `Handler` adapter
+serializes native values only at its transport boundary. `handle_native_binary_request` accepts a
+borrowed AST slice for `printNode`/`formatNodeForInsertion` and validates their other fields.
+
+The optional persistent WASM embedding exposes `tsrs_session_request_binary`; its bounded typed
+protocol, raw-buffer ownership and error recovery are documented in
+[`npm/tsrs-wasm/README.md`](../npm/tsrs-wasm/README.md#embedded-binary-requests).

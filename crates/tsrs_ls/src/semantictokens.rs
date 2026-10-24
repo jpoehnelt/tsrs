@@ -380,7 +380,7 @@ impl SemanticTokensVisitor<'_> {
 
     fn add_token_for_identifier(&mut self, node: P<Node>) {
         let c = &mut *self.c;
-        let Some(mut symbol) = c.get_symbol_at_location_exported(node) else {
+        let Some(mut symbol) = c.get_editor_symbol_at_location(node) else {
             return;
         };
         // Resolve aliases
@@ -520,7 +520,7 @@ fn token_from_declaration_mapping(kind: Kind) -> Option<TokenType> {
 fn reclassify_by_type(c: &mut Checker, node: P<Node>, tt: TokenType) -> TokenType {
     // Type-based reclassification for variables, properties, and parameters
     if tt == TOKEN_TYPE_VARIABLE || tt == TOKEN_TYPE_PROPERTY || tt == TOKEN_TYPE_PARAMETER {
-        let typ = c.get_type_at_location(node);
+        let typ = c.get_editor_type_at_location(node);
         let test = |c: &mut Checker, condition: &dyn Fn(&mut Checker, P<Type>) -> bool| -> bool {
             if condition(c, typ) {
                 return true;

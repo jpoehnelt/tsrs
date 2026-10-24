@@ -6,6 +6,8 @@ use crate::*;
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct SourceFileParseOptions {
     pub file_name: String,
+    /// Editor-only Closure function type parsing. Participates in native parse-cache identity.
+    pub editor_legacy_jsdoc_function_types: bool,
     pub path: Path,
     pub external_module_indicator_options: ExternalModuleIndicatorOptions,
 }

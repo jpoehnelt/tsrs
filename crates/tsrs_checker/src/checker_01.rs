@@ -1206,7 +1206,7 @@ impl Checker {
 
     // location Option<P<Node>>: onFailedToResolveSymbol passes a nil errorLocation (getGlobalSymbol).
     // checker.go:1782
-    pub(crate) fn get_suggested_symbol_for_nonexistent_symbol(
+    pub fn get_suggested_symbol_for_nonexistent_symbol(
         &mut self,
         location: Option<P<Node>>,
         outer_name: &str,

@@ -402,7 +402,7 @@ impl LanguageService {
                     // }
                     // let a: A;
                     // a['/*completion position*/']
-                    let t = type_checker.get_type_at_location(expression);
+                    let t = type_checker.get_editor_type_at_location(expression);
                     return Some(StringLiteralCompletions {
                         from_properties: Some(string_literal_completions_from_properties(
                             t,
@@ -469,7 +469,7 @@ impl LanguageService {
                 };
                 let module_specifier = module_specifier?;
                 let module_specifier_symbol =
-                    type_checker.get_symbol_at_location_exported(module_specifier)?;
+                    type_checker.get_editor_symbol_at_location(module_specifier)?;
                 let exports =
                     type_checker.get_exports_and_properties_of_module(module_specifier_symbol);
                 let existing: FxHashSet<&'static str> = named_imports_or_exports
@@ -494,8 +494,8 @@ impl LanguageService {
             }
             Kind::BinaryExpression => {
                 if parent.as_binary_expression().operator_token.kind() == Kind::InKeyword {
-                    let t =
-                        type_checker.get_type_at_location(parent.as_binary_expression().right());
+                    let t = type_checker
+                        .get_editor_type_at_location(parent.as_binary_expression().right());
                     let properties = get_properties_for_completion(t, type_checker);
                     return Some(StringLiteralCompletions {
                         from_properties: Some(CompletionsFromProperties {

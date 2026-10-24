@@ -24,6 +24,16 @@ struct CommentOwnerInfo {
 }
 
 impl LanguageService {
+    pub fn doc_comment_template(&self, file: P<SourceFile>, position: u32) -> Option<String> {
+        get_doc_comment_template_at_position(
+            file,
+            position,
+            self.user_preferences().generate_return_in_doc_template.is_true(),
+            "\n",
+        )
+        .map(|template| template.new_text)
+    }
+
     // jsdoc_snippet.go:29
     pub(crate) fn get_jsdoc_snippet_completion(
         &self,

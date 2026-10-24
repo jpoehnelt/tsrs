@@ -6,6 +6,17 @@
 `tsrs` is a drop-in replacement for the TypeScript 7 compiler and language server, written in Rust.
 Our goal is 100% conformance, with much lower memory use and faster type checking. [Read the announcement](https://blog.cloudflare.com/typescript-rust-port/).
 
+## Embedded compiler fork
+
+This branch is based on upstream revision `79ea6d25c011a7f498e02bda7f090308f9fb9ac9`.
+It adds persistent WASM editor sessions and API diagnostic position conversion using the existing
+source-file position map. Native editor providers include parameter usage inference, missing
+parameters, interface members and implicit-this conversion, with provider-specific fix-all edits.
+Additional native providers cover syntax, await/return, initialization, JSDoc and module repairs,
+with sampled suggestion migrations and fix-all support. Legacy quick info preserves TypeScript 5 display budgeting. See [the embedded API contract](docs/EMBEDDED.md) for capabilities, tests,
+and limits. Upstream conformance and benchmark claims below describe the upstream release; they
+are not new measurements of this fork.
+
 ## Get started
 
 ```sh

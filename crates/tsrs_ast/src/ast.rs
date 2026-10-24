@@ -1482,6 +1482,7 @@ impl Node {
             }
             Kind::JSDocReturnTag => self.as_jsdoc_return_tag().type_expression,
             Kind::JSDocTypeTag => Some(self.as_jsdoc_type_tag().type_expression),
+            Kind::JSDocThisTag => Some(self.as_jsdoc_this_tag().type_expression),
             Kind::JSDocTypedefTag => self.as_jsdoc_typedef_tag().type_expression,
             Kind::JSDocCallbackTag => Some(self.as_jsdoc_callback_tag().type_expression),
             Kind::JSDocSatisfiesTag => Some(self.as_jsdoc_satisfies_tag().type_expression),

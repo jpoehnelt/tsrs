@@ -146,6 +146,7 @@ impl S {
     pub(super) fn call(&self, method: &str, params: &Value) -> Result<Value, String> {
         let text = json::marshal(params).unwrap();
         match self.session.handle_request(method, text.as_bytes()) {
+            Ok(Response::Value(_)) => panic!("legacy JSON handler returned native value"),
             Ok(Response::Json(t)) => Ok(json::unmarshal(&t).unwrap()),
             Ok(Response::Binary(b)) => panic!("{method}: unexpected binary ({} bytes)", b.len()),
             Err(e) => Err(e.to_string().lines().next().unwrap_or_default().to_string()),
@@ -154,6 +155,7 @@ impl S {
 
     fn call_raw(&self, method: &str, raw: &str) -> Result<Value, String> {
         match self.session.handle_request(method, raw.as_bytes()) {
+            Ok(Response::Value(_)) => panic!("legacy JSON handler returned native value"),
             Ok(Response::Json(t)) => Ok(json::unmarshal(&t).unwrap()),
             Ok(Response::Binary(b)) => panic!("{method}: unexpected binary ({} bytes)", b.len()),
             Err(e) => Err(e.to_string().lines().next().unwrap_or_default().to_string()),

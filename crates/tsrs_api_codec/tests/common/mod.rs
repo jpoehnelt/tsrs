@@ -45,6 +45,7 @@ pub fn parse_like_server(name: &str, text: &str) -> (Region, P<SourceFile>) {
     let file = {
         let _scope = region.enter();
         let opts = SourceFileParseOptions {
+            editor_legacy_jsdoc_function_types: false,
             file_name: file_name.clone(),
             path: tspath::Path(file_name.as_str().into()),
             external_module_indicator_options: ExternalModuleIndicatorOptions::default(),

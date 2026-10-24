@@ -1299,7 +1299,7 @@ impl View {
                     || node.kind() == Kind::ImportEqualsDeclaration
                     || node.kind() == Kind::JSDocImportTag)
                     && let Some(module_symbol) =
-                        self.checker().get_symbol_at_location_exported(module_specifier)
+                        self.checker().get_editor_symbol_at_location(module_specifier)
                     && let Some((module_id, _)) =
                         try_get_module_id_and_file_name_of_module_symbol(module_symbol)
                 {

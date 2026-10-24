@@ -158,7 +158,7 @@ impl LanguageService {
             && !(ast::is_jsx_opening_like_element(node.parent().unwrap())
                 && is_jsx_constructor_like(called_declaration))
         {
-            let symbol = c.get_symbol_at_location_exported(get_declaration_name_for_keyword(node));
+            let symbol = c.get_editor_symbol_at_location(get_declaration_name_for_keyword(node));
             let matches = match symbol {
                 Some(symbol) => c.get_root_symbols(symbol).into_iter().any(|root_symbol| {
                     symbol_matches_signature(Some(root_symbol), Some(called_declaration))
@@ -246,7 +246,7 @@ impl LanguageService {
 
         let node = get_declaration_name_for_keyword(node);
 
-        if let Some(symbol) = c.get_symbol_at_location_exported(node) {
+        if let Some(symbol) = c.get_editor_symbol_at_location(node) {
             let symbol_type = get_type_of_symbol_at_location(c, symbol, node);
             let mut declarations = get_declarations_from_type(symbol_type);
             if let Some(type_argument) = c.get_first_type_argument_from_known_type(symbol_type) {
@@ -532,7 +532,7 @@ pub fn get_declarations_from_location(c: &mut Checker, node: P<Node>) -> Vec<P<N
             && Some(node) == binding_el.property_name().or(parent.name())
             && let Some(name) = ast::try_get_text_of_property_name(node)
         {
-            let t = c.get_type_at_location(parent.parent().unwrap());
+            let t = c.get_editor_type_at_location(parent.parent().unwrap());
             let types: Vec<P<Type>> = if t.is_union() { t.types().to_vec() } else { vec![t] };
             let mut result: Vec<P<Node>> = Vec::new();
             result.extend(
@@ -549,7 +549,7 @@ pub fn get_declarations_from_location(c: &mut Checker, node: P<Node>) -> Vec<P<N
     }
 
     let node = get_declaration_name_for_keyword(node);
-    if let Some(mut symbol) = c.get_symbol_at_location_exported(node) {
+    if let Some(mut symbol) = c.get_editor_symbol_at_location(node) {
         if symbol.flags().intersects(SymbolFlags::Class)
             && !symbol.flags().intersects(SymbolFlags::Function | SymbolFlags::Variable)
             && node.kind() == Kind::ConstructorKeyword
@@ -692,7 +692,7 @@ fn get_symbol_for_overridden_member(
     let base = if ast::is_class_expression(expression) {
         expression.symbol()
     } else {
-        type_checker.get_symbol_at_location_exported(expression)
+        type_checker.get_editor_symbol_at_location(expression)
     };
     let base = base?;
     let name = ast::get_text_of_property_name(class_element_name);

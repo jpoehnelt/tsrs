@@ -37,3 +37,5 @@ mod session_apistate_test;
 
 pub use handler::{ApiError, ApiResult, ClientConn, ErrorKind, Handler, Response};
 pub use session::{Session, SessionOptions};
+
+pub use diagnostics::with_compact_diagnostics;

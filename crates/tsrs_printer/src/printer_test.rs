@@ -12,6 +12,7 @@ fn parse_type_script(text: &str, jsx: bool) -> P<SourceFile> {
     let file_name = if jsx { "/main.tsx" } else { "/main.ts" };
     tsrs_parser::parse_source_file(
         SourceFileParseOptions {
+            editor_legacy_jsdoc_function_types: false,
             file_name: file_name.to_string(),
             path: Path::new(file_name.to_string()),
             external_module_indicator_options:
@@ -51,6 +52,7 @@ fn synthetic_source_file(f: &NodeFactory, statements: Vec<P<Node>>) -> P<SourceF
     let eof = f.new_token(Kind::EndOfFile);
     f.new_source_file(
         SourceFileParseOptions {
+            editor_legacy_jsdoc_function_types: false,
             file_name: "/file.ts".to_string(),
             path: Path::new("/file.ts".to_string()),
             external_module_indicator_options:

@@ -253,3 +253,10 @@ the command line to include config-read timing.
 
 - Gate the macOS release binary on the conformance suite too (the Linux builds already run it in `bolt.sh`).
 - Optionally target an older glibc for Linux (e.g. `cargo zigbuild --target x86_64-unknown-linux-gnu.2.17`).
+
+## Embedded fork
+
+This fork adds persistent editor sessions, typed binary embedding and native TypeScript 5 editor
+repairs, including sampled syntax, await/return, initialization, JSDoc, module and fix-all paths.
+The [embedded contract](../docs/EMBEDDED.md) records coverage and limits; these additions do not
+establish complete provider or upstream conformance.

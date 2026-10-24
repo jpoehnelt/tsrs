@@ -163,3 +163,64 @@ fn test_parse_escaped_dynamic_import_phase() {
         assert!(!file.as_node().flags().contains(NodeFlags::PossiblyContainsImportMeta));
     }
 }
+
+#[test]
+fn editor_closure_callback_types_are_explicit_and_position_preserving() {
+    let source = "/** @param {function(string, number): boolean} callback */\nfunction use(callback) { return callback('a', 1); }";
+    for legacy in [false, true] {
+        let file = parse_source_file(
+            SourceFileParseOptions {
+                file_name: "/editor.js".into(),
+                editor_legacy_jsdoc_function_types: legacy,
+                ..Default::default()
+            },
+            source,
+            ScriptKind::JS,
+        );
+        let diagnostics = file.jsdoc_diagnostics();
+        assert_eq!(diagnostics.is_empty(), legacy, "{legacy}: {diagnostics:?}");
+        assert_eq!(file.text(), source);
+        if legacy {
+            fn visit(node: P<tsrs_ast::Node>) {
+                assert!(!node.pos().is_synthetic(), "{:?}", node.kind());
+                assert!(!node.end().is_synthetic(), "{:?}", node.kind());
+                node.for_each_child(&mut |child| {
+                    visit(child);
+                    false
+                });
+            }
+            for doc in file.statements().nodes()[0].jsdoc(Some(file.get())) {
+                visit(*doc);
+            }
+        }
+    }
+}
+
+#[test]
+fn editor_closure_callback_types_support_nested_optional_rest_and_receivers() {
+    for annotation in [
+        "function(string=, ...number): boolean",
+        "function(this: { value: string }, function(number): string): void",
+        "function(new: Date, number): Date",
+        "Array<function(string): boolean>",
+        "function(): function(number): string",
+    ] {
+        let source = format!("/** @type {{{annotation}}} */\nlet callback;");
+        let file = parse_source_file(
+            SourceFileParseOptions {
+                file_name: "/editor.js".into(),
+                editor_legacy_jsdoc_function_types: true,
+                ..Default::default()
+            },
+            &source,
+            ScriptKind::JS,
+        );
+        assert!(file.diagnostics().is_empty(), "{annotation}: {:?}", file.diagnostics());
+        assert!(
+            file.jsdoc_diagnostics().is_empty(),
+            "{annotation}: {:?}",
+            file.jsdoc_diagnostics()
+        );
+        assert_eq!(file.text(), source);
+    }
+}

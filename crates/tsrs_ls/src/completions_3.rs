@@ -34,7 +34,7 @@ pub fn get_contextual_type(
         Kind::EqualsToken => {
             return match parent.kind() {
                 Kind::VariableDeclaration => type_checker.get_contextual_type_exported(parent.initializer().unwrap(), ContextFlags::None),
-                Kind::BinaryExpression => Some(type_checker.get_type_at_location(parent.as_binary_expression().left)),
+                Kind::BinaryExpression => Some(type_checker.get_editor_type_at_location(parent.as_binary_expression().left)),
                 Kind::JsxAttribute => type_checker.get_contextual_type_for_jsx_attribute_exported(parent),
                 _ => None,
             };
@@ -114,7 +114,7 @@ pub fn get_contextual_type(
         && is_equality_operator_kind(parent.as_binary_expression().operator_token.kind())
     {
         // completion at `x ===/**/`
-        Some(type_checker.get_type_at_location(parent.as_binary_expression().left))
+        Some(type_checker.get_editor_type_at_location(parent.as_binary_expression().left))
     } else {
         let contextual_type = type_checker
             .get_contextual_type_exported(previous_token, ContextFlags::IgnoreNodeInferences);
@@ -127,8 +127,9 @@ pub fn get_contextual_type(
 
 // completions.go:3557
 pub fn get_switched_type(case_clause: P<Node>, type_checker: &mut Checker) -> P<Type> {
-    type_checker
-        .get_type_at_location(case_clause.parent().unwrap().parent().unwrap().expression().unwrap())
+    type_checker.get_editor_type_at_location(
+        case_clause.parent().unwrap().parent().unwrap().expression().unwrap(),
+    )
 }
 
 // completions.go:3561
@@ -1191,7 +1192,7 @@ pub fn try_get_object_literal_contextual_type(
         && node == parent.as_binary_expression().left
     {
         // Object literal is assignment pattern: ({ | } = x)
-        return Some(type_checker.get_type_at_location(parent));
+        return Some(type_checker.get_editor_type_at_location(parent));
     }
     if ast::is_expression(parent) {
         // f(() => (({ | })));
@@ -1370,7 +1371,7 @@ fn set_member_declared_by_spread_assignment(
     type_checker: &mut Checker,
 ) {
     let expression = declaration.expression().unwrap();
-    let symbol = type_checker.get_symbol_at_location_exported(expression);
+    let symbol = type_checker.get_editor_symbol_at_location(expression);
     let mut t: Option<P<Type>> = None;
     if let Some(symbol) = symbol {
         t = type_checker.get_type_of_symbol_at_location(symbol, Some(expression));

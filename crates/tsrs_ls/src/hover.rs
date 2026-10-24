@@ -41,6 +41,7 @@ fn new_verbosity_context(level: usize, max_truncation_length: usize) -> P<Verbos
     P::new(VerbosityContext {
         level: Cell::new(level),
         max_truncation_length: Cell::new(max_truncation_length),
+        disable_expansion: false,
         can_increase_verbosity: Cell::new(false),
         truncated: Cell::new(false),
     })
@@ -48,14 +49,90 @@ fn new_verbosity_context(level: usize, max_truncation_length: usize) -> P<Verbos
 
 impl LanguageService {
     // hover.go:27
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "Language service operations share the fallible response signature used by LSP and cross-project dispatch."
-    )]
     pub fn provide_hover(
         &self,
         ctx: &Context,
         params: &lsproto::HoverParams,
+    ) -> Result<lsproto::HoverResponse, lsproto::Error> {
+        self.provide_hover_worker(ctx, params, false)
+    }
+
+    /// TSServer-style quick-info retains ordinary type serialization caches across requests.
+    pub fn provide_quick_info(
+        &self,
+        ctx: &Context,
+        params: &lsproto::HoverParams,
+    ) -> Result<lsproto::HoverResponse, lsproto::Error> {
+        self.provide_hover_worker(ctx, params, true)
+    }
+
+    /// Preserve source `JSDoc` tags for embedding clients that own documentation rendering.
+    /// This shares the live program and checker; no Markdown is parsed back into tags.
+    pub fn quick_info_documentation(
+        &self,
+        ctx: &Context,
+        params: &lsproto::HoverParams,
+    ) -> (String, Vec<crate::jsdoc::JSDocTagInfo>) {
+        let (program, file) = self.get_program_and_file(&params.text_document.uri);
+        let positions = self.converters.from_lsp_position_for_source_file(
+            file,
+            params.position,
+            Feature::Hover,
+        );
+        for projection in positions {
+            if !projection.fidelity.is_single_segment() {
+                continue;
+            }
+            let node = get_node_for_quick_info(astnav::get_touching_property_name(
+                projection.script,
+                projection.position,
+            ));
+            let mut c = program.get_type_checker_for_file(ctx, projection.script);
+            let symbol = get_symbol_at_location_for_quick_info(&mut c, node);
+            let declaration = get_call_or_new_expression(node)
+                .and_then(|call| c.get_resolved_signature_exported(call).declaration())
+                .or_else(|| {
+                    let s = symbol?;
+                    s.value_declaration().or_else(|| s.declarations().first().copied())
+                });
+            let mapper = self.documentation_location_mapper(Feature::Hover);
+            let documentation = get_documentation_for_symbol(
+                &mapper,
+                &mut c,
+                symbol,
+                node,
+                declaration,
+                lsproto::MarkupKind::MARKDOWN,
+                true,
+            )
+            .trim()
+            .to_string();
+            let mut tags = declaration.map_or_else(
+                || crate::jsdoc::get_symbol_jsdoc_tags(symbol),
+                crate::jsdoc::get_declaration_jsdoc_tag_info,
+            );
+            if tags.is_empty()
+                && let Some(symbol) = symbol.filter(|s| s.flags().intersects(SymbolFlags::Alias))
+            {
+                let target = c.get_aliased_symbol(symbol);
+                tags = crate::jsdoc::get_symbol_jsdoc_tags(Some(target));
+            }
+            if !documentation.is_empty() || !tags.is_empty() {
+                return (documentation, tags);
+            }
+        }
+        (String::new(), Vec::new())
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "Shared fallible response signature for embedded and LSP callers"
+    )]
+    fn provide_hover_worker(
+        &self,
+        ctx: &Context,
+        params: &lsproto::HoverParams,
+        legacy: bool,
     ) -> Result<lsproto::HoverResponse, lsproto::Error> {
         let caps = lsproto::get_client_capabilities(ctx);
         let content_format =
@@ -96,7 +173,15 @@ impl LanguageService {
                 .ok()
                 .filter(|&length| length > 0)
                 .unwrap_or(500);
-            let vc = new_verbosity_context(verbosity_level, max_trunc_len);
+            let vc = if legacy {
+                P::new(VerbosityContext {
+                    max_truncation_length: Cell::new(max_trunc_len),
+                    disable_expansion: true,
+                    ..Default::default()
+                })
+            } else {
+                new_verbosity_context(verbosity_level, max_trunc_len)
+            };
 
             let vs_capability = caps.vs_supports_visual_studio_extensions;
             let (quick_info, documentation, vs_documentation, quick_info_runs) = self
@@ -710,6 +795,9 @@ impl QuickInfoWriter {
         mut flags: TypeFormatFlags,
     ) {
         flags |= TypeFormatFlags::MultilineObjectLiterals;
+        if self.vc.disable_expansion {
+            flags.remove(TypeFormatFlags::UseInstantiationExpressions);
+        }
         if !self.vs_capability {
             let s = c.type_to_string_ex(t, enclosing, flags, Some(self.vc));
             self.dpw.write(&s);
@@ -1073,7 +1161,19 @@ impl QuickInfoWriter {
                 }
                 self.dpw.write_punctuation(": ");
             }
-            if let Some(call_node) = get_call_or_new_expression(node) {
+            let call_node = get_call_or_new_expression(node).filter(|call| {
+                if !self.vc.disable_expansion {
+                    return true;
+                }
+                let typ = c.get_type_of_symbol_at_location(symbol, Some(node)).unwrap();
+                let kind = if ast::is_new_expression(*call) {
+                    SignatureKind::Construct
+                } else {
+                    SignatureKind::Call
+                };
+                !c.get_signatures_of_type(typ, kind).is_empty()
+            });
+            if let Some(call_node) = call_node {
                 let mut flags = TYPE_FORMAT_FLAGS
                     | TypeFormatFlags::WriteTypeArgumentsOfSignature
                     | TypeFormatFlags::WriteArrowStyleSignature;
@@ -1295,7 +1395,7 @@ impl QuickInfoWriter {
             self.dpw.write("type parameter");
             self.dpw.write_punctuation(") ");
             if ast::is_identifier(node) && ast::is_type_reference_node(node.parent().unwrap()) {
-                let t = c.get_type_at_location(node.parent().unwrap());
+                let t = c.get_editor_type_at_location(node.parent().unwrap());
                 if checker::is_distributed_type_parameter(t) {
                     self.dpw.write_punctuation("(");
                     self.dpw.write("distributed");
@@ -1396,7 +1496,7 @@ impl QuickInfoWriter {
             self.dpw.write_operator(" = ");
             let type_alias_type = match node.parent() {
                 Some(parent) if ast::is_const_type_reference(parent) => {
-                    c.get_type_at_location(parent)
+                    c.get_editor_type_at_location(parent)
                 }
                 _ => c.get_declared_type_of_symbol_exported(symbol),
             };
@@ -1460,13 +1560,13 @@ pub fn get_quick_info_and_declaration_at_location(
     {
         w.dpw.write_keyword("this");
         w.dpw.write_punctuation(": ");
-        let t = c.get_type_at_location(node);
+        let t = c.get_editor_type_at_location(node);
         w.write_type_classified(c, t, container, TYPE_FORMAT_FLAGS);
         return SymbolDisplayInfo { display_parts: w.dpw, declaration: None };
     }
     let Some(symbol) = symbol else {
         if should_get_type(node) {
-            let t = c.get_type_at_location(node);
+            let t = c.get_editor_type_at_location(node);
             w.write_type_classified(c, t, container, TYPE_FORMAT_FLAGS);
         }
         return SymbolDisplayInfo { display_parts: w.dpw, declaration: None };
@@ -1522,7 +1622,7 @@ fn get_symbol_at_location_for_quick_info(c: &mut Checker, node: P<Node>) -> Opti
             return Some(properties[0]);
         }
     }
-    c.get_symbol_at_location_exported(node)
+    c.get_editor_symbol_at_location(node)
 }
 
 // hover.go:985

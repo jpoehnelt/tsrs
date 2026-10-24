@@ -1231,7 +1231,7 @@ pub fn get_parent_symbols_of_property_access(
     if !is_right_side_of_property_access(location) {
         return Vec::new();
     }
-    let lhs_type = ch.get_type_at_location(location.parent().unwrap().expression().unwrap());
+    let lhs_type = ch.get_editor_type_at_location(location.parent().unwrap().expression().unwrap());
     let possible_symbols: Vec<P<Type>> =
         if lhs_type.flags().intersects(TypeFlags::UnionOrIntersection) {
             lhs_type.types().to_vec()
@@ -1280,7 +1280,7 @@ pub fn get_property_symbols_from_base_types(
         }
         for &declaration in symbol.declarations() {
             for type_reference in get_all_super_type_nodes(declaration) {
-                let property_type = checker.get_type_at_location(type_reference);
+                let property_type = checker.get_editor_type_at_location(type_reference);
                 if let Some(property_type_symbol) = property_type.symbol() {
                     // Visit the typeReference as well to see if it directly or indirectly uses that property
                     if let Some(property_symbol) =
@@ -1317,7 +1317,7 @@ pub fn get_property_symbol_from_binding_element(
     checker: &mut Checker,
     binding_element: P<Node>,
 ) -> Option<P<Symbol>> {
-    let type_of_pattern = checker.get_type_at_location(binding_element.parent().unwrap());
+    let type_of_pattern = checker.get_editor_type_at_location(binding_element.parent().unwrap());
     checker.get_property_of_type_exported(type_of_pattern, binding_element.name().unwrap().text())
 }
 
@@ -1440,7 +1440,7 @@ pub fn new_case_clause_tracker(
                 }
             } else {
                 let symbol =
-                    type_checker.get_symbol_at_location_exported(clause.expression().unwrap());
+                    type_checker.get_editor_symbol_at_location(clause.expression().unwrap());
                 if let Some(symbol) = symbol
                     && let Some(value_declaration) = symbol.value_declaration()
                     && ast::is_enum_member(value_declaration)
@@ -1482,7 +1482,7 @@ pub fn get_possible_generic_signatures(
     type_argument_count: usize,
     c: &mut Checker,
 ) -> Vec<P<Signature>> {
-    let mut type_at_location = c.get_type_at_location(called);
+    let mut type_at_location = c.get_editor_type_at_location(called);
     let called_parent = called.parent().unwrap();
     if ast::is_optional_chain(called_parent) {
         type_at_location = remove_optionality(
@@ -1855,7 +1855,7 @@ pub fn get_contextual_type_from_parent(
         Kind::BinaryExpression => {
             let bin = parent.as_binary_expression();
             if is_equality_operator_kind(bin.operator_token.kind()) {
-                return Some(type_checker.get_type_at_location(if node == bin.right() {
+                return Some(type_checker.get_editor_type_at_location(if node == bin.right() {
                     bin.left
                 } else {
                     bin.right()
@@ -1885,7 +1885,7 @@ pub fn get_contextual_type_from_parent_or_ancestor_type_node(
     }
 
     if let Some(ancestor_type_node) = get_ancestor_type_node(node) {
-        return Some(type_checker.get_type_at_location(ancestor_type_node));
+        return Some(type_checker.get_editor_type_at_location(ancestor_type_node));
     }
 
     None
