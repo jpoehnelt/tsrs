@@ -44,23 +44,48 @@ pub fn create_diagnostic_reporter_with_writer<'a>(
     if let Some(sink) = sys.diagnostic_sink() {
         return Box::new(sink);
     }
+    let format = new_diagnostic_formatter(sys, options);
+    Box::new(move |diagnostic| {
+        let mut out = Vec::new();
+        format(&mut out, diagnostic);
+        w(&tsrs_core::utf8::from_utf8_lossy(&out));
+    })
+}
+
+/// Formats a diagnostic into a buffer, as the reporter of `create_diagnostic_reporter` writes it.
+pub type DiagnosticFormatter<'a> = Box<dyn Fn(&mut Vec<u8>, P<Diagnostic>) + Send + Sync + 'a>;
+
+/// tsrs-only: the text `create_diagnostic_reporter(sys, options)` writes for each diagnostic.
+///
+/// `None` when that reporter writes nothing itself (`--quiet`, or a system with a diagnostic sink). Lets the report
+/// loop format many diagnostics in parallel and write them in order (`EmitInput::format_diagnostic`).
+pub fn create_diagnostic_formatter<'a>(
+    sys: &'a dyn System,
+    options: Option<&CompilerOptions>,
+) -> Option<DiagnosticFormatter<'a>> {
+    if options.is_some_and(|o| o.quiet.is_true()) || sys.diagnostic_sink().is_some() {
+        return None;
+    }
+    Some(new_diagnostic_formatter(sys, options))
+}
+
+fn new_diagnostic_formatter<'a>(
+    sys: &'a dyn System,
+    options: Option<&CompilerOptions>,
+) -> DiagnosticFormatter<'a> {
     let format_opts = get_format_opts_of_sys(sys);
     if should_be_pretty(sys, options) {
-        return Box::new(move |diagnostic| {
-            let mut out = Vec::new();
+        return Box::new(move |out, diagnostic| {
             diagnosticwriter::format_diagnostic_with_color_and_context(
-                &mut out,
+                out,
                 diagnostic,
                 &format_opts,
             );
             out.extend_from_slice(format_opts.new_line.as_bytes());
-            w(&tsrs_core::utf8::from_utf8_lossy(&out));
         });
     }
-    Box::new(move |diagnostic| {
-        let mut out = Vec::new();
-        diagnosticwriter::write_format_diagnostic(&mut out, diagnostic, &format_opts);
-        w(&tsrs_core::utf8::from_utf8_lossy(&out));
+    Box::new(move |out, diagnostic| {
+        diagnosticwriter::write_format_diagnostic(out, diagnostic, &format_opts);
     })
 }
 

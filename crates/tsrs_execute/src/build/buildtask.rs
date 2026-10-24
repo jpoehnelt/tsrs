@@ -862,6 +862,7 @@ impl BuildTask {
             program,
             config: self.resolved(),
             report_diagnostic: &report_diagnostic,
+            format_diagnostic: None,
             report_error_summary: &report_error_summary,
             compile_times,
             incremental: Some(incremental_program),

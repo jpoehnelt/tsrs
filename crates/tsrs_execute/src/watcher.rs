@@ -1092,6 +1092,7 @@ impl Watcher {
             program: program.get_program(),
             config: self.config,
             report_diagnostic: &self.report_diagnostic,
+            format_diagnostic: None,
             report_error_summary: &self.report_error_summary,
             compile_times: tsc::CompileTimes::default(),
             incremental: Some(program),

@@ -5,8 +5,8 @@ use tsrs_core::P;
 use tsrs_tsoptions::ParsedCommandLine;
 
 use super::{
-    CompileAndEmitResult, CompileTimes, DiagnosticReporter, DiagnosticsReporter, ExitStatus,
-    Statistics, System, statistics_from_program,
+    CompileAndEmitResult, CompileTimes, DiagnosticFormatter, DiagnosticReporter,
+    DiagnosticsReporter, ExitStatus, Statistics, System, statistics_from_program,
 };
 
 pub struct EmitInput<'a> {
@@ -14,6 +14,9 @@ pub struct EmitInput<'a> {
     pub program: &'static Program,
     pub config: P<ParsedCommandLine>,
     pub report_diagnostic: &'a DiagnosticReporter<'a>,
+    // tsrs-only: what `report_diagnostic` writes for a diagnostic, when it writes it through `write` (see
+    // `create_diagnostic_formatter`); the report loop then formats the diagnostics in parallel (`report_diagnostics`).
+    pub format_diagnostic: Option<&'a DiagnosticFormatter<'a>>,
     pub report_error_summary: &'a DiagnosticsReporter<'a>,
     pub compile_times: CompileTimes,
     // Go `EmitInput.ProgramLike` when it is an `*incremental.Program`.
@@ -30,6 +33,23 @@ impl EmitInput<'_> {
         match self.writer {
             Some(w) => w(text),
             None => self.sys.write(text),
+        }
+    }
+
+    /// `report_diagnostic` of each diagnostic, in order.
+    fn report_diagnostics(&self, diagnostics: &[P<tsrs_ast::Diagnostic>]) {
+        match self.format_diagnostic {
+            Some(format) => tsrs_compiler::diagnosticwriter::format_diagnostics_in_order(
+                diagnostics,
+                self.program.single_threaded(),
+                &**format,
+                &mut |out| self.write(&tsrs_core::utf8::from_utf8_lossy(out)),
+            ),
+            None => {
+                for &diagnostic in diagnostics {
+                    (self.report_diagnostic)(diagnostic);
+                }
+            }
         }
     }
 }
@@ -136,11 +156,7 @@ pub fn emit_files_and_report_errors(input: &EmitInput) -> CompileAndEmitResult {
     tsrs_core::phases::time(
         input.program.options().diagnostics_enabled(),
         "Diagnostics: report",
-        || {
-            for &diagnostic in &all_diagnostics {
-                (input.report_diagnostic)(diagnostic);
-            }
-        },
+        || input.report_diagnostics(&all_diagnostics),
     );
 
     tsrs_core::phases::time(input.program.options().diagnostics_enabled(), "List files", || {
@@ -269,9 +285,7 @@ fn emit_files_and_report_errors_incremental(
     }
 
     let all_diagnostics = sort_and_deduplicate_diagnostics(&all_diagnostics);
-    for &diagnostic in &all_diagnostics {
-        (input.report_diagnostic)(diagnostic);
-    }
+    input.report_diagnostics(&all_diagnostics);
 
     list_files(input, &emit_result.clone().unwrap_or_default());
 

@@ -13,7 +13,8 @@ use tsrs_vfs::FS;
 
 use crate::tsc::{
     self, CommandLineResult, CompileTimes, EmitInput, ExitStatus, ExtendedConfigCache, System,
-    create_diagnostic_reporter, create_report_error_summary, emit_and_report_statistics,
+    create_diagnostic_formatter, create_diagnostic_reporter, create_report_error_summary,
+    emit_and_report_statistics,
 };
 
 // The system doubles as the config-parsing host (Go's tsc.System satisfies tsoptions.ParseConfigHost).
@@ -152,6 +153,7 @@ fn tsc_compilation(
     let mut config_file_name = String::new();
     let command_line_options = command_line.compiler_options().unwrap();
     let report_diagnostic = create_diagnostic_reporter(sys, Some(&command_line_options));
+    let mut format_diagnostic = create_diagnostic_formatter(sys, Some(&command_line_options));
 
     if !command_line.errors.is_empty() {
         for &e in &command_line.errors {
@@ -308,6 +310,8 @@ fn tsc_compilation(
         // Updater to reflect pretty
         report_diagnostic =
             create_diagnostic_reporter(sys, Some(&command_line.compiler_options().unwrap()));
+        format_diagnostic =
+            create_diagnostic_formatter(sys, Some(&command_line.compiler_options().unwrap()));
     }
 
     let config_options = config_for_compilation.compiler_options().unwrap();
@@ -341,6 +345,7 @@ fn tsc_compilation(
             sys,
             config_for_compilation,
             &report_diagnostic,
+            format_diagnostic.as_ref(),
             &report_error_summary,
             extended_config_cache,
             compile_times,
@@ -351,6 +356,7 @@ fn tsc_compilation(
         sys,
         config_for_compilation,
         &report_diagnostic,
+        format_diagnostic.as_ref(),
         &report_error_summary,
         extended_config_cache,
         compile_times,
@@ -393,6 +399,7 @@ fn perform_compilation(
     sys: &'static dyn System,
     config: P<ParsedCommandLine>,
     report_diagnostic: &tsc::DiagnosticReporter,
+    format_diagnostic: Option<&tsc::DiagnosticFormatter>,
     report_error_summary: &tsc::DiagnosticsReporter,
     extended_config_cache: Arc<ExtendedConfigCache>,
     mut compile_times: CompileTimes,
@@ -457,6 +464,7 @@ fn perform_compilation(
         program,
         config,
         report_diagnostic,
+        format_diagnostic,
         report_error_summary,
         compile_times,
         incremental: None,
@@ -477,6 +485,7 @@ fn perform_incremental_compilation(
     sys: &'static dyn System,
     config: P<ParsedCommandLine>,
     report_diagnostic: &tsc::DiagnosticReporter,
+    format_diagnostic: Option<&tsc::DiagnosticFormatter>,
     report_error_summary: &tsc::DiagnosticsReporter,
     extended_config_cache: Arc<ExtendedConfigCache>,
     mut compile_times: CompileTimes,
@@ -563,6 +572,7 @@ fn perform_incremental_compilation(
         program: incremental_program.get_program(),
         config,
         report_diagnostic,
+        format_diagnostic,
         report_error_summary,
         compile_times,
         incremental: Some(incremental_program),

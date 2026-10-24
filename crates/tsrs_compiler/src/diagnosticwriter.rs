@@ -655,6 +655,52 @@ pub fn write_format_diagnostic(
     w!(output, "{}", format_opts.new_line);
 }
 
+/// Fewer diagnostics than this are formatted on the calling thread (`format_diagnostics_in_order`).
+const PARALLEL_FORMAT_MIN: usize = 256;
+/// Diagnostics formatted per parallel round: bounds the formatted text held before it is written.
+const PARALLEL_FORMAT_CHUNK: usize = 2048;
+
+/// tsrs-only: `format` of each diagnostic passed to `write` in order, as a loop calling both would.
+///
+/// Many diagnostics are formatted on the worker pool, a chunk at a time, and written in order after each chunk;
+/// `single_threaded` keeps the loop. The CLI reports after the parallel check, so formatting thousands of diagnostics
+/// (line maps, relative file names, messages) one at a time on the main thread was the serial tail of the run.
+/// `format` only reads the diagnostics and their files (a line map is built once, under its file's region lock).
+pub fn format_diagnostics_in_order(
+    diagnostics: &[P<Diagnostic>],
+    single_threaded: bool,
+    format: &(dyn Fn(&mut Vec<u8>, P<Diagnostic>) + Sync),
+    write: &mut dyn FnMut(&[u8]),
+) {
+    use rayon::prelude::*;
+
+    if single_threaded || diagnostics.len() < PARALLEL_FORMAT_MIN {
+        let mut out = Vec::new();
+        for &diagnostic in diagnostics {
+            out.clear();
+            format(&mut out, diagnostic);
+            write(&out);
+        }
+        return;
+    }
+    let pool = crate::program::worker_pool();
+    for chunk in diagnostics.chunks(PARALLEL_FORMAT_CHUNK) {
+        let formatted: Vec<Vec<u8>> = pool.install(|| {
+            chunk
+                .par_iter()
+                .map(|&diagnostic| {
+                    let mut out = Vec::new();
+                    format(&mut out, diagnostic);
+                    out
+                })
+                .collect()
+        });
+        for out in &formatted {
+            write(out);
+        }
+    }
+}
+
 pub fn format_diagnostic_to_string(
     diagnostic: P<Diagnostic>,
     format_opts: &FormattingOptions,
