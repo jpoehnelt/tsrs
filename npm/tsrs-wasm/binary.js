@@ -4,21 +4,44 @@ const limit = 64 * 1024 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 export function encodeFrame(value) {
-    let bytes = new Uint8Array(1024);
-    let view = new DataView(bytes.buffer);
-    let at = 0;
+    // Capture large immutable strings without allocating temporary UTF-8 bytes.
+    // Small scalar writes use bounded chunks; the final frame owns exactly its size.
+    let bytes = new Uint8Array(1024), view = new DataView(bytes.buffer);
+    const chunks = [];
+    let at = 0, size = 0;
     const reserve = (n) => {
-        if (at + n > limit) throw new Error('Binary frame exceeds 64 MiB');
+        if (size + at + n > limit) throw new Error('Binary frame exceeds 64 MiB');
         if (at + n > bytes.length) {
-            const next = new Uint8Array(Math.min(limit, Math.max(at + n, bytes.length * 2)));
-            next.set(bytes); bytes = next; view = new DataView(bytes.buffer);
+            chunks.push(bytes.subarray(0, at)); size += at;
+            bytes = new Uint8Array(Math.max(1024, n));
+            view = new DataView(bytes.buffer); at = 0;
         }
     };
     const byte = (n) => { reserve(1); bytes[at++] = n; };
     const length = (n) => { reserve(4); view.setUint32(at, n, true); at += 4; };
     const string = (s) => {
         if (!s.isWellFormed()) throw new Error('Unpaired UTF-16 surrogate');
-        const data = encoder.encode(s); length(data.length); reserve(data.length); bytes.set(data, at); at += data.length;
+        let n = s.length;
+        if (!/^[\x00-\x7f]*$/u.test(s)) {
+            for (let i = 0; i < s.length; i++) {
+                const c = s.charCodeAt(i);
+                if (c >= 0x80) {
+                    n += c < 0x800 ? 1 : 2;
+                    if (c >= 0xd800 && c <= 0xdbff) i++;
+                }
+            }
+        }
+        length(n);
+        if (n >= 1024) {
+            if (size + at + n > limit) throw new Error('Binary frame exceeds 64 MiB');
+            chunks.push(bytes.subarray(0, at), s); size += at + n;
+            bytes = new Uint8Array(1024); view = new DataView(bytes.buffer); at = 0;
+            return;
+        }
+        reserve(n);
+        const result = encoder.encodeInto(s, bytes.subarray(at, at + n));
+        if (result.read !== s.length || result.written !== n) throw new Error('Invalid UTF-8 size');
+        at += n;
     };
     const ancestors = new Set();
     const put = (v, depth) => {
@@ -42,7 +65,18 @@ export function encodeFrame(value) {
         ancestors.delete(v);
     };
     for (const b of magic) byte(b);
-    put(value, 0); return bytes.subarray(0, at);
+    put(value, 0);
+    const result = new Uint8Array(size + at);
+    chunks.push(bytes.subarray(0, at));
+    let offset = 0;
+    for (const chunk of chunks) {
+        if (typeof chunk === 'string') {
+            const encoded = encoder.encodeInto(chunk, result.subarray(offset));
+            if (encoded.read !== chunk.length) throw new Error('Invalid UTF-8 size');
+            offset += encoded.written;
+        } else { result.set(chunk, offset); offset += chunk.length; }
+    }
+    return result;
 }
 export function decodeFrame(bytes) {
     if (bytes.length > limit || magic.some((b, i) => bytes[i] !== b)) throw new Error('Invalid binary frame');

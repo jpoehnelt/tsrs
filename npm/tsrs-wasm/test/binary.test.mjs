@@ -18,3 +18,19 @@ test('invalid, oversized, cyclic and deeply nested frames fail explicitly',()=>{
  assert.throws(()=>encodeFrame('\ud800'),/surrogate/);
  assert.throws(()=>encodeFrame(new Uint8Array(64*1024*1024)),/64 MiB/);
 });
+test('frames own exactly their encoded bytes without spare growth capacity',()=>{
+ for(const text of ['small', 'x'.repeat(1024*1024), 'é🧪'.repeat(200000)]){
+  const frame=encodeFrame({text,other:'tail'});
+  assert.equal(frame.byteOffset,0);
+  assert.equal(frame.buffer.byteLength,frame.byteLength);
+  assert.equal(decodeFrame(frame).text,text);
+ }
+ assert.deepEqual([...encodeFrame('é🧪')],[84,83,82,66,1,4,6,0,0,0,195,169,240,159,167,170]);
+});
+test('deferred strings preserve property evaluation and raw buffer ownership',()=>{
+ const data=new Uint8Array([1,2,3]);let reads=0;
+ const value={data,text:'é🧪'.repeat(1000),get tail(){if(++reads===2)data.fill(9);return 'tail';}};
+ const decoded=decodeFrame(encodeFrame(value));
+ assert.deepEqual([...decoded.data],[1,2,3]);assert.equal(reads,2);
+ assert.equal(decoded.text,'é🧪'.repeat(1000));assert.equal(decoded.tail,'tail');
+});
