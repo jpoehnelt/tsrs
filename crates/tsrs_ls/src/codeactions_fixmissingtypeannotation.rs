@@ -26,27 +26,27 @@ use crate::diagnostics::get_all_diagnostics;
 fn isolated_declarations_fix_error_codes() -> &'static [i32] {
     static CODES: std::sync::LazyLock<Vec<i32>> = std::sync::LazyLock::new(|| {
         vec![
-            diagnostics::Function_must_have_an_explicit_return_type_annotation_with_isolatedDeclarations.code(),
-            diagnostics::Method_must_have_an_explicit_return_type_annotation_with_isolatedDeclarations.code(),
-            diagnostics::At_least_one_accessor_must_have_an_explicit_type_annotation_with_isolatedDeclarations.code(),
-            diagnostics::Variable_must_have_an_explicit_type_annotation_with_isolatedDeclarations.code(),
-            diagnostics::Parameter_must_have_an_explicit_type_annotation_with_isolatedDeclarations.code(),
-            diagnostics::Property_must_have_an_explicit_type_annotation_with_isolatedDeclarations.code(),
-            diagnostics::Expression_type_can_t_be_inferred_with_isolatedDeclarations.code(),
-            diagnostics::Binding_elements_with_initializers_can_t_be_exported_directly_with_isolatedDeclarations.code(),
-            diagnostics::Computed_property_names_on_class_or_object_literals_cannot_be_inferred_with_isolatedDeclarations.code(),
-            diagnostics::Computed_properties_must_be_number_or_string_literals_variables_or_dotted_expressions_with_isolatedDeclarations.code(),
-            diagnostics::Enum_member_initializers_must_be_computable_without_references_to_external_symbols_with_isolatedDeclarations.code(),
-            diagnostics::Extends_clause_can_t_contain_an_expression_with_isolatedDeclarations.code(),
-            diagnostics::Objects_that_contain_shorthand_properties_can_t_be_inferred_with_isolatedDeclarations.code(),
-            diagnostics::Objects_that_contain_spread_assignments_can_t_be_inferred_with_isolatedDeclarations.code(),
-            diagnostics::Arrays_with_spread_elements_can_t_inferred_with_isolatedDeclarations.code(),
-            diagnostics::Default_exports_can_t_be_inferred_with_isolatedDeclarations.code(),
-            diagnostics::Only_const_arrays_can_be_inferred_with_isolatedDeclarations.code(),
-            diagnostics::Assigning_properties_to_functions_without_declaring_them_is_not_supported_with_isolatedDeclarations_Add_an_explicit_declaration_for_the_properties_assigned_to_this_function.code(),
-            diagnostics::Declaration_emit_for_this_parameter_requires_implicitly_adding_undefined_to_its_type_This_is_not_supported_with_isolatedDeclarations.code(),
-            diagnostics::Type_containing_private_name_0_can_t_be_used_with_isolatedDeclarations.code(),
-            diagnostics::Add_satisfies_and_a_type_assertion_to_this_expression_satisfies_T_as_T_to_make_the_type_explicit.code(),
+            diagnostics::FUNCTION_MUST_HAVE_AN_EXPLICIT_RETURN_TYPE_ANNOTATION_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::METHOD_MUST_HAVE_AN_EXPLICIT_RETURN_TYPE_ANNOTATION_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::AT_LEAST_ONE_ACCESSOR_MUST_HAVE_AN_EXPLICIT_TYPE_ANNOTATION_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::VARIABLE_MUST_HAVE_AN_EXPLICIT_TYPE_ANNOTATION_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::PARAMETER_MUST_HAVE_AN_EXPLICIT_TYPE_ANNOTATION_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::PROPERTY_MUST_HAVE_AN_EXPLICIT_TYPE_ANNOTATION_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::EXPRESSION_TYPE_CAN_T_BE_INFERRED_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::BINDING_ELEMENTS_WITH_INITIALIZERS_CAN_T_BE_EXPORTED_DIRECTLY_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::COMPUTED_PROPERTY_NAMES_ON_CLASS_OR_OBJECT_LITERALS_CANNOT_BE_INFERRED_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::COMPUTED_PROPERTIES_MUST_BE_NUMBER_OR_STRING_LITERALS_VARIABLES_OR_DOTTED_EXPRESSIONS_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::ENUM_MEMBER_INITIALIZERS_MUST_BE_COMPUTABLE_WITHOUT_REFERENCES_TO_EXTERNAL_SYMBOLS_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::EXTENDS_CLAUSE_CAN_T_CONTAIN_AN_EXPRESSION_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::OBJECTS_THAT_CONTAIN_SHORTHAND_PROPERTIES_CAN_T_BE_INFERRED_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::OBJECTS_THAT_CONTAIN_SPREAD_ASSIGNMENTS_CAN_T_BE_INFERRED_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::ARRAYS_WITH_SPREAD_ELEMENTS_CAN_T_INFERRED_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::DEFAULT_EXPORTS_CAN_T_BE_INFERRED_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::ONLY_CONST_ARRAYS_CAN_BE_INFERRED_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::ASSIGNING_PROPERTIES_TO_FUNCTIONS_WITHOUT_DECLARING_THEM_IS_NOT_SUPPORTED_WITH_ISOLATED_DECLARATIONS_ADD_AN_EXPLICIT_DECLARATION_FOR_THE_PROPERTIES_ASSIGNED_TO_THIS_FUNCTION.code(),
+            diagnostics::DECLARATION_EMIT_FOR_THIS_PARAMETER_REQUIRES_IMPLICITLY_ADDING_UNDEFINED_TO_ITS_TYPE_THIS_IS_NOT_SUPPORTED_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::TYPE_CONTAINING_PRIVATE_NAME_0_CAN_T_BE_USED_WITH_ISOLATED_DECLARATIONS.code(),
+            diagnostics::ADD_SATISFIES_AND_A_TYPE_ASSERTION_TO_THIS_EXPRESSION_SATISFIES_T_AS_T_TO_MAKE_THE_TYPE_EXPLICIT.code(),
         ]
     });
     &CODES
@@ -57,7 +57,7 @@ const FIX_MISSING_TYPE_ANNOTATION_ON_EXPORTS_FIX_ID: &str = "fixMissingTypeAnnot
 
 // codeactions_fixmissingtypeannotation.go:48
 // IsolatedDeclarationsFixProvider is the CodeFixProvider for isolatedDeclarations-related type annotation fixes.
-pub(crate) static ISOLATED_DECLARATIONS_FIX_PROVIDER: std::sync::LazyLock<CodeFixProvider> =
+pub static ISOLATED_DECLARATIONS_FIX_PROVIDER: std::sync::LazyLock<CodeFixProvider> =
     std::sync::LazyLock::new(|| CodeFixProvider {
         requires_auto_imports: true,
         error_codes: isolated_declarations_fix_error_codes(),
@@ -100,7 +100,7 @@ fn declaration_emit_node_builder_flags() -> Flags {
 
 // codeactions_fixmissingtypeannotation.go:81
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-enum typePrintMode {
+enum TypePrintMode {
     #[default]
     Full,
     Relative, // typeof X
@@ -128,7 +128,7 @@ fn get_isolated_declarations_code_actions(
 
     // Match TS ordering: Full annotation, Relative annotation, Widened annotation,
     // Full inline, Relative inline, Widened inline, Full extract
-    let modes = [typePrintMode::Full, typePrintMode::Relative, typePrintMode::Widened];
+    let modes = [TypePrintMode::Full, TypePrintMode::Relative, TypePrintMode::Widened];
 
     for mode in modes {
         add_fix(try_code_action(ctx, fix_context, &mut ch, &mut |f| {
@@ -146,7 +146,7 @@ fn get_isolated_declarations_code_actions(
 
     // extractAsVariable only in Full mode
     add_fix(try_code_action(ctx, fix_context, &mut ch, &mut |f| {
-        f.type_print_mode = typePrintMode::Full;
+        f.type_print_mode = TypePrintMode::Full;
         f.extract_as_variable(fix_context.span)
     }));
 
@@ -173,21 +173,21 @@ fn get_all_isolated_declarations_code_actions(
         Arc::clone(&fix_context.ls.converters),
     );
 
-    let mut fixer = isolatedDeclarationsFixer {
+    let mut fixer = IsolatedDeclarationsFixer {
         source_file: fix_context.source_file,
         checker: &mut ch,
         change_tracker: &mut change_tracker,
         fixed_nodes: FxHashMap::default(),
-        type_print_mode: typePrintMode::Full,
+        type_print_mode: TypePrintMode::Full,
         symbols_to_import: Vec::new(),
         mutated_target: false,
     };
 
     for diag in all_diags {
-        if is_fixable_diagnostic(diag, isolated_declarations_fix_error_codes()) {
-            if let Some(span) = diag.loc() {
-                fixer.add_type_annotation(span);
-            }
+        if is_fixable_diagnostic(diag, isolated_declarations_fix_error_codes())
+            && let Some(span) = diag.loc()
+        {
+            fixer.add_type_annotation(span);
         }
     }
 
@@ -207,7 +207,7 @@ fn get_all_isolated_declarations_code_actions(
 
     Ok(Some(CombinedCodeActions {
         changes_by_file: Vec::new(),
-        description: diagnostics::Add_all_missing_type_annotations.localize(&[]),
+        description: diagnostics::ADD_ALL_MISSING_TYPE_ANNOTATIONS.localize(&[]),
         changes: file_changes,
     }))
 }
@@ -217,7 +217,7 @@ fn try_code_action(
     ctx: &Context,
     fix_context: &CodeFixContext,
     ch: &mut Checker,
-    f: &mut dyn FnMut(&mut isolatedDeclarationsFixer) -> String,
+    f: &mut dyn FnMut(&mut IsolatedDeclarationsFixer) -> String,
 ) -> Option<CodeAction> {
     let mut change_tracker = change::new_tracker(
         ctx,
@@ -230,12 +230,12 @@ fn try_code_action(
     // type node transformation still works without it, just without adding imports.
     // (Go never assigns the adder here, so it stays nil.)
 
-    let mut fixer = isolatedDeclarationsFixer {
+    let mut fixer = IsolatedDeclarationsFixer {
         source_file: fix_context.source_file,
         checker: ch,
         change_tracker: &mut change_tracker,
         fixed_nodes: FxHashMap::default(),
-        type_print_mode: typePrintMode::Full,
+        type_print_mode: TypePrintMode::Full,
         symbols_to_import: Vec::new(),
         mutated_target: false,
     };
@@ -267,24 +267,24 @@ fn try_code_action(
         fix_id: FIX_MISSING_TYPE_ANNOTATION_ON_EXPORTS_FIX_ID.to_string(),
         fix_name: Some("add-annotation".into()),
         changes_by_file: Vec::new(),
-        fix_all_description: diagnostics::Add_all_missing_type_annotations.localize(&[]),
+        fix_all_description: diagnostics::ADD_ALL_MISSING_TYPE_ANNOTATIONS.localize(&[]),
     })
 }
 
 // codeactions_fixmissingtypeannotation.go:220
 // isolatedDeclarationsFixer encapsulates the state for fixing isolated declarations errors.
 // (Go's `importAdder` field is never set, its `program` field is never read and its `locale` is English here.)
-struct isolatedDeclarationsFixer<'a> {
+struct IsolatedDeclarationsFixer<'a> {
     source_file: P<SourceFile>,
     checker: &'a mut Checker,
     change_tracker: &'a mut change::Tracker,
     fixed_nodes: FxHashMap<P<Node>, bool>,
-    type_print_mode: typePrintMode,
+    type_print_mode: TypePrintMode,
     symbols_to_import: Vec<P<Symbol>>,
     mutated_target: bool, // set by inferType/relativeType when the target was mutated (e.g., spread decomposition)
 }
 
-impl isolatedDeclarationsFixer<'_> {
+impl IsolatedDeclarationsFixer<'_> {
     fn factory(&self) -> NodeFactory {
         self.change_tracker.node_factory.clone()
     }
@@ -380,7 +380,7 @@ impl isolatedDeclarationsFixer<'_> {
             .set_flags(NodeFlags::Ambient | NodeFlags::ExportContext | NodeFlags::ContextFlags);
 
         self.change_tracker.insert_node_after(self.source_file, expando_func, namespace);
-        diagnostics::Annotate_types_of_properties_expando_function_in_a_namespace.localize(&[])
+        diagnostics::ANNOTATE_TYPES_OF_PROPERTIES_EXPANDO_FUNCTION_IN_A_NAMESPACE.localize(&[])
     }
 
     // codeactions_fixmissingtypeannotation.go:321
@@ -482,7 +482,7 @@ impl isolatedDeclarationsFixer<'_> {
             return String::new();
         }
 
-        diagnostics::Add_satisfies_and_an_inline_type_assertion_with_0
+        diagnostics::ADD_SATISFIES_AND_AN_INLINE_TYPE_ASSERTION_WITH_0
             .localize(&[&type_to_string_for_diag(type_node, self.source_file, self.change_tracker)])
     }
 
@@ -513,7 +513,7 @@ impl isolatedDeclarationsFixer<'_> {
             let cloned = factory.deep_clone_node(Some(target_node)).unwrap();
             let replacement = create_as_expression(&factory, cloned, const_ref);
             self.change_tracker.replace_node(self.source_file, target_node, replacement, None);
-            return diagnostics::Mark_array_literal_as_const.localize(&[]);
+            return diagnostics::MARK_ARRAY_LITERAL_AS_CONST.localize(&[]);
         }
 
         if let Some(parent_property_assignment) =
@@ -584,7 +584,7 @@ impl isolatedDeclarationsFixer<'_> {
             self.change_tracker.replace_node(self.source_file, replacement_target, as_expr, None);
 
             let id_text = type_to_string_for_diag(temp_name, self.source_file, self.change_tracker);
-            return diagnostics::Extract_to_variable_and_replace_with_0_as_typeof_0
+            return diagnostics::EXTRACT_TO_VARIABLE_AND_REPLACE_WITH_0_AS_TYPEOF_0
                 .localize(&[&id_text]);
         }
 
@@ -633,7 +633,7 @@ impl isolatedDeclarationsFixer<'_> {
             return String::new();
         };
         self.change_tracker.try_insert_type_annotation(self.source_file, func_node, type_node);
-        diagnostics::Add_return_type_0.localize(&[&type_to_string_for_diag(
+        diagnostics::ADD_RETURN_TYPE_0.localize(&[&type_to_string_for_diag(
             type_node,
             self.source_file,
             self.change_tracker,
@@ -684,7 +684,7 @@ impl isolatedDeclarationsFixer<'_> {
             vec![var_stmt, new_export],
             None,
         );
-        diagnostics::Extract_default_export_to_variable.localize(&[])
+        diagnostics::EXTRACT_DEFAULT_EXPORT_TO_VARIABLE.localize(&[])
     }
 
     // codeactions_fixmissingtypeannotation.go:633
@@ -758,7 +758,7 @@ impl isolatedDeclarationsFixer<'_> {
         let replacement = factory.new_expression_with_type_arguments(base_class_name, None);
         self.change_tracker.replace_node(self.source_file, heritage_expression, replacement, None);
 
-        diagnostics::Extract_base_class_to_variable.localize(&[])
+        diagnostics::EXTRACT_BASE_CLASS_TO_VARIABLE.localize(&[])
     }
 
     // codeactions_fixmissingtypeannotation.go:676
@@ -779,7 +779,10 @@ impl isolatedDeclarationsFixer<'_> {
         let factory = self.factory();
         let mut new_nodes: Vec<P<Node>> = Vec::new();
 
-        let base_expr_node = if !ast::is_identifier(initializer) {
+        let base_expr_node = if ast::is_identifier(initializer) {
+            // Use a new identifier to avoid referencing original source positions
+            factory.new_identifier(initializer.text())
+        } else {
             // Create a temporary variable for complex expressions
             let temp_name = self.change_tracker.emit_context.factory.new_unique_name_ex(
                 "dest",
@@ -798,9 +801,6 @@ impl isolatedDeclarationsFixer<'_> {
             let var_stmt = factory.new_variable_statement(None, var_decl_list);
             new_nodes.push(var_stmt);
             temp_name
-        } else {
-            // Use a new identifier to avoid referencing original source positions
-            factory.new_identifier(initializer.text())
         };
 
         // Extract each binding element as a separate variable with type annotation
@@ -845,7 +845,7 @@ impl isolatedDeclarationsFixer<'_> {
             new_nodes,
             None,
         );
-        diagnostics::Extract_binding_expressions_to_variable.localize(&[])
+        diagnostics::EXTRACT_BINDING_EXPRESSIONS_TO_VARIABLE.localize(&[])
     }
 
     // codeactions_fixmissingtypeannotation.go:729
@@ -1048,7 +1048,7 @@ impl isolatedDeclarationsFixer<'_> {
         self.mutated_target = false;
 
         // Handle Relative mode first: return typeof X for identifiers
-        if self.type_print_mode == typePrintMode::Relative {
+        if self.type_print_mode == TypePrintMode::Relative {
             return self.relative_type(node);
         }
 
@@ -1079,7 +1079,7 @@ impl isolatedDeclarationsFixer<'_> {
         let mut t = t?;
 
         // Handle Widened mode: return widened literal type if different
-        if self.type_print_mode == typePrintMode::Widened {
+        if self.type_print_mode == TypePrintMode::Widened {
             if let Some(variable_type) = variable_type {
                 t = variable_type;
             }
@@ -1282,11 +1282,11 @@ impl isolatedDeclarationsFixer<'_> {
             },
         );
 
-        let initializer = if !is_in_const_context {
-            factory.deep_clone_node(Some(expression)).unwrap()
-        } else {
+        let initializer = if is_in_const_context {
             let const_ref = factory.new_type_reference_node(factory.new_identifier("const"), None);
             factory.new_as_expression(factory.deep_clone_node(Some(expression)).unwrap(), const_ref)
+        } else {
+            factory.deep_clone_node(Some(expression)).unwrap()
         };
 
         let var_decl = factory.new_variable_declaration(temp_name, None, None, Some(initializer));
@@ -1357,27 +1357,27 @@ impl isolatedDeclarationsFixer<'_> {
         if ast::is_array_literal_expression(node) {
             let var_decl = ast::find_ancestor_kind(node, Kind::VariableDeclaration);
             let mut part_name = "";
-            if let Some(var_decl) = var_decl {
-                if let Some(n) = var_decl.name().filter(|n| ast::is_identifier(*n)) {
-                    part_name = n.text();
-                }
+            if let Some(var_decl) = var_decl
+                && let Some(n) = var_decl.name().filter(|n| ast::is_identifier(*n))
+            {
+                part_name = n.text();
             }
             return self.type_from_array_spread_elements(node, part_name);
         }
         if ast::is_object_literal_expression(node) {
             let var_decl = ast::find_ancestor_kind(node, Kind::VariableDeclaration);
             let mut part_name = "";
-            if let Some(var_decl) = var_decl {
-                if let Some(n) = var_decl.name().filter(|n| ast::is_identifier(*n)) {
-                    part_name = n.text();
-                }
+            if let Some(var_decl) = var_decl
+                && let Some(n) = var_decl.name().filter(|n| ast::is_identifier(*n))
+            {
+                part_name = n.text();
             }
             return self.type_from_object_spread_assignment(node, part_name);
         }
-        if ast::is_variable_declaration(node) {
-            if let Some(initializer) = node.initializer() {
-                return self.relative_type(initializer);
-            }
+        if ast::is_variable_declaration(node)
+            && let Some(initializer) = node.initializer()
+        {
+            return self.relative_type(initializer);
         }
         if ast::is_conditional_expression(node) {
             let cond = node.as_conditional_expression();
@@ -1460,8 +1460,16 @@ impl isolatedDeclarationsFixer<'_> {
             self.change_tracker.replace_node(self.source_file, decl_type, type_node, None);
         } else {
             self.change_tracker.try_insert_type_annotation(self.source_file, decl, type_node);
+            // Parenthesize paren-less arrow function parameters (`x => ...`) so the inserted `: T`
+            // produces `(x: T) => ...` instead of the invalid `x: T => ...`. Queued after the type
+            // annotation so that the `)` edit at param.End() sorts after the annotation insertion.
+            if ast::is_parameter_declaration(decl)
+                && let Some(parent) = decl.parent().filter(|p| ast::is_arrow_function(*p))
+            {
+                self.change_tracker.parenthesize_arrow_parameters(self.source_file, parent);
+            }
         }
-        diagnostics::Add_annotation_of_type_0.localize(&[&type_to_string_for_diag(
+        diagnostics::ADD_ANNOTATION_OF_TYPE_0.localize(&[&type_to_string_for_diag(
             type_node,
             self.source_file,
             self.change_tracker,
@@ -1700,7 +1708,7 @@ fn type_param_has_default(tp: P<Type>) -> bool {
 // It reuses the change tracker's EmitContext so that generated identifier names are resolved
 // consistently with the actual code edits, and passes the source file so that the printer's
 // name generator can check for conflicts with existing file-level identifiers.
-pub(crate) fn type_to_string_for_diag(
+pub fn type_to_string_for_diag(
     type_node: P<Node>,
     source_file: P<SourceFile>,
     ct: &change::Tracker,

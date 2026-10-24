@@ -3,10 +3,9 @@
 // whose spec is not nullable. Without reflection, the generator emits the per-type field loop and the
 // strictness decisions (which fields are required / reject null) itself, and calls the helpers below.
 
-use tsrs_core::collections::OrderedMap;
-
 use crate::json::{Json, JsonError, Value, is_null, kind};
 use crate::lsp::{err_missing, err_not_object, err_null};
+use tsrs_core::json::JsonMap;
 
 // unmarshalStruct's object check. A non-strict structure (one Go decodes with json/v2's default struct
 // codec) decodes null as its zero value and rejects other non-objects with json/v2's kind error.
@@ -14,7 +13,7 @@ pub fn struct_members<'a>(
     v: &'a Value,
     go_type: &str,
     strict: bool,
-) -> Result<Option<&'a OrderedMap<String, Value>>, JsonError> {
+) -> Result<Option<&'a JsonMap>, JsonError> {
     match v {
         Value::Object(members) => Ok(Some(members)),
         Value::Null if !strict => Ok(None),
@@ -160,7 +159,7 @@ pub fn unmarshal_discriminated_arm<T: Json>(
     // Go's field order decides which error is reported first.
     let mut err = match discriminator_index {
         Some(d) if d > 0 => {
-            let mut reordered = OrderedMap::default();
+            let mut reordered = JsonMap::new();
             reordered.reserve(members.len());
             reordered.extend(
                 members
@@ -169,7 +168,7 @@ pub fn unmarshal_discriminated_arm<T: Json>(
                     .take(1)
                     .chain(members.iter().take(d))
                     .chain(members.iter().skip(d + 1))
-                    .map(|(k, item)| (k.clone(), item.clone())),
+                    .map(|(k, item)| (k.to_string(), item.clone())),
             );
             match T::from_json(&Value::Object(reordered)) {
                 Ok(arm) => return Ok(arm),
@@ -181,17 +180,17 @@ pub fn unmarshal_discriminated_arm<T: Json>(
     if err.go_type == T::GO_TYPE {
         err.go_type = union_go_type.to_string();
     }
-    if !err.sealed {
-        if let Some(field) = err.pointer.last() {
-            let replayed = match (members.get_index_of(field.as_str()), discriminator_index) {
-                (Some(f), Some(d)) => f <= d,
-                (Some(_), None) => true,
-                _ => false,
-            };
-            if replayed {
-                err.pointer.pop();
-                err = err.seal();
-            }
+    if !err.sealed
+        && let Some(field) = err.pointer.last()
+    {
+        let replayed = match (members.get_index_of(field.as_str()), discriminator_index) {
+            (Some(f), Some(d)) => f <= d,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if replayed {
+            err.pointer.pop();
+            err = err.seal();
         }
     }
     Err(err)

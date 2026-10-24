@@ -20,13 +20,13 @@ use crate::snapshot::{
     get_pending_emit_kind, get_text_handling_source_map_for_signature,
 };
 
-struct emitUpdate {
+struct EmitUpdate {
     pending_kind: FileEmitKind,
     result: Option<EmitResult>,
     dts_errors_from_cache: bool,
 }
 
-struct emitFilesHandler<'a> {
+struct EmitFilesHandler<'a> {
     ctx: &'a Context,
     program: P<Program>,
     is_for_dts_errors: bool,
@@ -34,11 +34,11 @@ struct emitFilesHandler<'a> {
     emit_signatures: Mutex<FxHashMap<Path, EmitSignature>>,
     latest_changed_dts_files: Mutex<FxHashMap<Path, String>>,
     deleted_pending_kinds: Mutex<FxHashSet<Path>>,
-    emit_updates: Mutex<FxHashMap<Path, emitUpdate>>,
+    emit_updates: Mutex<FxHashMap<Path, EmitUpdate>>,
     has_emit_diagnostics: AtomicBool,
 }
 
-impl<'a> emitFilesHandler<'a> {
+impl<'a> EmitFilesHandler<'a> {
     // Determining what all is pending to be emitted based on previous options or previous file emit flags
     // emitfileshandler.go:33
     fn get_pending_emit_kind_for_emit_options(
@@ -140,10 +140,10 @@ impl<'a> emitFilesHandler<'a> {
 
     // emitfileshandler.go:105
     fn update_has_emit_diagnostics(&self, result: Option<&EmitResult>) {
-        if let Some(result) = result {
-            if !result.diagnostics.is_empty() {
-                self.has_emit_diagnostics.store(true, Ordering::Relaxed);
-            }
+        if let Some(result) = result
+            && !result.diagnostics.is_empty()
+        {
+            self.has_emit_diagnostics.store(true, Ordering::Relaxed);
         }
     }
 
@@ -204,7 +204,7 @@ impl<'a> emitFilesHandler<'a> {
             // Update the pendingEmit for the file
             self.emit_updates.lock().unwrap().insert(
                 path,
-                emitUpdate {
+                EmitUpdate {
                     pending_kind: get_pending_emit_kind(emit_kind, pending_kind),
                     result,
                     dts_errors_from_cache: false,
@@ -238,7 +238,7 @@ impl<'a> emitFilesHandler<'a> {
                 self.program.snapshot.affected_files_pending_emit.load(&path).unwrap_or_default();
             self.emit_updates.lock().unwrap().insert(
                 path,
-                emitUpdate {
+                EmitUpdate {
                     pending_kind,
                     result: Some(EmitResult {
                         emit_skipped: true,
@@ -432,12 +432,12 @@ impl<'a> emitFilesHandler<'a> {
         let mut old_signature = String::new();
         let old_signature_format = self.program.snapshot.emit_signatures.load(file.path());
         if let Some(old_signature_format) = &old_signature_format {
-            if !old_signature_format.signature.is_empty() {
-                old_signature.clone_from(&old_signature_format.signature);
-            } else {
+            if old_signature_format.signature.is_empty() {
                 old_signature.clone_from(
                     &old_signature_format.signature_with_different_options.as_ref().unwrap()[0],
                 );
+            } else {
+                old_signature.clone_from(&old_signature_format.signature);
             }
         }
         if new_signature.is_empty() {
@@ -545,13 +545,13 @@ impl<'a> emitFilesHandler<'a> {
 }
 
 // emitfileshandler.go:341
-pub(crate) fn emit_files(
+pub fn emit_files(
     ctx: &Context,
     program: P<Program>,
     options: &EmitOptions,
     is_for_dts_errors: bool,
 ) -> Option<EmitResult> {
-    let emit_handler = emitFilesHandler {
+    let emit_handler = EmitFilesHandler {
         ctx,
         program,
         is_for_dts_errors,

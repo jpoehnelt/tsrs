@@ -82,7 +82,7 @@ pub static SYNTAX_PROVIDER: CodeFixProvider = CodeFixProvider {
     ],
     get_all_code_actions: Some(all_actions),
 };
-pub(crate) enum Edit {
+pub enum Edit {
     Replace(P<Node>, P<Node>),
     Raw(TextRange, String),
     Delete(P<Node>),
@@ -95,14 +95,14 @@ pub(crate) enum Edit {
     Nodes(P<Node>, Vec<P<Node>>),
     Insert(u32, P<Node>),
 }
-pub(crate) struct Plan {
+pub struct Plan {
     pub(crate) name: &'static str,
     pub(crate) id: &'static str,
     pub(crate) description: String,
     pub(crate) edits: Vec<Edit>,
     pub(crate) file: Option<P<SourceFile>>,
 }
-pub(crate) fn plan(name: &'static str, description: impl Into<String>, edits: Vec<Edit>) -> Plan {
+pub fn plan(name: &'static str, description: impl Into<String>, edits: Vec<Edit>) -> Plan {
     Plan { name, id: name, description: description.into(), edits, file: None }
 }
 fn tracker(ctx: &Context, fix: &CodeFixContext) -> change::Tracker {
@@ -113,7 +113,7 @@ fn tracker(ctx: &Context, fix: &CodeFixContext) -> change::Tracker {
         Arc::clone(&fix.ls.converters),
     )
 }
-pub(crate) fn ancestor(node: P<Node>, kinds: &[Kind]) -> Option<P<Node>> {
+pub fn ancestor(node: P<Node>, kinds: &[Kind]) -> Option<P<Node>> {
     ast::find_ancestor(node, |n| kinds.contains(&n.kind()))
 }
 fn start(file: P<SourceFile>, node: P<Node>) -> u32 {
@@ -122,10 +122,10 @@ fn start(file: P<SourceFile>, node: P<Node>) -> u32 {
 fn end(node: P<Node>) -> u32 {
     node.end().expect_source("parsed repair node")
 }
-pub(crate) fn range(file: P<SourceFile>, node: P<Node>) -> TextRange {
+pub fn range(file: P<SourceFile>, node: P<Node>) -> TextRange {
     TextRange::new(start(file, node), end(node))
 }
-pub(crate) fn text(file: P<SourceFile>, node: P<Node>) -> &'static str {
+pub fn text(file: P<SourceFile>, node: P<Node>) -> &'static str {
     &file.text()[start(file, node) as usize..end(node) as usize]
 }
 fn insert(pos: u32, value: &str) -> Edit {
@@ -249,10 +249,9 @@ fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Plan> 
                 let mut target = await_node;
                 if let Some(parent) =
                     await_node.parent().filter(|p| p.kind() == Kind::ParenthesizedExpression)
+                    && parent.parent().is_none_or(|p| p.kind() != Kind::NewExpression)
                 {
-                    if parent.parent().is_none_or(|p| p.kind() != Kind::NewExpression) {
-                        target = parent;
-                    }
+                    target = parent;
                 }
                 plan(
                     "removeUnnecessaryAwait",
@@ -503,26 +502,7 @@ fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Plan> 
             }
             17009 => {
                 let ctr = ancestor(n, &[Kind::Constructor])?;
-                fn find(n: P<Node>) -> Option<P<Node>> {
-                    if ast::is_expression_statement(n)
-                        && n.expression().is_some_and(|e| {
-                            ast::is_call_expression(e)
-                                && e.expression().is_some_and(|x| x.kind() == Kind::SuperKeyword)
-                        })
-                    {
-                        return Some(n);
-                    }
-                    if ast::is_function_like(n) && n.kind() != Kind::Block {
-                        return None;
-                    }
-                    let mut result = None;
-                    n.for_each_child(&mut |child| {
-                        result = find(child);
-                        result.is_some()
-                    });
-                    result
-                }
-                let stmt = find(ctr.body()?)?;
+                let stmt = find_super_call(ctr.body()?)?;
                 plan(
                     "classSuperMustPrecedeThisAccess",
                     "Make 'super()' call the first statement in the constructor",
@@ -651,46 +631,12 @@ fn all_actions(
             .collect();
     // Some TS5 editor suggestions do not have a TS7 diagnostic. Enumerate their
     // syntax eligibility for explicit fix-all requests rather than inventing diagnostics.
-    fn visit(n: P<Node>, file: P<SourceFile>, id: &str, out: &mut Vec<(TextRange, i32)>) {
-        let code = match id {
-            "annotateWithTypeFromJSDoc"
-                if ast::is_function_like_declaration(n) && !n.jsdoc(None).is_empty() =>
-            {
-                Some(80004)
-            }
-            "requireInTs"
-                if ast::is_variable_declaration(n)
-                    && n.initializer().is_some_and(|v| {
-                        ast::is_call_expression(v)
-                            && v.expression()
-                                .is_some_and(|e| ast::is_identifier(e) && e.text() == "require")
-                    }) =>
-            {
-                Some(80005)
-            }
-            "useDefaultImport" if n.kind() == Kind::NamespaceImport => Some(80003),
-            "convertFunctionToEs6Class" if n.kind() == Kind::FunctionDeclaration => Some(80002),
-            "convertToAsyncFunction" if ast::is_function_like_declaration(n) => Some(80006),
-            _ => None,
-        };
-        if let Some(code) = code {
-            out.push((range(file, n.name().unwrap_or(n)), code));
-        }
-        for &doc in n.jsdoc(None) {
-            if let Some(tags) = doc.as_jsdoc().tags {
-                for &tag in tags.nodes() {
-                    if id == "convertTypedefToType" && tag.kind() == Kind::JSDocTypedefTag {
-                        out.push((range(file, tag), 80009));
-                    }
-                }
-            }
-        }
-        n.for_each_child(&mut |child| {
-            visit(child, file, id, out);
-            false
-        });
-    }
-    visit(fix.source_file.as_node(), fix.source_file, fix.fix_id.unwrap_or(""), &mut candidates);
+    collect_fix_all_candidates(
+        fix.source_file.as_node(),
+        fix.source_file,
+        fix.fix_id.unwrap_or(""),
+        &mut candidates,
+    );
     for (span, code) in candidates {
         let local = CodeFixContext { span, error_code: code, ..*fix };
         for p in plans(ctx, &local, &t).into_iter().filter(|p| Some(p.id) == fix.fix_id) {
@@ -706,9 +652,10 @@ fn all_actions(
                 | Edit::Type(n, _)
                 | Edit::Replace(n, _)
                 | Edit::Delete(n)
-                | Edit::Before(n, _) => range(file, *n),
+                | Edit::Before(n, _)
+                | Edit::Jsdoc(n, _)
+                | Edit::ConstructorStart(n, _) => range(file, *n),
                 Edit::Raw(span, _) => *span,
-                Edit::Jsdoc(n, _) | Edit::ConstructorStart(n, _) => range(file, *n),
             };
             if seen.insert((file.file_name().to_string(), key.pos(), key.end())) {
                 for edit in &p.edits {
@@ -718,4 +665,69 @@ fn all_actions(
         }
     }
     Ok(Some(CombinedCodeActions { changes_by_file: edits(&mut t), ..Default::default() }))
+}
+
+fn find_super_call(n: P<Node>) -> Option<P<Node>> {
+    if ast::is_expression_statement(n)
+        && n.expression().is_some_and(|e| {
+            ast::is_call_expression(e)
+                && e.expression().is_some_and(|x| x.kind() == Kind::SuperKeyword)
+        })
+    {
+        return Some(n);
+    }
+    if ast::is_function_like(n) && n.kind() != Kind::Block {
+        return None;
+    }
+    let mut result = None;
+    n.for_each_child(&mut |child| {
+        result = find_super_call(child);
+        result.is_some()
+    });
+    result
+}
+
+fn collect_fix_all_candidates(
+    n: P<Node>,
+    file: P<SourceFile>,
+    id: &str,
+    out: &mut Vec<(TextRange, i32)>,
+) {
+    let code = match id {
+        "annotateWithTypeFromJSDoc"
+            if ast::is_function_like_declaration(n) && !n.jsdoc(None).is_empty() =>
+        {
+            Some(80004)
+        }
+        "requireInTs"
+            if ast::is_variable_declaration(n)
+                && n.initializer().is_some_and(|v| {
+                    ast::is_call_expression(v)
+                        && v.expression()
+                            .is_some_and(|e| ast::is_identifier(e) && e.text() == "require")
+                }) =>
+        {
+            Some(80005)
+        }
+        "useDefaultImport" if n.kind() == Kind::NamespaceImport => Some(80003),
+        "convertFunctionToEs6Class" if n.kind() == Kind::FunctionDeclaration => Some(80002),
+        "convertToAsyncFunction" if ast::is_function_like_declaration(n) => Some(80006),
+        _ => None,
+    };
+    if let Some(code) = code {
+        out.push((range(file, n.name().unwrap_or(n)), code));
+    }
+    for &doc in n.jsdoc(None) {
+        if let Some(tags) = doc.as_jsdoc().tags {
+            for &tag in tags.nodes() {
+                if id == "convertTypedefToType" && tag.kind() == Kind::JSDocTypedefTag {
+                    out.push((range(file, tag), 80009));
+                }
+            }
+        }
+    }
+    n.for_each_child(&mut |child| {
+        collect_fix_all_candidates(child, file, id, out);
+        false
+    });
 }

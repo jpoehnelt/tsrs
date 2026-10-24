@@ -31,11 +31,11 @@ type tsrsOp struct {
 }
 
 type tsrsEdit struct {
-	Caption      string     `json:"caption"`
-	Args         []string   `json:"args"`
-	ExpectedDiff string     `json:"expectedDiff,omitempty"`
-	Ops          []tsrsOp   `json:"ops"`
-	FreshOps     []tsrsOp   `json:"freshOps"`
+	Caption      string   `json:"caption"`
+	Args         []string `json:"args"`
+	ExpectedDiff string   `json:"expectedDiff,omitempty"`
+	Ops          []tsrsOp `json:"ops"`
+	FreshOps     []tsrsOp `json:"freshOps"`
 }
 
 type tsrsFile struct {
@@ -114,7 +114,7 @@ func tsrsNewScenario(test *tscInput, scenario string, sys *TestSys) *tsrsScenari
 	s := &tsrsScenario{
 		Baseline:         filepath.Join(test.getBaselineSubFolder(), scenario, strings.ReplaceAll(test.subScenario, " ", "-")+".js"),
 		Args:             test.commandLineArgs,
-		Cwd:              sys.GetCurrentDirectory(),
+		Cwd:              string(sys.GetCurrentDirectory()),
 		Env:              test.env,
 		OutputIsTTY:      test.outputIsTTY,
 		IgnoreCase:       test.ignoreCase,
@@ -132,10 +132,9 @@ func tsrsNewScenario(test *tscInput, scenario string, sys *TestSys) *tsrsScenari
 		s.Files = append(s.Files, tsrsFile{Path: k, Content: e.content, Symlink: e.symlink})
 	}
 	if sys.fs.defaultLibs != nil {
-		sys.fs.defaultLibs.Range(func(p string) bool {
-			s.DefaultLibs = append(s.DefaultLibs, p)
-			return true
-		})
+		for p := range sys.fs.defaultLibs.Keys() {
+			s.DefaultLibs = append(s.DefaultLibs, string(p))
+		}
 	}
 	slices.Sort(s.DefaultLibs)
 	for i, e := range test.edits {

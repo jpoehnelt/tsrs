@@ -47,7 +47,7 @@ fn language_service(
     Ok(tsrs_ls::new_language_service(LsProjectID(project.to_string()), program, host, active_file))
 }
 
-pub(crate) fn get_signature_usages(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_signature_usages(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let sd = snapshot_ctx(host, p)?;
     let program = sd.program()?;
     let decl = host.resolve_node_handle(program, p.string("signatureDecl")?)?;
@@ -70,10 +70,7 @@ pub(crate) fn get_signature_usages(host: &dyn CheckerHost, p: &Params) -> Checke
     Ok(Value::Array(out))
 }
 
-pub(crate) fn get_referenced_symbols_for_node(
-    host: &dyn CheckerHost,
-    p: &Params,
-) -> CheckerResult<Value> {
+pub fn get_referenced_symbols_for_node(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let sd = snapshot_ctx(host, p)?;
     let program = sd.program()?;
     let node = host.resolve_node_handle(program, p.string("node")?)?;
@@ -116,10 +113,7 @@ pub(crate) fn get_referenced_symbols_for_node(
     Ok(Value::Array(out))
 }
 
-pub(crate) fn get_completions_at_position(
-    host: &dyn CheckerHost,
-    p: &Params,
-) -> CheckerResult<Value> {
+pub fn get_completions_at_position(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let include_symbol = p.bool("includeSymbol")?;
     let mut ctx = host.context();
     if include_symbol {
@@ -143,7 +137,7 @@ pub(crate) fn get_completions_at_position(
         let Some(source_file) = program.get_source_file(&file_name) else {
             return Ok(Ok(None));
         };
-        let ls = language_service(snapshot, program, &sd.project, "")?;
+        let ls = language_service(snapshot, program, &sd.project, source_file.file_name())?;
         let internal = source_file.get_position_map().utf16_to_utf8(position);
         // With includeSymbol the language service takes the API checker itself (Go: same).
         let _lease = if include_symbol { Some(super::lease::acquire(program)?) } else { None };
@@ -154,7 +148,18 @@ pub(crate) fn get_completions_at_position(
     let mut prepared: Option<Arc<Snapshot>> = None;
     let mut result = run(&sd.scope.snapshot, program, &ctx)?;
     if matches!(&result, Err(e) if tsrs_ls::is_err_needs_auto_imports(e)) {
-        let snapshot = host.clone_snapshot_with_auto_imports(&sd.scope.snapshot, &file_name)?;
+        if include_symbol {
+            return Err(CheckerError::client(format!(
+                "snapshot is not prepared for auto-imports for {}",
+                file.display()
+            )));
+        }
+        let Some(source_file) = program.get_source_file(&file_name) else {
+            return Ok(Value::Null);
+        };
+        let snapshot =
+            host.clone_snapshot_with_auto_imports(&sd.scope.snapshot, source_file.file_name())?;
+        host.try_adopt_snapshot_in_background(&sd.scope.snapshot, &snapshot);
         let outcome =
             program_of(&snapshot, &sd.project).and_then(|program| run(&snapshot, program, &ctx));
         prepared = Some(snapshot);
@@ -233,7 +238,27 @@ pub(crate) fn get_completions_at_position(
 }
 
 /// Go `handleGetImportAdderEdits`.
-pub(crate) fn get_import_adder_edits(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_import_adder_edits(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+    // Decode actions like Go's unmarshalling of `[]ImportAdderAction` (before the handler runs, so a decode
+    // error consumes no snapshot): wrong JSON kinds are invalid requests; `null` elements and absent fields
+    // are zero values. Semantic validation (unknown kind, missing symbol, unresolvable symbol) is a client
+    // error raised later, after the auto-import snapshot clone, in Go's order (it consumes a snapshot ID).
+    struct Action<'a> {
+        kind: String,
+        symbol: Option<SymbolReference<'a>>,
+        valid: bool,
+    }
+
+    // Release the auto-import snapshot on every exit, including a panic in the import adder (Go: defer).
+    struct Release(Option<Arc<Snapshot>>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(s) = self.0.take() {
+                s.deref();
+            }
+        }
+    }
+
     let sd = snapshot_ctx(host, p)?;
     let file = p.document("file")?;
     let file_name = file.to_file_name();
@@ -243,15 +268,6 @@ pub(crate) fn get_import_adder_edits(host: &dyn CheckerHost, p: &Params) -> Chec
     })?;
     let project_id = LsProjectID(sd.project.clone());
 
-    // Decode actions like Go's unmarshalling of `[]ImportAdderAction` (before the handler runs, so a decode
-    // error consumes no snapshot): wrong JSON kinds are invalid requests; `null` elements and absent fields
-    // are zero values. Semantic validation (unknown kind, missing symbol, unresolvable symbol) is a client
-    // error raised later, after the auto-import snapshot clone, in Go's order (it consumes a snapshot ID).
-    struct Action {
-        kind: String,
-        symbol: Option<SymbolReference>,
-        valid: bool,
-    }
     let mut actions: Vec<Action> = Vec::new();
     actions = (p.array("actions")?).iter().try_fold(actions, |mut actions, action| {
         if matches!(action, Value::Null) {
@@ -313,7 +329,8 @@ pub(crate) fn get_import_adder_edits(host: &dyn CheckerHost, p: &Params) -> Chec
         )
     });
     if !prepared_for_file {
-        let snapshot = host.clone_snapshot_with_auto_imports(&working, &file_name)?;
+        let snapshot = host.clone_snapshot_with_auto_imports(&working, source_file.file_name())?;
+        host.try_adopt_snapshot_in_background(&working, &snapshot);
         prepared = Some(Arc::clone(&snapshot));
         working = snapshot;
         let resolved = program_of(&working, &sd.project).and_then(|prog| {
@@ -330,15 +347,6 @@ pub(crate) fn get_import_adder_edits(host: &dyn CheckerHost, p: &Params) -> Chec
             Err(e) => {
                 working.deref();
                 return Err(e);
-            }
-        }
-    }
-    // Release the auto-import snapshot on every exit, including a panic in the import adder (Go: defer).
-    struct Release(Option<Arc<Snapshot>>);
-    impl Drop for Release {
-        fn drop(&mut self) {
-            if let Some(s) = self.0.take() {
-                s.deref();
             }
         }
     }

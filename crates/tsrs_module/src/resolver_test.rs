@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, mpsc};
 use std::time::{Duration, SystemTime};
 
-use tsrs_core::collections::{OrderedMapExt, new_ordered_map_with_size_hint};
+use tsrs_core::collections::new_ordered_map_with_size_hint;
 use tsrs_core::{CompilerOptions, ModuleKind, ModuleResolutionKind, P, ScriptTarget};
 use tsrs_vfs::{Entries, FS, FileInfo, vfstest};
 
@@ -29,11 +29,226 @@ fn host(fs: impl FS + 'static, cwd: &str) -> &'static ResolutionHostStub {
 
 fn bundler_options() -> P<CompilerOptions> {
     P::new(CompilerOptions {
-        module_resolution: ModuleResolutionKind::Bundler,
-        module: ModuleKind::ESNext,
-        target: ScriptTarget::ESNext,
+        module_resolution: ModuleResolutionKind::BUNDLER,
+        module: ModuleKind::ES_NEXT,
+        target: ScriptTarget::ES_NEXT,
         ..Default::default()
     })
+}
+
+fn dynamic_options(module: ModuleKind, root_dirs: Option<Vec<String>>) -> P<CompilerOptions> {
+    P::new(CompilerOptions {
+        module_resolution: ModuleResolutionKind::BUNDLER,
+        module,
+        target: ScriptTarget::ES_NEXT,
+        root_dirs,
+        ..Default::default()
+    })
+}
+
+fn resolve_dynamic(
+    files: impl IntoIterator<Item = (&'static str, &'static str)>,
+    options: P<CompilerOptions>,
+    source_file: &str,
+    specifier: &str,
+    mode: ModuleKind,
+) -> String {
+    let fs = vfstest::from_map(files, true);
+    let resolver = new_resolver(ResolverOptions::new(
+        host(fs, "^/~ts-uri~/custom/ts-nul-authority/"),
+        options,
+    ));
+    let (resolved, _) = resolver.resolve_module_name(specifier, source_file, mode, None).unwrap();
+    resolved.resolved_file_name.to_string()
+}
+
+#[test]
+fn test_resolve_dynamic_module_name_using_root_dirs() {
+    const SOURCE: &str = "^/~ts-uri~/custom/ts-nul-authority/src/main.ts";
+    for (target_root, target_file) in [
+        (
+            "^/~ts-uri~/custom/ts-nul-authority/generated",
+            "^/~ts-uri~/custom/ts-nul-authority/generated/~ts-uri-escape~7e74732d7572692d6573636170657e66696c65~.ts",
+        ),
+        ("c:/generated", "c:/generated/~ts-uri-escape~file.ts"),
+    ] {
+        let resolved = resolve_dynamic(
+            [(SOURCE, ""), (target_file, "export const value = 1;")],
+            dynamic_options(
+                ModuleKind::ES_NEXT,
+                Some(vec![
+                    "^/~ts-uri~/custom/ts-nul-authority/src".to_string(),
+                    target_root.to_string(),
+                ]),
+            ),
+            SOURCE,
+            "./~ts-uri-escape~file",
+            ModuleKind::ES_NEXT,
+        );
+        assert_eq!(resolved, target_file);
+    }
+}
+
+#[test]
+fn test_root_dirs_preserves_exceptional_dynamic_segments() {
+    const SOURCE: &str = "^/~ts-uri~/custom/ts-nul-authority/src/~ts-uri-escape~2e2e~/main.ts";
+    const TARGET: &str = "^/~ts-uri~/custom/ts-nul-authority/generated/~ts-uri-escape~2e2e~/dep.ts";
+    let resolved = resolve_dynamic(
+        [
+            (SOURCE, ""),
+            (TARGET, "export const value = 1;"),
+            ("^/~ts-uri~/custom/ts-nul-authority/dep.ts", "export const wrong = 1;"),
+        ],
+        dynamic_options(
+            ModuleKind::ES_NEXT,
+            Some(vec![
+                "^/~ts-uri~/custom/ts-nul-authority/src".to_string(),
+                "^/~ts-uri~/custom/ts-nul-authority/generated".to_string(),
+            ]),
+        ),
+        SOURCE,
+        "./dep",
+        ModuleKind::ES_NEXT,
+    );
+    assert_eq!(resolved, TARGET);
+}
+
+#[test]
+fn test_resolve_dynamic_package_subpath_file() {
+    const SOURCE: &str = "^/~ts-uri~/custom/ts-nul-authority/src/main.ts";
+    const TARGET: &str = "^/~ts-uri~/custom/ts-nul-authority/node_modules/pkg/~ts-uri-escape~7e74732d7572692d6573636170657e3636366636667e~.ts";
+    let resolved = resolve_dynamic(
+        [
+            (SOURCE, ""),
+            (
+                "^/~ts-uri~/custom/ts-nul-authority/node_modules/pkg/package.json",
+                r#"{"name":"pkg"}"#,
+            ),
+            (TARGET, "export const value = 1;"),
+        ],
+        dynamic_options(ModuleKind::ES_NEXT, None),
+        SOURCE,
+        "pkg/~ts-uri-escape~666f6f~.ts",
+        ModuleKind::ES_NEXT,
+    );
+    assert_eq!(resolved, TARGET);
+}
+
+#[test]
+fn test_resolve_dynamic_dotted_directory() {
+    const SOURCE: &str = "^/~ts-uri~/custom/ts-nul-authority/src/main.ts";
+    const TARGET: &str = "^/~ts-uri~/custom/ts-nul-authority/src/~ts-uri-escape~7e74732d7572692d6573636170657e6469722e6a73~/index.ts";
+    let resolved = resolve_dynamic(
+        [(SOURCE, ""), (TARGET, "export const value = 1;")],
+        dynamic_options(ModuleKind::COMMON_JS, None),
+        SOURCE,
+        "./~ts-uri-escape~dir.js",
+        ModuleKind::COMMON_JS,
+    );
+    assert_eq!(resolved, TARGET);
+}
+
+#[test]
+fn test_root_dirs_rejects_unrepresentable_disk_segments() {
+    for source in [
+        "^/~ts-uri~/custom/ts-nul-authority/src/~ts-uri-escape~2e2e~/main.ts",
+        "^/~ts-uri~/custom/ts-nul-authority/src/c:/main.ts",
+        "^/~ts-uri~/custom/ts-nul-authority/src/^/main.ts",
+    ] {
+        let resolved = resolve_dynamic(
+            [(source, ""), ("c:/dep.ts", "export const wrong = 1;")],
+            dynamic_options(
+                ModuleKind::ES_NEXT,
+                Some(vec![
+                    "^/~ts-uri~/custom/ts-nul-authority/src".to_string(),
+                    "c:/generated".to_string(),
+                ]),
+            ),
+            source,
+            "./dep",
+            ModuleKind::ES_NEXT,
+        );
+        assert!(resolved.is_empty(), "{source} resolved to {resolved}");
+    }
+}
+
+#[test]
+fn test_resolve_dynamic_package_json_path() {
+    const SOURCE: &str = "^/~ts-uri~/custom/ts-nul-authority/src/main.ts";
+    const FALLBACK: &str = "^/~ts-uri~/custom/ts-nul-authority/node_modules/pkg/~ts-uri-escape~7e74732d7572692d6573636170657e7479706573~.d.ts";
+    const TARGET: &str = "^/~ts-uri~/custom/ts-nul-authority/node_modules/pkg/ts3.1/~ts-uri-escape~7e74732d7572692d6573636170657e7479706573~.d.ts";
+    let resolved = resolve_dynamic(
+        [
+            (SOURCE, ""),
+            (
+                "^/~ts-uri~/custom/ts-nul-authority/node_modules/pkg/package.json",
+                r#"{"name":"pkg","types":"~ts-uri-escape~types.d.ts","typesVersions":{"*":{"*":["ts3.1/*"]}}}"#,
+            ),
+            (FALLBACK, "export const fallback: number;"),
+            (TARGET, "export const value: number;"),
+        ],
+        dynamic_options(ModuleKind::ES_NEXT, None),
+        SOURCE,
+        "pkg",
+        ModuleKind::ES_NEXT,
+    );
+    assert_eq!(resolved, TARGET);
+}
+
+#[test]
+fn test_resolve_dynamic_esm_package_index_from_reserved_directory() {
+    const SOURCE: &str = "^/~ts-uri~/custom/ts-nul-authority/src/main.ts";
+    const PACKAGE_DIR: &str = "^/~ts-uri~/custom/ts-nul-authority/node_modules/~ts-uri-escape~7e74732d7572692d6573636170657e706b672e6a73~";
+    const TARGET: &str = "^/~ts-uri~/custom/ts-nul-authority/node_modules/~ts-uri-escape~7e74732d7572692d6573636170657e706b672e6a73~/index.js";
+    let resolved = resolve_dynamic(
+        [
+            (SOURCE, ""),
+            (
+                "^/~ts-uri~/custom/ts-nul-authority/node_modules/~ts-uri-escape~7e74732d7572692d6573636170657e706b672e6a73~/package.json",
+                r#"{"name":"~ts-uri-escape~pkg.js"}"#,
+            ),
+            (TARGET, "exports.value = 1;"),
+        ],
+        dynamic_options(ModuleKind::ES_NEXT, None),
+        SOURCE,
+        "~ts-uri-escape~pkg.js",
+        ModuleKind::ES_NEXT,
+    );
+    assert_eq!(resolved, TARGET, "{PACKAGE_DIR}");
+}
+
+#[test]
+fn test_generated_dynamic_entrypoint_specifier_resolves_encoded_file() {
+    const SOURCE: &str = "^/~ts-uri~/custom/ts-nul-authority/src/main.ts";
+    const PACKAGE: &str = "^/~ts-uri~/custom/ts-nul-authority/node_modules/Pkg/package.json";
+    const FILE: &str = "^/~ts-uri~/custom/ts-nul-authority/node_modules/Pkg/~ts-uri-escape~7e74732d7572692d6573636170657e76616c7565~.d.ts";
+    const SPECIFIER: &str = "Pkg/~ts-uri-spec~7e74732d7572692d6573636170657e76616c7565~.d.ts";
+    let fs = vfstest::from_map(
+        [(SOURCE, ""), (PACKAGE, r#"{"name":"Pkg"}"#), (FILE, "export const value: number;")],
+        true,
+    );
+    let resolver = new_resolver(ResolverOptions::new(
+        host(fs, "^/~ts-uri~/custom/ts-nul-authority/"),
+        dynamic_options(ModuleKind::ES_NEXT, None),
+    ));
+    resolver.resolve_module_name("Pkg", SOURCE, ModuleKind::ES_NEXT, None).unwrap();
+    let mut package_json = None;
+    resolver.get_resolution_data().package_json_cache_entries(|_, entry| {
+        if entry.exists() {
+            package_json = Some(*entry);
+            false
+        } else {
+            true
+        }
+    });
+    let package_json = package_json.expect("package JSON cache entry");
+    let entrypoints =
+        resolver.get_entrypoints_from_package_json_info(package_json, "Pkg", true).unwrap();
+    assert_eq!(entrypoints.len(), 1);
+    assert_eq!(entrypoints[0].module_specifier, SPECIFIER);
+    let (resolved, _) =
+        resolver.resolve_module_name(SPECIFIER, SOURCE, ModuleKind::ES_NEXT, None).unwrap();
+    assert_eq!(resolved.resolved_file_name, FILE);
 }
 
 // Regression test for https://github.com/microsoft/TypeScript/tsc/issues/3526.
@@ -58,7 +273,7 @@ fn test_resolve_module_name_trailing_slash() {
 
     for name in ["pkg", "pkg/"] {
         let (r, _) = resolver
-            .resolve_module_name(name, "/repo/src/file.ts", ModuleKind::ESNext, None)
+            .resolve_module_name(name, "/repo/src/file.ts", ModuleKind::ES_NEXT, None)
             .unwrap();
         assert!(r.is_resolved(), "{name:?} failed to resolve");
     }
@@ -90,23 +305,23 @@ fn test_resolution_data_caches() {
     );
     let resolver = new_resolver(ResolverOptions::new(
         old_host,
-        P::new(CompilerOptions { module: ModuleKind::NodeNext, ..Default::default() }),
+        P::new(CompilerOptions { module: ModuleKind::NODE_NEXT, ..Default::default() }),
     ));
     let (resolved, _) =
-        resolver.resolve_module_name("pkg", "/src/index.ts", ModuleKind::CommonJS, None).unwrap();
+        resolver.resolve_module_name("pkg", "/src/index.ts", ModuleKind::COMMON_JS, None).unwrap();
     assert!(resolved.is_resolved());
     let (cached, _) =
-        resolver.resolve_module_name("pkg", "/src/index.ts", ModuleKind::CommonJS, None).unwrap();
+        resolver.resolve_module_name("pkg", "/src/index.ts", ModuleKind::COMMON_JS, None).unwrap();
     assert_eq!(cached, resolved);
 
     resolver.resolve_type_reference_directive(
         "missing",
         "/src/index.ts",
-        ModuleKind::CommonJS,
+        ModuleKind::COMMON_JS,
         None,
     );
     let mut paths = new_ordered_map_with_size_hint(1);
-    paths.set("alias/*".to_string(), Some(vec!["./*".to_string()]));
+    paths.insert("alias/*".to_string(), Some(vec!["./*".to_string()]));
     resolver.get_parsed_patterns_for_paths(&CompilerOptions {
         paths: Some(paths),
         ..Default::default()
@@ -313,7 +528,7 @@ fn test_resolve_module_name_trailing_slash_race() {
                     (
                         name,
                         resolver
-                            .resolve_module_name(name, containing_file, ModuleKind::ESNext, None)
+                            .resolve_module_name(name, containing_file, ModuleKind::ES_NEXT, None)
                             .unwrap()
                             .0
                             .is_resolved(),
@@ -369,7 +584,7 @@ fn test_resolve_subpath_nil_contents_race() {
                             .resolve_module_name(
                                 "pkg/sub",
                                 containing_file,
-                                ModuleKind::ESNext,
+                                ModuleKind::ES_NEXT,
                                 None,
                             )
                             .unwrap()
@@ -460,7 +675,7 @@ fn test_resolve_peer_dependency_nil_contents_race() {
             let results_tx = results_tx.clone();
             s.spawn(move || {
                 let resolved = resolver
-                    .resolve_module_name("pkg", containing_file, ModuleKind::ESNext, None)
+                    .resolve_module_name("pkg", containing_file, ModuleKind::ES_NEXT, None)
                     .unwrap()
                     .0
                     .is_resolved();

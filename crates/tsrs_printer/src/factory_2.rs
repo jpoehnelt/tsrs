@@ -371,19 +371,18 @@ impl crate::NodeFactory {
         inner_expression: P<Node>,
         kinds: OuterExpressionKinds,
     ) -> P<Node> {
-        if let Some(outer_expression) = outer_expression {
-            if ast::is_outer_expression(outer_expression, kinds)
-                && !self.is_ignorable_paren(outer_expression)
-            {
-                return self.update_outer_expression(
-                    outer_expression,
-                    self.restore_outer_expressions(
-                        outer_expression.expression(),
-                        inner_expression,
-                        OuterExpressionKinds::All,
-                    ),
-                );
-            }
+        if let Some(outer_expression) = outer_expression
+            && ast::is_outer_expression(outer_expression, kinds)
+            && !self.is_ignorable_paren(outer_expression)
+        {
+            return self.update_outer_expression(
+                outer_expression,
+                self.restore_outer_expressions(
+                    outer_expression.expression(),
+                    inner_expression,
+                    OuterExpressionKinds::All,
+                ),
+            );
         }
         inner_expression
     }
@@ -391,12 +390,11 @@ impl crate::NodeFactory {
     // Ensures `"use strict"` is the first statement of a slice of statements.
     // factory.go:448
     pub fn ensure_use_strict(&self, statements: &[P<Node>]) -> Vec<P<Node>> {
-        if let Some(&statement) = statements.first() {
-            if ast::is_prologue_directive(statement)
-                && statement.expression().unwrap().text() == "use strict"
-            {
-                return statements.to_vec();
-            }
+        if let Some(&statement) = statements.first()
+            && ast::is_prologue_directive(statement)
+            && statement.expression().unwrap().text() == "use strict"
+        {
+            return statements.to_vec();
         }
         let use_strict_prologue =
             self.new_expression_statement(self.new_string_literal("use strict", TokenFlags::None));
@@ -417,10 +415,10 @@ impl crate::NodeFactory {
         source: &'a [P<Node>],
     ) -> (&'a [P<Node>], &'a [P<Node>]) {
         if let Some(result) = source.iter().enumerate().find_map(|(i, &statement)| {
-            if !ast::is_prologue_directive(statement) {
-                Some((&source[..i], &source[i..]))
-            } else {
+            if ast::is_prologue_directive(statement) {
                 None
+            } else {
+                Some((&source[..i], &source[i..]))
             }
         }) {
             return result;
@@ -569,15 +567,15 @@ impl crate::NodeFactory {
         allow_comments: bool,
         allow_source_maps: bool,
     ) -> P<Node> {
-        if let Some(ns) = ns {
-            if ast::has_syntactic_modifier(node, ModifierFlags::Export) {
-                let name_opts = NameOptions { allow_comments, allow_source_maps };
-                return self.get_namespace_member_name(
-                    ns,
-                    self.get_declaration_name_ex(node, name_opts),
-                    name_opts,
-                );
-            }
+        if let Some(ns) = ns
+            && ast::has_syntactic_modifier(node, ModifierFlags::Export)
+        {
+            let name_opts = NameOptions { allow_comments, allow_source_maps };
+            return self.get_namespace_member_name(
+                ns,
+                self.get_declaration_name_ex(node, name_opts),
+                name_opts,
+            );
         }
         self.get_export_name_ex(
             node,
@@ -1389,10 +1387,10 @@ impl crate::NodeFactory {
         prefix: &str,
     ) -> P<Node> {
         self.emit_context().request_emit_helper(helper(&SET_FUNCTION_NAME_HELPER));
-        let arguments = if !prefix.is_empty() {
-            vec![fn_, name, self.new_string_literal(alloc_str(prefix), TokenFlags::None)]
-        } else {
+        let arguments = if prefix.is_empty() {
             vec![fn_, name]
+        } else {
+            vec![fn_, name, self.new_string_literal(alloc_str(prefix), TokenFlags::None)]
         };
         self.new_helper_call("__setFunctionName", arguments)
     }
@@ -1461,13 +1459,39 @@ impl crate::NodeFactory {
         &self,
         first_argument: P<Node>,
         preserve_jsx: bool,
+        extra_extensions: &[tspath::ExtensionRewrite],
+        use_case_sensitive_file_names: bool,
     ) -> P<Node> {
         self.emit_context().request_emit_helper(helper(&REWRITE_RELATIVE_IMPORT_EXTENSIONS_HELPER));
-        let arguments = if preserve_jsx {
-            vec![first_argument, self.new_token(Kind::TrueKeyword)]
+        let mut arguments = vec![first_argument];
+        if extra_extensions.is_empty() {
+            if preserve_jsx {
+                arguments.push(self.new_token(Kind::TrueKeyword));
+            }
+            return self.new_helper_call("__rewriteRelativeImportExtension", arguments);
+        }
+
+        arguments.push(self.new_token(if preserve_jsx {
+            Kind::TrueKeyword
         } else {
-            vec![first_argument]
-        };
+            Kind::FalseKeyword
+        }));
+        let properties = extra_extensions
+            .iter()
+            .map(|extension| {
+                self.new_property_assignment(
+                    None,
+                    self.new_string_literal(alloc_str(&extension.source), TokenFlags::None),
+                    None,
+                    None,
+                    self.new_string_literal(alloc_str(&extension.target), TokenFlags::None),
+                )
+            })
+            .collect();
+        arguments.push(self.new_object_literal_expression(self.new_node_list(properties), false));
+        if !use_case_sensitive_file_names {
+            arguments.push(self.new_token(Kind::TrueKeyword));
+        }
         self.new_helper_call("__rewriteRelativeImportExtension", arguments)
     }
 }

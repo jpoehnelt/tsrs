@@ -9,6 +9,7 @@
 // - codec: crates/tsrs_api_codec (AST binary encoder/decoder, node index tables).
 // - runtime: crates/tsrs_api_transport (MessagePack tuple protocol, JSON-RPC, sync/async conns).
 
+pub mod adapter;
 pub mod batch;
 pub mod build;
 pub mod config;
@@ -20,6 +21,7 @@ pub(crate) mod paramfields;
 pub(crate) mod predecode;
 pub mod printing;
 pub mod program;
+mod raw_options;
 pub mod requestfs;
 pub mod resolution;
 pub mod session;
@@ -29,6 +31,9 @@ pub mod transpile;
 pub mod wire;
 
 pub(crate) mod checker;
+
+#[cfg(test)]
+mod session_apistate_test;
 
 pub use handler::{ApiError, ApiResult, ClientConn, ErrorKind, Handler, Response};
 pub use session::{Session, SessionOptions};

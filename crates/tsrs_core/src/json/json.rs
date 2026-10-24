@@ -4,9 +4,7 @@
 
 use std::fmt::Write;
 
-use indexmap::map::Entry;
-
-use crate::collections::OrderedMap;
+use super::{Entry, JsonMap};
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub enum Value {
@@ -19,7 +17,7 @@ pub enum Value {
     Integer(i64),
     String(String),
     Array(Vec<Value>),
-    Object(OrderedMap<String, Value>),
+    Object(JsonMap),
 }
 
 pub fn marshal(v: &Value) -> Result<String, String> {
@@ -202,10 +200,7 @@ fn write_string(out: &mut String, s: &str) {
     let mut i = 0;
     while i < bytes.len() {
         // Copy the run of bytes that need no escaping in one go.
-        let run = bytes[i..]
-            .iter()
-            .position(|&b| !(0x20..0x80).contains(&b) || b == b'"' || b == b'\\')
-            .unwrap_or(bytes.len() - i);
+        let run = super::plain_ascii_len(&bytes[i..]);
         if run > 0 {
             out.push_str(&s[i..i + run]);
             i += run;
@@ -249,6 +244,24 @@ pub fn unmarshal(input: &str) -> Result<Value, String> {
         ));
     }
     Ok(v)
+}
+
+/// The f64 of a JSON number literal `text` (valid JSON number syntax), or `None` when it is out of range.
+pub fn number_value(text: &str) -> Option<f64> {
+    if let Some(n) = exact_integer_value(text) {
+        return Some(n);
+    }
+    text.parse::<f64>().ok().filter(|f| f.is_finite())
+}
+
+/// Up to 15 digits without fraction or exponent is an integer that f64 holds exactly: its value, else `None`.
+pub fn exact_integer_value(text: &str) -> Option<f64> {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.len() > 15 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n = digits.bytes().fold(0u64, |n, b| n * 10 + (b - b'0') as u64) as f64;
+    Some(if text.starts_with('-') { -n } else { n })
 }
 
 // jsontext's maxNestingDepth: opening a container deeper than this is an error (state.go `errMaxDepth`). The
@@ -306,7 +319,7 @@ impl JsonParser<'_> {
             }
             Some(b'{') => {
                 self.pos += 1;
-                let mut members = OrderedMap::default();
+                let mut members = JsonMap::default();
                 self.skip_ws();
                 if self.s.get(self.pos) == Some(&b'}') {
                     self.pos += 1;
@@ -393,15 +406,9 @@ impl JsonParser<'_> {
             }
         }
         let text = std::str::from_utf8(&self.s[start..self.pos]).unwrap();
-        // Up to 15 digits without fraction or exponent is an integer that f64 holds exactly.
-        let digits = text.strip_prefix('-').unwrap_or(text);
-        if digits.len() <= 15 && digits.bytes().all(|b| b.is_ascii_digit()) {
-            let n = digits.bytes().fold(0u64, |n, b| n * 10 + (b - b'0') as u64) as f64;
-            return Ok(Value::Number(if text.starts_with('-') { -n } else { n }));
-        }
-        match text.parse::<f64>() {
-            Ok(f) if f.is_finite() => Ok(Value::Number(f)),
-            _ => self.err("number out of range"),
+        match number_value(text) {
+            Some(f) => Ok(Value::Number(f)),
+            None => self.err("number out of range"),
         }
     }
 

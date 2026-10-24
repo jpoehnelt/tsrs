@@ -66,8 +66,7 @@ impl NodeBuilderImpl {
         // If the expanded parameter list had a variadic in a non-trailing position, don't expand it
         let last_expanded_param = expanded_params.last().copied();
         let has_non_trailing_rest = expanded_params.iter().any(|&p| {
-            Some(p) != last_expanded_param
-                && p.check_flags.get().intersects(CheckFlags::RestParameter)
+            Some(p) != last_expanded_param && p.check_flags().intersects(CheckFlags::RestParameter)
         });
         let parameter_symbols: Vec<P<Symbol>> =
             if has_non_trailing_rest { signature.parameters().to_vec() } else { expanded_params };
@@ -480,13 +479,13 @@ impl NodeBuilderImpl {
                     // The pseudochecker is unaware of inferred type predicates, so it produces boolean where
                     // the checker infers e.g. `x is string`.
                     let type_predicate = c.get_type_predicate_of_signature(signature);
-                    if let Some(type_predicate) = type_predicate {
-                        if !Self::pseudo_return_type_matches_predicate(c, pt, type_predicate) {
-                            if !self.ctx().suppress_report_inference_fallback.get() {
-                                self.tracker().report_inference_fallback(c, declaration);
-                            }
-                            pt = None;
+                    if let Some(type_predicate) = type_predicate
+                        && !Self::pseudo_return_type_matches_predicate(c, pt, type_predicate)
+                    {
+                        if !self.ctx().suppress_report_inference_fallback.get() {
+                            self.tracker().report_inference_fallback(c, declaration);
                         }
+                        pt = None;
                     }
                     if let Some(pt) = pt {
                         // !!! TODO: If annotated type node is a reference with insufficient type arguments, we should still fall back to type serialization
@@ -658,7 +657,7 @@ impl NodeBuilderImpl {
 }
 
 // nodebuilderimpl.go:2234
-pub(crate) fn has_type_annotation(declaration: Option<P<Node>>) -> bool {
+pub fn has_type_annotation(declaration: Option<P<Node>>) -> bool {
     if declaration.is_none() || declaration.unwrap().type_node().is_none() {
         return false;
     }
@@ -692,13 +691,13 @@ impl NodeBuilderImpl {
         let mut declaration = declaration;
         let mut t = t;
         let mut symbol = symbol;
-        if declaration.is_none() {
-            if let Some(symbol) = symbol {
-                declaration = symbol.value_declaration();
-                if declaration.is_none() {
-                    // TODO: prefer annotated declarations like in strada (but does this ever even matter in practice? All callers should supply a declaration!)
-                    declaration = symbol.declarations().first().copied();
-                }
+        if declaration.is_none()
+            && let Some(symbol) = symbol
+        {
+            declaration = symbol.value_declaration();
+            if declaration.is_none() {
+                // TODO: prefer annotated declarations like in strada (but does this ever even matter in practice? All callers should supply a declaration!)
+                declaration = symbol.declarations().first().copied();
             }
         }
         if symbol.is_none() {
@@ -784,18 +783,18 @@ impl NodeBuilderImpl {
         // Legacy quick info uses the annotated syntax when it describes the observed type,
         // including its reuse cost in the display budget. The Go pseudo checker is retained
         // for normal compiler serialization and expandable hover.
-        if self.ctx().legacy_quick_info && try_reuse {
-            if let Some(declaration) = declaration {
-                if let Some(annotation) = ast::get_type_annotation_node(declaration) {
-                    result = self.try_reuse_existing_non_parameter_type_node(
-                        c,
-                        annotation,
-                        t,
-                        Some(declaration),
-                        None,
-                    );
-                }
-            }
+        if self.ctx().legacy_quick_info
+            && try_reuse
+            && let Some(declaration) = declaration
+            && let Some(annotation) = ast::get_type_annotation_node(declaration)
+        {
+            result = self.try_reuse_existing_non_parameter_type_node(
+                c,
+                annotation,
+                t,
+                Some(declaration),
+                None,
+            );
         }
         let mut reported_inference_fallback = false;
         // !!! expandable hover support
@@ -852,7 +851,7 @@ impl NodeBuilderImpl {
                 {
                     pt = Some(pseudochecker::new_pseudo_type_union(&[
                         pt.unwrap(),
-                        *pseudochecker::PseudoTypeUndefined,
+                        *pseudochecker::PSEUDO_TYPE_UNDEFINED,
                     ]));
                 }
                 result = self.pseudo_type_to_node_with_checker_fallback(c, pt.unwrap(), t);
@@ -876,7 +875,7 @@ impl NodeBuilderImpl {
                 if should_add_undefined {
                     pt = Some(pseudochecker::new_pseudo_type_union(&[
                         pt.unwrap(),
-                        *pseudochecker::PseudoTypeUndefined,
+                        *pseudochecker::PSEUDO_TYPE_UNDEFINED,
                     ]));
                     if self.pseudo_type_equivalent_to_type(c, pt, Some(t), false, report_errors) {
                         result = self.pseudo_type_to_node_with_checker_fallback(c, pt.unwrap(), t);
@@ -911,6 +910,10 @@ impl NodeBuilderImpl {
         c: &Checker,
         property_symbol: P<Symbol>,
     ) -> bool {
+        // Reverse mapped type placeholders are for display, not declaration emit.
+        if !self.ctx().flags.get().intersects(Flags::AllowAnonymousIdentifier) {
+            return false;
+        }
         // Use placeholders for reverse mapped types we've either
         // (1) already descended into, or
         // (2) are nested reverse mappings within a mapping over a non-anonymous type, or
@@ -921,7 +924,7 @@ impl NodeBuilderImpl {
         // for deep mappings which likely come from expressions, while truncating those parts which
         // come from mappings over library functions.
         // Condition (3) limits printing of possibly infinitely deep reverse mapped types.
-        if !property_symbol.check_flags.get().intersects(CheckFlags::ReverseMapped) {
+        if !property_symbol.check_flags().intersects(CheckFlags::ReverseMapped) {
             return false;
         }
         let reverse_mapped_stack = self.ctx().reverse_mapped_stack.borrow().clone();
@@ -1014,21 +1017,21 @@ impl NodeBuilderImpl {
 }
 
 // nodebuilderimpl.go:2456
-pub(crate) fn classify_property_name(
+pub fn classify_property_name(
     name: &str,
     string_named: bool,
     is_method: bool,
-) -> propertyNameNodeKind {
+) -> PropertyNameNodeKind {
     if is_method && name == "new" {
-        return propertyNameNodeKind::StringLiteral;
+        return PropertyNameNodeKind::StringLiteral;
     }
     if tsrs_scanner::is_identifier_text(name, LanguageVariant::Standard) {
-        return propertyNameNodeKind::Identifier;
+        return PropertyNameNodeKind::Identifier;
     }
     if !string_named && is_numeric_literal_name(name) && jsnum::from_string(name).0 >= 0.0 {
-        propertyNameNodeKind::NumericLiteral
+        PropertyNameNodeKind::NumericLiteral
     } else {
-        propertyNameNodeKind::StringLiteral
+        PropertyNameNodeKind::StringLiteral
     }
 }
 
@@ -1044,11 +1047,11 @@ impl NodeBuilderImpl {
         symbol: P<Symbol>,
     ) -> P<Node> {
         match classify_property_name(name, string_named, is_method) {
-            propertyNameNodeKind::Identifier => self.new_identifier(c, name, Some(symbol)),
-            propertyNameNodeKind::NumericLiteral => {
+            PropertyNameNodeKind::Identifier => self.new_identifier(c, name, Some(symbol)),
+            PropertyNameNodeKind::NumericLiteral => {
                 self.f.new_numeric_literal(self.f.alloc_text(name), TokenFlags::None)
             }
-            propertyNameNodeKind::StringLiteral => self.f.new_string_literal(
+            PropertyNameNodeKind::StringLiteral => self.f.new_string_literal(
                 self.f.alloc_text(name),
                 if single_quote { TokenFlags::SingleQuote } else { TokenFlags::None },
             ),
@@ -1113,7 +1116,7 @@ impl NodeBuilderImpl {
         }
 
         let mut name: String = symbol.name().to_string();
-        let private_name_prefix = format!("{InternalSymbolNamePrefix}#");
+        let private_name_prefix = format!("{INTERNAL_SYMBOL_NAME_PREFIX}#");
         if name.starts_with(&private_name_prefix) {
             // symbol IDs are unstable - replace #nnn# with #private#
             name = name[private_name_prefix.len()..].to_string();
@@ -1150,10 +1153,10 @@ impl NodeBuilderImpl {
         let name_type = c.value_symbol_links.try_get(symbol).unwrap().name_type();
         let name_type = name_type?;
         let mut enum_enclosing_declaration = enclosing_declaration;
-        if enum_enclosing_declaration.is_none() {
-            if let Some(enclosing_file) = self.ctx().enclosing_file.get() {
-                enum_enclosing_declaration = Some(enclosing_file.as_node());
-            }
+        if enum_enclosing_declaration.is_none()
+            && let Some(enclosing_file) = self.ctx().enclosing_file.get()
+        {
+            enum_enclosing_declaration = Some(enclosing_file.as_node());
         }
         if name_type.flags().intersects(TypeFlags::EnumLiteral) {
             let name_type_symbol = name_type.symbol().unwrap();
@@ -1230,7 +1233,7 @@ impl NodeBuilderImpl {
     ) -> Vec<P<Node>> {
         let mut type_elements: Vec<P<Node>> = type_elements.to_vec();
         let property_is_reverse_mapped =
-            property_symbol.check_flags.get().intersects(CheckFlags::ReverseMapped);
+            property_symbol.check_flags().intersects(CheckFlags::ReverseMapped);
         let property_type = if self.should_use_placeholder_for_property(c, property_symbol) {
             c.any_type
         } else {
@@ -1511,10 +1514,10 @@ impl NodeBuilderImpl {
             },
         ));
         type_elements.extend(structured_type.index_infos().iter().flat_map(|&info| {
-            // Go's core.IfElse evaluates both arms, so the placeholder (and its length accounting) is always created.
-            let placeholder = self.create_elided_information_placeholder(c);
-            let type_node = if resolved_type.object_flags().intersects(ObjectFlags::ReverseMapped) {
-                Some(placeholder)
+            let type_node = if resolved_type.object_flags().intersects(ObjectFlags::ReverseMapped)
+                && self.ctx().flags.get().intersects(Flags::AllowAnonymousIdentifier)
+            {
+                Some(self.create_elided_information_placeholder(c))
             } else {
                 None
             };
@@ -1578,7 +1581,7 @@ impl NodeBuilderImpl {
             }
             type_elements = self.add_property_to_element_list(c, property_symbol, &type_elements);
         }
-        if !type_elements.is_empty() { Some(self.f.new_node_list(type_elements)) } else { None }
+        if type_elements.is_empty() { None } else { Some(self.f.new_node_list(type_elements)) }
     }
 
     // nodebuilderimpl.go:2782
@@ -1686,15 +1689,15 @@ impl NodeBuilderImpl {
 }
 
 // nodebuilderimpl.go:2842
-pub(crate) fn get_type_alias_for_type_literal(c: &mut Checker, t: P<Type>) -> Option<P<Symbol>> {
-    if let Some(symbol) = t.symbol() {
-        if symbol.flags().intersects(SymbolFlags::TypeLiteral) && !symbol.declarations().is_empty()
-        {
-            let first_declaration = symbol.declarations()[0];
-            let node = ast::walk_up_parenthesized_types(first_declaration.parent()).unwrap();
-            if ast::is_type_alias_declaration(node) {
-                return c.get_symbol_of_declaration(node);
-            }
+pub fn get_type_alias_for_type_literal(c: &mut Checker, t: P<Type>) -> Option<P<Symbol>> {
+    if let Some(symbol) = t.symbol()
+        && symbol.flags().intersects(SymbolFlags::TypeLiteral)
+        && !symbol.declarations().is_empty()
+    {
+        let first_declaration = symbol.declarations()[0];
+        let node = ast::walk_up_parenthesized_types(first_declaration.parent()).unwrap();
+        if ast::is_type_alias_declaration(node) {
+            return c.get_symbol_of_declaration(node);
         }
     }
     None
@@ -1842,7 +1845,7 @@ impl NodeBuilderImpl {
                     // in turn try to reuse the same node again. Mark the type as visited around the reuse
                     // attempt so the inner recursion bottoms out via the visitedTypes guard below.
                     if self.ctx().visited_types.borrow().has(&type_id) {
-                        return Some(self.create_elided_information_placeholder(c));
+                        return Some(self.create_cyclic_structure_placeholder(c));
                     }
                     self.ctx().visited_types.borrow_mut().add(type_id);
                     let type_node =
@@ -1853,7 +1856,7 @@ impl NodeBuilderImpl {
                     }
                 }
                 if self.ctx().visited_types.borrow().has(&type_id) {
-                    return Some(self.create_elided_information_placeholder(c));
+                    return Some(self.create_cyclic_structure_placeholder(c));
                 }
                 return self.visit_and_transform_type(c, t, |c, b, t| {
                     b.create_type_node_from_object_type(c, t)
@@ -1888,15 +1891,22 @@ impl NodeBuilderImpl {
                     // The specified symbol flags need to be reinterpreted as type flags
                     self.symbol_to_type_node(c, type_alias, SymbolFlags::Type, None)
                 } else {
-                    Some(self.create_elided_information_placeholder(c))
+                    Some(self.create_cyclic_structure_placeholder(c))
                 }
             } else {
                 self.visit_and_transform_type(c, t, |c, b, t| {
                     b.create_type_node_from_object_type(c, t)
                 })
             }
+        } else if t.object_flags().intersects(ObjectFlags::ReverseMapped)
+            && !self.ctx().flags.get().intersects(Flags::AllowAnonymousIdentifier)
+        {
+            if self.ctx().visited_types.borrow().has(&type_id) {
+                return Some(self.create_cyclic_structure_placeholder(c));
+            }
+            self.visit_and_transform_type(c, t, |c, b, t| b.create_type_node_from_object_type(c, t))
         } else {
-            // Anonymous types without a symbol are never circular.
+            // Reverse mapped types use property and index signature placeholders for display.
             self.create_type_node_from_object_type(c, t)
         }
     }
@@ -1932,18 +1942,24 @@ impl NodeBuilderImpl {
     ) -> Option<P<Node>> {
         if t.flags().intersects(TypeFlags::Union) {
             if self.ctx().visited_types.borrow().has(&t.id) {
-                if !self.ctx().flags.get().intersects(Flags::AllowAnonymousIdentifier) {
-                    self.ctx().encountered_error.set(true);
-                    self.tracker().report_cyclic_structure_error();
-                }
-                return Some(self.create_elided_information_placeholder(c));
+                return Some(self.create_cyclic_structure_placeholder(c));
             }
             return self.visit_and_transform_type(c, t, |c, b, t| b.type_to_type_node(c, Some(t)));
         }
         self.type_to_type_node(c, Some(t))
     }
 
-    // nodebuilderimpl.go:3009
+    // nodebuilderimpl.go:3005
+    #[inline(never)]
+    pub(crate) fn create_cyclic_structure_placeholder(&self, c: &mut Checker) -> P<Node> {
+        if !self.ctx().flags.get().intersects(Flags::AllowAnonymousIdentifier) {
+            self.ctx().encountered_error.set(true);
+            self.tracker().report_cyclic_structure_error();
+        }
+        self.create_elided_information_placeholder(c)
+    }
+
+    // nodebuilderimpl.go:3013
     pub(crate) fn conditional_type_to_type_node(&self, c: &mut Checker, typ: P<Type>) -> P<Node> {
         if self.check_truncation_length(c) {
             return self.create_elided_information_placeholder(c);
@@ -2051,7 +2067,7 @@ impl NodeBuilderImpl {
     }
 
     // nodebuilderimpl.go:3070
-    pub(crate) fn type_reference_to_type_node(
+    pub(crate) fn array_or_tuple_type_to_node(
         &self,
         c: &mut Checker,
         t: P<Type>,
@@ -2078,7 +2094,8 @@ impl NodeBuilderImpl {
             } else {
                 Some(self.f.new_type_operator_node(Kind::ReadonlyKeyword, array_type))
             }
-        } else if target.object_flags().intersects(ObjectFlags::Tuple) {
+        } else {
+            assert!(target.object_flags().intersects(ObjectFlags::Tuple));
             let element_infos = target.as_tuple_type().element_infos.get();
             type_arguments = type_arguments
                 .iter()
@@ -2165,7 +2182,18 @@ impl NodeBuilderImpl {
             self.ctx().encountered_error.set(true);
             None
             // TODO: GH#18217
-        } else if self.ctx().flags.get().intersects(Flags::WriteClassExpressionAsTypeLiteral)
+        }
+    }
+
+    // nodebuilderimpl.go:3159
+    pub(crate) fn type_reference_to_type_node(
+        &self,
+        c: &mut Checker,
+        t: P<Type>,
+    ) -> Option<P<Node>> {
+        let type_arguments: Vec<P<Type>> = c.get_type_arguments(t).to_vec();
+        let target = t.target().unwrap();
+        if self.ctx().flags.get().intersects(Flags::WriteClassExpressionAsTypeLiteral)
             && t.symbol().unwrap().value_declaration().is_some()
             && ast::is_class_like(t.symbol().unwrap().value_declaration().unwrap())
             && !c.is_value_symbol_accessible(t.symbol(), self.ctx().enclosing_declaration.get())
@@ -2322,34 +2350,48 @@ impl NodeBuilderImpl {
             return Some(self.create_elided_information_placeholder(c));
         }
 
-        let type_id = t.id;
+        let is_array_or_tuple = c.is_array_or_tuple_type(t);
+        let type_id = if is_array_or_tuple {
+            // Deferred and regular references share a cycle identity.
+            let target = t.target().unwrap();
+            let type_arguments = c.get_type_arguments(t).to_vec();
+            c.create_type_reference(target, &type_arguments).id
+        } else {
+            t.id
+        };
+        if self.ctx().visited_types.borrow().has(&type_id) {
+            return Some(self.create_cyclic_structure_placeholder(c));
+        }
+
         let is_constructor_object = t.object_flags().intersects(ObjectFlags::Anonymous)
             && t.symbol().is_some()
             && t.symbol().unwrap().flags().intersects(SymbolFlags::Class);
-        let id: Option<CompositeSymbolIdentity> =
-            if t.object_flags().intersects(ObjectFlags::Reference)
-                && t.as_type_reference().node.get().is_some()
-            {
-                Some(CompositeSymbolIdentity {
-                    is_constructor_node: false,
-                    symbol_id: SymbolId(0),
-                    node_id: ast::get_node_id(t.as_type_reference().node.get().unwrap()),
-                })
-            } else if t.flags().intersects(TypeFlags::Conditional) {
-                Some(CompositeSymbolIdentity {
-                    is_constructor_node: false,
-                    symbol_id: SymbolId(0),
-                    node_id: ast::get_node_id(
-                        t.as_conditional_type().root.get().unwrap().node.get().unwrap(),
-                    ),
-                })
-            } else {
-                t.symbol().map(|symbol| CompositeSymbolIdentity {
-                    is_constructor_node: is_constructor_object,
-                    symbol_id: ast::get_symbol_id(symbol),
-                    node_id: NodeId(0),
-                })
-            };
+        let id: Option<CompositeSymbolIdentity> = if is_array_or_tuple {
+            // Do not bound finite container nesting by the shared Array symbol or tuple origin.
+            None
+        } else if t.object_flags().intersects(ObjectFlags::Reference)
+            && t.as_type_reference().node.get().is_some()
+        {
+            Some(CompositeSymbolIdentity {
+                is_constructor_node: false,
+                symbol_id: SymbolId(0),
+                node_id: ast::get_node_id(t.as_type_reference().node.get().unwrap()),
+            })
+        } else if t.flags().intersects(TypeFlags::Conditional) {
+            Some(CompositeSymbolIdentity {
+                is_constructor_node: false,
+                symbol_id: SymbolId(0),
+                node_id: ast::get_node_id(
+                    t.as_conditional_type().root.get().unwrap().node.get().unwrap(),
+                ),
+            })
+        } else {
+            t.symbol().map(|symbol| CompositeSymbolIdentity {
+                is_constructor_node: is_constructor_object,
+                symbol_id: ast::get_symbol_id(symbol),
+                node_id: NodeId(0),
+            })
+        };
         // Since instantiations of the same anonymous type have the same symbol, tracking symbols instead
         // of types allows us to catch circular references to instantiations of the same anonymous type
 
@@ -2358,6 +2400,11 @@ impl NodeBuilderImpl {
             type_id,
             flags: self.ctx().flags.get(),
             internal_flags: self.ctx().internal_flags.get(),
+            infer_type_parameters: if self.ctx().infer_type_parameters.get().is_empty() {
+                CacheHashKey::default()
+            } else {
+                get_type_list_key(self.ctx().infer_type_parameters.get())
+            },
         };
         // Don't rely on type cache if we're expanding a type, because we need to compute `canIncreaseExpansionDepth`.
         let can_use_cache = self.ctx().max_expansion_depth.get().is_none();
@@ -2385,10 +2432,42 @@ impl NodeBuilderImpl {
             }
         }
 
+        let origin_depth = if t.object_flags().intersects(ObjectFlags::ReverseMapped) {
+            // Growing type arguments can prevent a reverse mapped type from repeating.
+            // Bound expansion by its mapped declaration as well as its type identity.
+            let origin = CompositeSymbolIdentity {
+                is_constructor_node: false,
+                symbol_id: SymbolId(0),
+                node_id: ast::get_node_id(
+                    t.as_reverse_mapped_type()
+                        .mapped_type
+                        .get()
+                        .unwrap()
+                        .as_mapped_type()
+                        .declaration
+                        .get()
+                        .unwrap(),
+                ),
+            };
+            let depth = self.ctx().symbol_depth.borrow().get(&origin).copied().unwrap_or(0);
+            if depth >= 100 {
+                self.ctx().truncating.set(true);
+                return Some(self.create_elided_information_placeholder(c));
+            }
+            self.ctx().symbol_depth.borrow_mut().insert(origin, depth + 1);
+            Some((origin, depth))
+        } else {
+            None
+        };
+
         let mut depth: usize = 0;
         if let Some(id) = id {
             depth = self.ctx().symbol_depth.borrow().get(&id).copied().unwrap_or(0);
             if depth > 10 {
+                self.ctx().truncating.set(true);
+                if let Some((origin, origin_depth)) = origin_depth {
+                    self.ctx().symbol_depth.borrow_mut().insert(origin, origin_depth);
+                }
                 return Some(self.create_elided_information_placeholder(c));
             }
             self.ctx().symbol_depth.borrow_mut().insert(id, depth + 1);
@@ -2424,6 +2503,9 @@ impl NodeBuilderImpl {
         self.ctx().visited_types.borrow_mut().delete(&type_id);
         if let Some(id) = id {
             self.ctx().symbol_depth.borrow_mut().insert(id, depth);
+        }
+        if let Some((origin, origin_depth)) = origin_depth {
+            self.ctx().symbol_depth.borrow_mut().insert(origin, origin_depth);
         }
         *self.ctx().tracked_symbols.borrow_mut() = prev_tracked_symbols;
         result
@@ -2745,7 +2827,10 @@ impl NodeBuilderImpl {
                 self.ctx().depth.set(self.ctx().depth.get() - 1);
                 return result;
             }
-            if t.as_type_reference().node.get().is_some() {
+            if c.is_array_or_tuple_type(t) {
+                return self
+                    .visit_and_transform_type(c, t, |c, b, t| b.array_or_tuple_type_to_node(c, t));
+            } else if t.as_type_reference().node.get().is_some() {
                 return self
                     .visit_and_transform_type(c, t, |c, b, t| b.type_reference_to_type_node(c, t));
             }
@@ -2961,7 +3046,7 @@ impl NodeBuilderImpl {
     pub(crate) fn mark_symbol_name_literal(&self, node: P<Node>) -> P<Node> {
         if ast::is_string_literal(node)
             && node.text().len() > 1
-            && node.text().as_bytes()[0] == InternalSymbolNamePrefixByte
+            && node.text().as_bytes()[0] == INTERNAL_SYMBOL_NAME_PREFIX_BYTE
         {
             self.e.add_emit_flags(node, EmitFlags::InternalSymbolName);
         }
@@ -3042,7 +3127,7 @@ impl NodeBuilderImpl {
         if self.should_write_type_parameters_in_qualified_name(c, chain, index) {
             let symbol = chain[index];
             let next_symbol = chain[index + 1];
-            if !next_symbol.check_flags.get().intersects(CheckFlags::Instantiated) {
+            if !next_symbol.check_flags().intersects(CheckFlags::Instantiated) {
                 return None;
             }
 

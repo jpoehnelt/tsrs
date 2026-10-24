@@ -96,7 +96,7 @@ pub fn get_file_emit_kind(options: &CompilerOptions) -> FileEmitKind {
 }
 
 // snapshot.go:82
-pub(crate) fn get_pending_emit_kind_with_options(
+pub fn get_pending_emit_kind_with_options(
     options: &CompilerOptions,
     old_options: &CompilerOptions,
 ) -> FileEmitKind {
@@ -106,10 +106,7 @@ pub(crate) fn get_pending_emit_kind_with_options(
 }
 
 // snapshot.go:88
-pub(crate) fn get_pending_emit_kind(
-    emit_kind: FileEmitKind,
-    old_emit_kind: FileEmitKind,
-) -> FileEmitKind {
+pub fn get_pending_emit_kind(emit_kind: FileEmitKind, old_emit_kind: FileEmitKind) -> FileEmitKind {
     if old_emit_kind == emit_kind {
         return FileEmitKind::None;
     }
@@ -166,7 +163,7 @@ impl EmitSignature {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct buildInfoDiagnosticWithFileName {
+pub struct BuildInfoDiagnosticWithFileName {
     // filename if it is for a File thats other than its stored for
     pub(crate) file: Path,
     pub(crate) no_file: bool,
@@ -178,17 +175,17 @@ pub(crate) struct buildInfoDiagnosticWithFileName {
     pub(crate) message_text: String,
     pub(crate) message_key: String,
     pub(crate) message_args: Vec<String>,
-    pub(crate) message_chain: Vec<buildInfoDiagnosticWithFileName>,
-    pub(crate) related_information: Vec<buildInfoDiagnosticWithFileName>,
+    pub(crate) message_chain: Vec<BuildInfoDiagnosticWithFileName>,
+    pub(crate) related_information: Vec<BuildInfoDiagnosticWithFileName>,
     pub(crate) reports_unnecessary: bool,
     pub(crate) reports_deprecated: bool,
     pub(crate) skipped_on_no_emit: bool,
     pub(crate) repopulate_info: Option<RepopulateDiagnosticInfo>,
 }
 
-impl Default for buildInfoDiagnosticWithFileName {
+impl Default for BuildInfoDiagnosticWithFileName {
     fn default() -> Self {
-        buildInfoDiagnosticWithFileName {
+        BuildInfoDiagnosticWithFileName {
             file: Path::default(),
             no_file: false,
             pos: 0,
@@ -212,7 +209,7 @@ impl Default for buildInfoDiagnosticWithFileName {
 #[derive(Debug, Default)]
 pub struct DiagnosticsOrBuildInfoDiagnosticsWithFileName {
     pub(crate) diagnostics: Mutex<Option<Vec<P<Diagnostic>>>>,
-    pub(crate) build_info_diagnostics: Vec<buildInfoDiagnosticWithFileName>,
+    pub(crate) build_info_diagnostics: Vec<BuildInfoDiagnosticWithFileName>,
 }
 
 impl DiagnosticsOrBuildInfoDiagnosticsWithFileName {
@@ -238,7 +235,7 @@ fn key_of(key: &str) -> Key {
     Key(alloc_str(key))
 }
 
-impl buildInfoDiagnosticWithFileName {
+impl BuildInfoDiagnosticWithFileName {
     // snapshot.go:150
     pub(crate) fn to_diagnostic(
         &self,
@@ -315,8 +312,8 @@ impl buildInfoDiagnosticWithFileName {
 // repopulateDiagnosticChain recomputes a diagnostic chain entry that depends on
 // program state which may have changed between incremental builds.
 // snapshot.go:189
-pub(crate) fn repopulate_diagnostic_chain(
-    b: &buildInfoDiagnosticWithFileName,
+pub fn repopulate_diagnostic_chain(
+    b: &BuildInfoDiagnosticWithFileName,
     p: &'static CompilerProgram,
     file: Option<P<SourceFile>>,
 ) -> P<Diagnostic> {
@@ -331,7 +328,7 @@ pub(crate) fn repopulate_diagnostic_chain(
 
 // snapshot.go:225
 fn repopulate_mode_mismatch_chain(
-    b: &buildInfoDiagnosticWithFileName,
+    b: &BuildInfoDiagnosticWithFileName,
     p: &'static CompilerProgram,
     file: Option<P<SourceFile>>,
 ) -> P<Diagnostic> {
@@ -362,7 +359,7 @@ fn repopulate_mode_mismatch_chain(
 
 // snapshot.go:252
 fn repopulate_module_not_found_chain(
-    b: &buildInfoDiagnosticWithFileName,
+    b: &BuildInfoDiagnosticWithFileName,
     p: &'static CompilerProgram,
     file: Option<P<SourceFile>>,
     info: &RepopulateDiagnosticInfo,
@@ -557,7 +554,7 @@ impl Snapshot {
 }
 
 // snapshot.go:397
-pub(crate) fn get_text_handling_source_map_for_signature<'a>(
+pub fn get_text_handling_source_map_for_signature<'a>(
     text: &'a str,
     data: &WriteFileData,
 ) -> &'a str {
@@ -568,7 +565,7 @@ pub(crate) fn get_text_handling_source_map_for_signature<'a>(
 }
 
 // snapshot.go:413
-pub(crate) fn diagnostic_to_string_builder(
+pub fn diagnostic_to_string_builder(
     diagnostic: Option<P<Diagnostic>>,
     file: P<SourceFile>,
     builder: &mut String,

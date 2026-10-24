@@ -54,10 +54,10 @@ space left) leaves the job queued for a running worker, as the fixed pool did.
 
 ## Deviations
 
-- Out of scope (docs/LSP.md): content mappers (`Spawn`, `contentMapperSpawner`, `contentMapperLogger`,
-  `custom/setContentMapperContributions`), `api` sessions (`custom/initializeAPISession`), pprof requests
-  (`custom/runGC`, heap/alloc/CPU profiles). The handlers are registered like Go and answer through `not_yet_ported`
-  (MethodNotFound "<method> is not ported yet"); no other method does.
+- Out of scope (docs/LSP.md): content mappers (`Spawn`, `contentMapperSpawner`, `contentMapperLogger`), pprof
+  requests (`custom/runGC`, heap/alloc/CPU profiles). The pprof handlers are registered like Go and answer through
+  `not_yet_ported` (MethodNotFound "<method> is not ported yet"); no other method does.
+  `custom/initializeAPISession` (docs/NODE_API.md) and `custom/setContentMapperContributions` are ported.
 - "Resolved client capabilities" log line: Go marshals the resolved capabilities as JSON; the `Resolved*` views have
   no codec, so the line shows their Debug form (log only; the oracle drops `window/logMessage`).
 - Stack traces are Rust backtraces; `sanitizeStackTrace` looks for Go frames and returns "" for them (only used
@@ -80,7 +80,7 @@ space left) leaves the job queued for a running worker, as the fixed pool did.
   unserializable response fails only its request (Go test `TestWriteLoopRecoversFromUnserializableResponse`).
 
 Shutdown/exit: like tsgo-ref, `exit` ends the process with status 1 and "context canceled" on stderr (Go's `Run`
-returns the canceled group error); `tools/oracle/lsp/exit_check.py` compares the combinations.
+returns the canceled group error); `tools/oracle/lsp/exit_check.mjs` compares the combinations.
 
 Status (2026-10-10): the builtin watcher and all phase-3 handlers this note once listed as "not yet ported" are
 ported (notes/lsp-robust.md; docs/LSP.md, Progress).

@@ -5,22 +5,22 @@ use std::sync::{Arc, Mutex};
 
 use rustc_hash::FxHashMap;
 
-struct parseCacheEntry<V> {
+struct ParseCacheEntry<V> {
     value: Mutex<Option<V>>,
 }
 
-pub(crate) struct parseCache<K, V> {
-    entries: Mutex<FxHashMap<K, Arc<parseCacheEntry<V>>>>,
+pub struct ParseCache<K, V> {
+    entries: Mutex<FxHashMap<K, Arc<ParseCacheEntry<V>>>>,
 }
 
-impl<K, V> Default for parseCache<K, V> {
+impl<K, V> Default for ParseCache<K, V> {
     fn default() -> Self {
-        parseCache { entries: Mutex::new(FxHashMap::default()) }
+        ParseCache { entries: Mutex::new(FxHashMap::default()) }
     }
 }
 
 // Go compares the value with its zero value (`allowZero`); every V here is an Option.
-pub(crate) trait IsZeroValue {
+pub trait IsZeroValue {
     fn is_zero_value(&self) -> bool;
 }
 
@@ -30,7 +30,7 @@ impl<T> IsZeroValue for Option<T> {
     }
 }
 
-impl<K: Hash + Eq + Clone, V: Clone + IsZeroValue> parseCache<K, V> {
+impl<K: Hash + Eq + Clone, V: Clone + IsZeroValue> ParseCache<K, V> {
     // parseCache.go:18
     pub(crate) fn load_or_store(
         &self,
@@ -38,7 +38,7 @@ impl<K: Hash + Eq + Clone, V: Clone + IsZeroValue> parseCache<K, V> {
         parse: impl FnOnce(&K) -> V,
         allow_zero: bool,
     ) -> V {
-        let new_entry = Arc::new(parseCacheEntry { value: Mutex::new(None) });
+        let new_entry = Arc::new(ParseCacheEntry { value: Mutex::new(None) });
         let mut new_guard = new_entry.value.lock().unwrap();
         let existing = {
             let mut entries = self.entries.lock().unwrap();
@@ -52,10 +52,10 @@ impl<K: Hash + Eq + Clone, V: Clone + IsZeroValue> parseCache<K, V> {
         if let Some(entry) = existing {
             drop(new_guard);
             let mut guard = entry.value.lock().unwrap();
-            if let Some(value) = guard.as_ref() {
-                if allow_zero || !value.is_zero_value() {
-                    return value.clone();
-                }
+            if let Some(value) = guard.as_ref()
+                && (allow_zero || !value.is_zero_value())
+            {
+                return value.clone();
             }
             let value = parse(key);
             *guard = Some(value.clone());
@@ -71,7 +71,7 @@ impl<K: Hash + Eq + Clone, V: Clone + IsZeroValue> parseCache<K, V> {
         self.entries
             .lock()
             .unwrap()
-            .insert(key, Arc::new(parseCacheEntry { value: Mutex::new(Some(value)) }));
+            .insert(key, Arc::new(ParseCacheEntry { value: Mutex::new(Some(value)) }));
     }
 
     // parseCache.go:38

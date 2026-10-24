@@ -103,6 +103,7 @@ bitflags! {
         const NoSyntacticPrinter = 1 << 1;
         const DoNotIncludeSymbolChain = 1 << 2;
         const AllowUnresolvedNames = 1 << 3;
+        const RewriteModuleSpecifiers = 1 << 4;
     }
 }
 
@@ -179,13 +180,13 @@ pub struct VerbosityContext {
 /// Passed as `&accessibleSymbolChainContext`. Go copies the struct but shares the map (a reference type), and
 /// `canQualifySymbol` builds a new context around the same map, hence the `Rc<RefCell<…>>`.
 #[derive(Clone)]
-pub struct accessibleSymbolChainContext {
+pub struct AccessibleSymbolChainContext {
     pub symbol: Option<P<Symbol>>, // nil when canQualifySymbol recurses on a symbol without a parent
     pub enclosing_declaration: Option<P<Node>>,
     pub meaning: SymbolFlags,
     pub use_only_external_aliasing: bool,
     pub visited_symbol_tables_map:
-        std::rc::Rc<RefCell<FxHashMap<SymbolId, FxHashSet<symbolTableID>>>>,
+        std::rc::Rc<RefCell<FxHashMap<SymbolId, FxHashSet<SymbolTableID>>>>,
 }
 
 // checker/symboltracker.go

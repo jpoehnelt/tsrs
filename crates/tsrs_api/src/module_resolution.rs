@@ -15,7 +15,6 @@ use tsrs_module::{
     ResolvedTypeReferenceDirective, Resolver, ResolverOptions,
 };
 use tsrs_project::ModuleResolverFactory;
-use tsrs_tsoptions::gojson;
 use tsrs_vfs::FS;
 
 use crate::handler::{ApiError, ApiResult, ClientConn};
@@ -69,12 +68,12 @@ fn unresolved() -> P<ResolvedModule> {
 }
 
 /// Go `module.StaticResolver`.
-struct StaticResolver {
-    fallback: Box<dyn Resolver>,
+struct StaticResolver<'a> {
+    fallback: Box<dyn Resolver + 'a>,
     resolutions: Arc<StaticResolutions>,
 }
 
-impl Resolver for StaticResolver {
+impl Resolver for StaticResolver<'_> {
     fn resolve_module_name(
         &self,
         module_name: &str,
@@ -153,7 +152,7 @@ struct ResolverOptionsTemplate {
 }
 
 impl ResolverOptionsTemplate {
-    fn from(o: &ResolverOptions) -> Self {
+    fn from(o: &ResolverOptions<'static>) -> Self {
         ResolverOptionsTemplate {
             host: o.host,
             typings_location: o.typings_location.clone(),
@@ -161,7 +160,7 @@ impl ResolverOptionsTemplate {
             extra_extensions: o.extra_extensions.clone(),
         }
     }
-    fn with_options(&self, compiler_options: P<CompilerOptions>) -> ResolverOptions {
+    fn with_options(&self, compiler_options: P<CompilerOptions>) -> ResolverOptions<'static> {
         let mut o = ResolverOptions::new(self.host, compiler_options);
         o.typings_location.clone_from(&self.typings_location);
         o.project_name.clone_from(&self.project_name);
@@ -206,16 +205,16 @@ impl Resolver for SharedResolver {
 }
 
 /// Go `callbackModuleResolver`: asks the client, falling back for type reference directives.
-struct CallbackResolver {
+struct CallbackResolver<'a> {
     registration: Arc<ModuleResolverRegistration>,
     conn: Arc<dyn ClientConn>,
     current_directory: String,
     snapshot: u64,
     context_id: u64,
-    fallback: Box<dyn Resolver>,
+    fallback: Box<dyn Resolver + 'a>,
 }
 
-impl CallbackResolver {
+impl CallbackResolver<'_> {
     fn resolve(
         &self,
         module_name: &str,
@@ -248,7 +247,7 @@ impl CallbackResolver {
     }
 }
 
-impl Resolver for CallbackResolver {
+impl Resolver for CallbackResolver<'_> {
     fn resolve_module_name(
         &self,
         module_name: &str,
@@ -308,6 +307,7 @@ fn static_resolution_to_resolved_module(v: &Value, cwd: &str) -> ApiResult<P<Res
     r.extension = tspath::try_get_extension_from_path(&resolved_file_name);
     r.resolved_file_name = alloc_str(&resolved_file_name);
     r.original_path = alloc_str(&original_path);
+    r.is_custom_resolution = true;
     Ok(P::new(r))
 }
 
@@ -316,9 +316,9 @@ fn mode_from(v: &Value, what: &str) -> ApiResult<Option<ResolutionMode>> {
         Value::Null => Ok(None),
         Value::Number(n) => {
             let mode = match *n as i64 {
-                0 => ModuleKind::None,
-                1 => ModuleKind::CommonJS,
-                99 => ModuleKind::ESNext,
+                0 => ModuleKind::NONE,
+                1 => ModuleKind::COMMON_JS,
+                99 => ModuleKind::ES_NEXT,
                 x => {
                     return Err(ApiError::client(format!("{what} has invalid resolutionMode {x}")));
                 }
@@ -372,7 +372,7 @@ impl ModuleResolverFactory for Factory {
     fn new_resolver(
         &self,
         _ctx: &Context,
-        mut options: ResolverOptions,
+        mut options: ResolverOptions<'static>,
     ) -> (Box<dyn Resolver>, Box<dyn FnOnce() + Send>) {
         options.compiler_options = self.registration.compiler_options;
         let template = ResolverOptionsTemplate::from(&options);
@@ -508,9 +508,10 @@ impl Session {
 
     pub(crate) fn handle_create_module_resolver(&self, p: Params) -> ApiResult<Value> {
         p.object()?;
-        let mut options = gojson::compiler_options_from_go_json(p.get("compilerOptions"))
-            .map_err(ApiError::invalid_request)?;
-        crate::predecode::exact_compiler_options_ints(p.get("compilerOptions"), &mut options);
+        let options = crate::raw_options::compiler_options_from_raw(
+            p.get("compilerOptions"),
+            self.current_directory(),
+        )?;
         let resolutions = self.compile_module_resolution_spec(p.get("moduleResolutions"))?;
         let id = self.module_resolvers.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         let registration = Arc::new(ModuleResolverRegistration {
@@ -567,7 +568,7 @@ impl Session {
             return Err(ApiError::client("moduleName is empty"));
         }
         let data = self.registration(p.u64("resolver")?)?;
-        let mode = mode_from(p.get("resolutionMode"), "request")?.unwrap_or(ModuleKind::None);
+        let mode = mode_from(p.get("resolutionMode"), "request")?.unwrap_or(ModuleKind::NONE);
         let cwd = self.current_directory().to_string();
         let dir = p.document("containingDirectory")?;
         let containing_directory =
@@ -578,11 +579,11 @@ impl Session {
             return Err(ApiError::client("snapshot and inProgressSnapshot are mutually exclusive"));
         }
 
-        // Resolver host: leaked for the duration of the call only (module::ResolverOptions requires
-        // `&'static`); reclaimed after every resolver built on it has been dropped.
-        let mut owned_host: Option<*mut FsHost> = None;
+        // Resolver host for this call: the resolver borrows it, so it lives on this frame until the resolver is
+        // dropped (issue #646).
+        let call_host: FsHost;
         let _sd_pin;
-        let mut resolver: Box<dyn Resolver> = if in_progress != 0 {
+        let mut resolver: Box<dyn Resolver + '_> = if in_progress != 0 {
             let ctx = self.module_resolvers.contexts.lock().unwrap().get(&in_progress).cloned();
             let ctx = ctx.ok_or_else(|| {
                 ApiError::client(format!("in-progress snapshot {in_progress} not found"))
@@ -600,14 +601,11 @@ impl Session {
                 _sd_pin = sd;
                 fs
             } else {
-                self.snapshot_host_fs()
+                self.fs()
             };
-            let host = Box::into_raw(Box::new(FsHost { fs, cwd: cwd.clone() }));
-            owned_host = Some(host);
-            // SAFETY: `host` stays alive until reclaimed below, after the resolver is dropped.
-            let host_ref: &'static FsHost = unsafe { &*host };
+            call_host = FsHost { fs, cwd: cwd.clone() };
             Box::new(tsrs_module::new_resolver(ResolverOptions::new(
-                host_ref,
+                &call_host,
                 data.compiler_options,
             )))
         };
@@ -631,10 +629,6 @@ impl Session {
         let result =
             resolver.resolve_module_name_from_directory(module_name, &containing_directory, mode);
         drop(resolver);
-        if let Some(host) = owned_host {
-            // SAFETY: allocated above; the only resolver referencing it was dropped.
-            drop(unsafe { Box::from_raw(host) });
-        }
         let (resolved, trace) = result.map_err(ApiError::internal)?;
         let trace: Vec<String> = trace
             .iter()

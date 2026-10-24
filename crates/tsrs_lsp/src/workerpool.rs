@@ -10,29 +10,29 @@
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex, OnceLock};
 
-pub(crate) const WORKER_STACK_SIZE: usize = 512 << 20;
+pub const WORKER_STACK_SIZE: usize = 512 << 20;
 
-type job = Box<dyn FnOnce() + Send>;
+type Job = Box<dyn FnOnce() + Send>;
 
-struct workerPool {
-    state: Mutex<workerPoolState>,
+struct WorkerPool {
+    state: Mutex<WorkerPoolState>,
     cond: Condvar,
     // Workers that stay when there is no job.
     max_idle_threads: usize,
 }
 
-struct workerPoolState {
-    jobs: VecDeque<job>,
+struct WorkerPoolState {
+    jobs: VecDeque<Job>,
     threads: usize,
     idle: usize,
 }
 
-fn get_pool() -> &'static workerPool {
-    static POOL: OnceLock<workerPool> = OnceLock::new();
+fn get_pool() -> &'static WorkerPool {
+    static POOL: OnceLock<WorkerPool> = OnceLock::new();
     POOL.get_or_init(|| {
         let parallelism = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-        workerPool {
-            state: Mutex::new(workerPoolState { jobs: VecDeque::new(), threads: 0, idle: 0 }),
+        WorkerPool {
+            state: Mutex::new(WorkerPoolState { jobs: VecDeque::new(), threads: 0, idle: 0 }),
             cond: Condvar::new(),
             max_idle_threads: parallelism.max(4),
         }
@@ -40,7 +40,7 @@ fn get_pool() -> &'static workerPool {
 }
 
 // Go `go f()` for request work.
-pub(crate) fn go(f: impl FnOnce() + Send + 'static) {
+pub fn go(f: impl FnOnce() + Send + 'static) {
     let pool = get_pool();
     let mut state = pool.state.lock().unwrap();
     state.jobs.push_back(Box::new(f));
@@ -65,7 +65,7 @@ pub(crate) fn go(f: impl FnOnce() + Send + 'static) {
     }
 }
 
-fn worker_loop(pool: &'static workerPool) {
+fn worker_loop(pool: &'static WorkerPool) {
     let mut state = pool.state.lock().unwrap();
     loop {
         if let Some(job) = state.jobs.pop_front() {
@@ -86,18 +86,18 @@ fn worker_loop(pool: &'static workerPool) {
 }
 
 #[cfg(test)]
-pub(crate) fn max_idle_threads() -> usize {
+pub fn max_idle_threads() -> usize {
     get_pool().max_idle_threads
 }
 
 #[cfg(test)]
-pub(crate) fn threads() -> usize {
+pub fn threads() -> usize {
     get_pool().state.lock().unwrap().threads
 }
 
 // An unrecovered panic in a goroutine ends a Go program (exit status 2, after the runtime prints the panic); the
 // panic hook has already printed the message and location.
-pub(crate) fn run_or_exit(f: impl FnOnce()) {
+pub fn run_or_exit(f: impl FnOnce()) {
     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err() {
         std::process::exit(2);
     }

@@ -30,14 +30,14 @@ fn test_progress_notifications_end_to_end() {
         let progress_notifications = std::sync::Arc::clone(&progress_notifications);
         *client.on_server_notification.lock().unwrap() =
             Some(Box::new(move |req: &lsproto::RequestMessage| {
-                if req.method == lsproto::Method::Progress {
-                    if let Ok(params) = req.unmarshal_params::<lsproto::ProgressParams>() {
-                        let is_end = params.value.end.is_some();
-                        progress_notifications.lock().unwrap().push(params);
-                        if is_end {
-                            // Signaled, or already signaled.
-                            let _ = end_tx.try_send(());
-                        }
+                if req.method == lsproto::Method::PROGRESS
+                    && let Ok(params) = req.unmarshal_params::<lsproto::ProgressParams>()
+                {
+                    let is_end = params.value.end.is_some();
+                    progress_notifications.lock().unwrap().push(params);
+                    if is_end {
+                        // Signaled, or already signaled.
+                        let _ = end_tx.try_send(());
                     }
                 }
             }));
@@ -66,7 +66,7 @@ fn test_progress_notifications_end_to_end() {
         lsproto::DidOpenTextDocumentParams {
             text_document: lsproto::TextDocumentItem {
                 uri: uri.clone(),
-                language_id: lsproto::LanguageKind::TypeScript,
+                language_id: lsproto::LanguageKind::TYPE_SCRIPT,
                 text: "export const x = 1;".to_string(),
                 ..Default::default()
             },

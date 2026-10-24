@@ -42,8 +42,9 @@ static HARNESS_COMPILER_OPTIONS: LazyLock<Vec<&'static CommandLineOption>> = Laz
 
 static HARNESS_COMMAND_LINE_OPTIONS: LazyLock<Vec<&'static CommandLineOption>> =
     LazyLock::new(|| {
-        let opt = new_option;
         use CommandLineOptionKind::{Boolean, List, String};
+
+        let opt = new_option;
         vec![
             opt("useCaseSensitiveFileNames", Boolean),
             opt("baselineFile", String),
@@ -74,28 +75,104 @@ pub fn get_harness_option(name: &str) -> Option<&'static CommandLineOption> {
 
 // compilerVaryBy (compiler_runner.go getCompilerVaryByMap) and the option kinds used for variations.
 pub fn tsoptions_option_table() -> OptionTable {
-    let mut vary_by = FxHashSet::default();
-    vary_by.extend(tsoptions::OPTIONS_DECLARATIONS.iter().filter_map(|option| {
-        if !option.is_command_line_only
-            && (option.kind == CommandLineOptionKind::Boolean
-                || option.kind == CommandLineOptionKind::Enum)
-            && (option.affects_program_structure
-                || option.affects_emit
-                || option.affects_module_resolution
-                || option.affects_bind_diagnostics
-                || option.affects_semantic_diagnostics
-                || option.affects_source_file
-                || option.affects_declaration_path
-                || option.affects_build_info)
-        {
-            Some(option.name.to_lowercase())
-        } else {
-            None
-        }
-    }));
-    // explicit variations that do not match above conditions
-    vary_by.insert("noemit".to_string());
-    vary_by.insert("isolatedmodules".to_string());
+    // Source 17 generates compilerVaryBy from the shared options model. Keep this exact
+    // inventory so the Rust compiler runner expands the same fixture variations as Go.
+    let vary_by: FxHashSet<String> = [
+        "all",
+        "allowarbitraryextensions",
+        "allowimportingtsextensions",
+        "allowjs",
+        "allowsyntheticdefaultimports",
+        "allowumdglobalaccess",
+        "allowunreachablecode",
+        "allowunusedlabels",
+        "alwaysstrict",
+        "assumechangesonlyaffectdirectdependencies",
+        "checkjs",
+        "composite",
+        "declaration",
+        "declarationmap",
+        "deduplicatepackages",
+        "diagnostics",
+        "disablereferencedprojectload",
+        "disablesizelimit",
+        "disablesolutionsearching",
+        "disablesourceofprojectreferenceredirect",
+        "downleveliteration",
+        "emitbom",
+        "emitdeclarationonly",
+        "emitdecoratormetadata",
+        "erasablesyntaxonly",
+        "esmoduleinterop",
+        "exactoptionalpropertytypes",
+        "experimentaldecorators",
+        "explainfiles",
+        "extendeddiagnostics",
+        "forceconsistentcasinginfilenames",
+        "importhelpers",
+        "incremental",
+        "init",
+        "inlinesourcemap",
+        "inlinesources",
+        "isolateddeclarations",
+        "isolatedmodules",
+        "jsx",
+        "libreplacement",
+        "listemittedfiles",
+        "listfiles",
+        "module",
+        "moduledetection",
+        "moduleresolution",
+        "newline",
+        "nocheck",
+        "noemit",
+        "noemithelpers",
+        "noemitonerror",
+        "noerrortruncation",
+        "nofallthroughcasesinswitch",
+        "noimplicitany",
+        "noimplicitoverride",
+        "noimplicitreturns",
+        "noimplicitthis",
+        "nolib",
+        "nopropertyaccessfromindexsignature",
+        "noresolve",
+        "nouncheckedindexedaccess",
+        "nouncheckedsideeffectimports",
+        "nounusedlocals",
+        "nounusedparameters",
+        "preserveconstenums",
+        "preservesymlinks",
+        "preservewatchoutput",
+        "pretty",
+        "quiet",
+        "removecomments",
+        "resolvejsonmodule",
+        "resolvepackagejsonexports",
+        "resolvepackagejsonimports",
+        "rewriterelativeimportextensions",
+        "singlethreaded",
+        "skipdefaultlibcheck",
+        "skiplibcheck",
+        "sourcemap",
+        "stabletypeordering",
+        "strict",
+        "strictbindcallapply",
+        "strictbuiltiniteratorreturn",
+        "strictfunctiontypes",
+        "strictnullchecks",
+        "strictpropertyinitialization",
+        "stripinternal",
+        "target",
+        "traceresolution",
+        "usedefineforclassfields",
+        "useunknownincatchvariables",
+        "verbatimmodulesyntax",
+        "version",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
 
     let decls = HARNESS_COMPILER_OPTIONS
         .iter()
@@ -304,7 +381,7 @@ pub fn parse_test_ts_config(
         tspath::get_normalized_absolute_path(&data.name, current_directory),
         data.content.clone(),
     );
-    // Config parsing keeps `&'static dyn ParseConfigHost`; the host is leaked like everything in the arena.
+    // The host lives in the arena like everything else here; config parsing only borrows it.
     let parse_config_host: &'static VfsParseConfigHost =
         P::new(new_vfs_parse_config_host_with_symlinks(
             &all_files,
@@ -382,13 +459,13 @@ pub fn unsupported_reason(options: &CompilerOptions) -> Option<String> {
     }
     // SkipUnsupportedCompilerOptions
     match options.module {
-        ModuleKind::UMD | ModuleKind::System => {
+        ModuleKind::UMD | ModuleKind::SYSTEM => {
             return Some(format!("unsupported module kind {:?}", options.module));
         }
         _ => {}
     }
     match options.module_resolution {
-        ModuleResolutionKind::Node10 | ModuleResolutionKind::Classic => {
+        ModuleResolutionKind::NODE10 | ModuleResolutionKind::CLASSIC => {
             return Some(format!(
                 "unsupported module resolution kind {:?}",
                 options.module_resolution
@@ -497,11 +574,11 @@ mod tests {
                             .chain(&split.other_files)
                             .map(|f| f.unit_name.clone())
                             .collect();
-                        if let Some(go) = go_files.get(&item.id()) {
-                            if !go.is_empty() && *go != mine {
-                                problems
-                                    .push(format!("{}: files {mine:?} vs go {go:?}", item.id()));
-                            }
+                        if let Some(go) = go_files.get(&item.id())
+                            && !go.is_empty()
+                            && *go != mine
+                        {
+                            problems.push(format!("{}: files {mine:?} vs go {go:?}", item.id()));
                         }
                     }
                 }

@@ -64,13 +64,13 @@ pub enum OperatorPrecedence {
 }
 
 impl OperatorPrecedence {
-    pub const Lowest: OperatorPrecedence = OperatorPrecedence::Comma;
-    pub const Highest: OperatorPrecedence = OperatorPrecedence::Parentheses;
-    pub const DisallowComma: OperatorPrecedence = OperatorPrecedence::Yield;
+    pub const LOWEST: OperatorPrecedence = OperatorPrecedence::Comma;
+    pub const HIGHEST: OperatorPrecedence = OperatorPrecedence::Parentheses;
+    pub const DISALLOW_COMMA: OperatorPrecedence = OperatorPrecedence::Yield;
     // ShortCircuitExpression:
     //     LogicalORExpression
     //     CoalesceExpression
-    pub const Coalesce: OperatorPrecedence = OperatorPrecedence::LogicalOR;
+    pub const COALESCE: OperatorPrecedence = OperatorPrecedence::LogicalOR;
 }
 
 pub(crate) fn get_operator(expression: P<Node>) -> Kind {
@@ -145,13 +145,7 @@ pub fn get_operator_precedence(
         | Kind::AwaitExpression => OperatorPrecedence::Unary,
         Kind::PostfixUnaryExpression => OperatorPrecedence::Update,
         // !!! By necessity, this differs from the old compiler to better align with ParenthesizerRules. consider backporting
-        Kind::PropertyAccessExpression | Kind::ElementAccessExpression => {
-            if flags.intersects(OperatorPrecedenceFlags::OptionalChain) {
-                return OperatorPrecedence::OptionalChain;
-            }
-            OperatorPrecedence::Member
-        }
-        Kind::CallExpression => {
+        Kind::PropertyAccessExpression | Kind::ElementAccessExpression | Kind::CallExpression => {
             if flags.intersects(OperatorPrecedenceFlags::OptionalChain) {
                 return OperatorPrecedence::OptionalChain;
             }
@@ -201,7 +195,7 @@ pub fn get_operator_precedence(
 // Gets the precedence of a binary operator
 pub fn get_binary_operator_precedence(operator_kind: Kind) -> OperatorPrecedence {
     match operator_kind {
-        Kind::QuestionQuestionToken => OperatorPrecedence::Coalesce,
+        Kind::QuestionQuestionToken => OperatorPrecedence::COALESCE,
         Kind::BarBarToken => OperatorPrecedence::LogicalOR,
         Kind::AmpersandAmpersandToken => OperatorPrecedence::LogicalAND,
         Kind::BarToken => OperatorPrecedence::BitwiseOR,
@@ -294,8 +288,8 @@ pub enum TypePrecedence {
 }
 
 impl TypePrecedence {
-    pub const Lowest: TypePrecedence = TypePrecedence::Conditional;
-    pub const Highest: TypePrecedence = TypePrecedence::NonArray;
+    pub const LOWEST: TypePrecedence = TypePrecedence::Conditional;
+    pub const HIGHEST: TypePrecedence = TypePrecedence::NonArray;
 }
 
 // Gets the precedence of a TypeNode
@@ -306,7 +300,10 @@ pub fn get_type_node_precedence(n: P<Node>) -> TypePrecedence {
         Kind::FunctionType | Kind::ConstructorType => TypePrecedence::Function,
         Kind::UnionType => TypePrecedence::Union,
         Kind::IntersectionType => TypePrecedence::Intersection,
-        Kind::TypeOperator => TypePrecedence::TypeOperator,
+        // TypeQueryNode is actually a NonArrayType, but we treat it as TypeOperatorNode
+        // precedence so that it is parenthesized when used in a PostfixType
+        // context (e.g., `(typeof C)[]` instead of `typeof C[]`)
+        Kind::TypeOperator | Kind::TypeQuery => TypePrecedence::TypeOperator,
         Kind::InferType => {
             if n.as_infer_type_node().type_parameter.as_type_parameter_declaration().constraint.is_some() {
                 // `infer T extends U` must be treated as FunctionTypeNode precedence as the `extends` clause eagerly consumes
@@ -316,10 +313,6 @@ pub fn get_type_node_precedence(n: P<Node>) -> TypePrecedence {
             TypePrecedence::TypeOperator
         }
         Kind::IndexedAccessType | Kind::ArrayType | Kind::OptionalType => TypePrecedence::Postfix,
-        // TypeQueryNode is actually a NonArrayType, but we treat it as TypeOperatorNode
-        // precedence so that it is parenthesized when used in a PostfixType
-        // context (e.g., `(typeof C)[]` instead of `typeof C[]`)
-        Kind::TypeQuery => TypePrecedence::TypeOperator,
         Kind::AnyKeyword
         | Kind::UnknownKeyword
         | Kind::StringKeyword

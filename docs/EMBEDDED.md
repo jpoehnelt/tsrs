@@ -53,7 +53,7 @@ No new Rust cache or compiler policy is introduced.
 
 Run `cargo test --profile dev -p tsrs_api -p tsrs_ls` with the pinned `ts-ref` fixtures,
 `cargo clippy --all-targets --config 'build.warnings="deny"'`, `cargo fmt -- --check`, and
-`python3 tools/lint/source.py`. `diagnostic_positions_test.rs` independently checks UTF-16
+`node tools/lint/source.mjs`. `diagnostic_positions_test.rs` independently checks UTF-16
 positions across emoji, CRLF, CR, U+2028 and U+2029, including invalid-request recovery.
 
 Build with `tools/wasm/build.sh`; run `node tools/wasm/embedded-test.mjs` against that module.

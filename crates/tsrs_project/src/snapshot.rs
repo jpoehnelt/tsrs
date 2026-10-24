@@ -32,8 +32,8 @@ use crate::projectcollection::{ProjectCollection, new_project_collection, open_f
 use crate::projectcollectionbuilder::new_project_collection_builder;
 use crate::session::{ContentMapperContributions, UpdateReason};
 use crate::snapshotfs::{
-    FileHandleSource, SnapshotFS, new_snapshot_fs_builder_from_source, new_source_fs,
-    snapshotFSBuilder,
+    FileHandleSource, SnapshotFS, SnapshotFSBuilder, new_snapshot_fs_builder_from_source,
+    new_source_fs,
 };
 use crate::snapshothost::SnapshotHost;
 use crate::watch::WatchedFiles;
@@ -156,7 +156,7 @@ pub trait ModuleResolverFactory: Send + Sync {
     fn new_resolver(
         &self,
         ctx: &Context,
-        options: ResolverOptions,
+        options: ResolverOptions<'static>,
     ) -> (Box<dyn Resolver>, Box<dyn FnOnce() + Send>);
 }
 
@@ -178,6 +178,8 @@ pub struct APIReconfigureProgramRequest {
 // to the language server are out of scope (docs/LSP.md).
 #[derive(Default)]
 pub struct APISnapshotRequest {
+    pub user_preferences: Option<UserPreferences>,
+    pub prepare_auto_imports: lsproto::DocumentUri,
     pub open_projects: Option<Set<String>>,
     pub close_projects: Option<Set<Path>>,
     pub open_files: Option<FxHashMap<Path, String>>,
@@ -285,19 +287,18 @@ pub struct ATAStateChange {
 }
 
 // Go's `defer func() { if r := recover(); r != nil { sessionLogger.Log(logger.String()); panic(r) } }()`.
-struct logOnPanic<'a> {
+struct LogOnPanic<'a> {
     session_logger: Option<&'a dyn Logger>,
     logger: &'a LogTree,
 }
 
-impl Drop for logOnPanic<'_> {
+impl Drop for LogOnPanic<'_> {
     fn drop(&mut self) {
-        if std::thread::panicking() {
-            if let Some(session_logger) = self.session_logger {
-                if !self.logger.is_nil() {
-                    session_logger.log(&self.logger.string());
-                }
-            }
+        if std::thread::panicking()
+            && let Some(session_logger) = self.session_logger
+            && !self.logger.is_nil()
+        {
+            session_logger.log(&self.logger.string());
         }
     }
 }
@@ -339,7 +340,7 @@ impl Snapshot {
     // snapshot.go:134
     pub(crate) fn process_file_changes(
         &self,
-        fs: &snapshotFSBuilder,
+        fs: &SnapshotFSBuilder,
         mut file_changes: FileChangeSummary,
         logger: &LogTree,
         content_mapper_contributions: Option<&ContentMapperContributions>,
@@ -526,7 +527,7 @@ impl Snapshot {
             logger = new_log_tree(&format!("Cloning snapshot {}", self.id));
         }
         // Print in-progress logs immediately if cloning fails
-        let _log_on_panic = logOnPanic {
+        let _log_on_panic = LogOnPanic {
             session_logger: if store.options.logging_enabled { session_logger } else { None },
             logger: &logger,
         };
@@ -724,18 +725,18 @@ impl Snapshot {
 
             project_collection_builder
                 .did_change_custom_config_file_name(&logger.fork("DidChangeCustomConfigFileName"));
-            if let Some(options) = change.compiler_options_for_inferred_projects {
-                if let Some(inferred) = project_collection_builder.inferred_project_value() {
-                    let command_line = inferred.command_line.unwrap();
-                    project_collection_builder.update_inferred_project(
-                        command_line.file_names().to_vec(),
-                        Some(options),
-                        command_line.project_references().to_vec(),
-                        command_line.errors.clone(),
-                        command_line.content_mappers().to_vec(),
-                        &logger.fork("DidChangeCompilerOptionsForInferredProjects"),
-                    );
-                }
+            if let Some(options) = change.compiler_options_for_inferred_projects
+                && let Some(inferred) = project_collection_builder.inferred_project_value()
+            {
+                let command_line = inferred.command_line.unwrap();
+                project_collection_builder.update_inferred_project(
+                    command_line.file_names().to_vec(),
+                    Some(options),
+                    command_line.project_references().to_vec(),
+                    command_line.errors.clone(),
+                    command_line.content_mappers().to_vec(),
+                    &logger.fork("DidChangeCompilerOptionsForInferredProjects"),
+                );
             }
             if change.content_mapper_contributions.is_some() {
                 project_collection_builder.did_change_content_mapper_contributions(
@@ -872,9 +873,11 @@ impl Snapshot {
             overlays.iter().map(|(path, overlay)| (path.clone(), overlay.base.file_name.clone())),
         );
         let mut prepare_auto_imports = Path::default();
+        let mut prepare_auto_imports_file_name = String::new();
         if !change.resource_request.auto_imports.0.is_empty() {
             prepare_auto_imports =
                 change.resource_request.auto_imports.path(self.use_case_sensitive_file_names());
+            prepare_auto_imports_file_name = change.resource_request.auto_imports.file_name();
         }
         let old_auto_imports = match &self.auto_imports {
             Some(auto_imports) => Arc::clone(auto_imports),
@@ -886,6 +889,7 @@ impl Snapshot {
             ctx,
             &autoimport::RegistryChange {
                 requested_file: prepare_auto_imports,
+                requested_file_name: prepare_auto_imports_file_name,
                 open_files,
                 changed: change.file_changes.changed.clone(),
                 created: change.file_changes.created.clone(),
@@ -951,13 +955,11 @@ impl Snapshot {
             reason = "only adds this snapshot as an owner (a set insert); Go ranges the map too"
         )]
         for config in new_snapshot.config_file_registry.configs.values() {
-            if let Some(command_line) = config.command_line {
-                if let Some(config_file) = command_line.config_file {
-                    for file in config_file.extended_source_files.borrow().iter() {
-                        store
-                            .extended_config_cache
-                            .add_owner(&(store.to_path)(file), new_snapshot.id);
-                    }
+            if let Some(command_line) = config.command_line
+                && let Some(config_file) = command_line.config_file
+            {
+                for file in config_file.extended_source_files.borrow().iter() {
+                    store.extended_config_cache.add_owner(&(store.to_path)(file), new_snapshot.id);
                 }
             }
         }

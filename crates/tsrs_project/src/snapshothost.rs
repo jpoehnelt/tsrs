@@ -18,13 +18,13 @@ use crate::parsecache::{
     ContentMappedParseCache, ParseCache, ParseCacheKey, new_content_mapped_parse_cache,
     new_parse_cache, new_parse_cache_key,
 };
-use crate::programcounter::programCounter;
+use crate::programcounter::ProgramCounter;
 use crate::refcountcache::RefCountCacheOptions;
 use crate::session::{SessionInit, SessionOptions, UpdateReason};
 use crate::snapshot::{APISnapshotRequest, Snapshot, SnapshotChange};
 use crate::snapshotfs::new_snapshot_fs;
 use crate::watch::{
-    PatternsAndIgnored, allWatchKinds, get_recursive_glob_pattern, new_watched_files,
+    ALL_WATCH_KINDS, PatternsAndIgnored, get_recursive_glob_pattern, new_watched_files,
 };
 
 // SnapshotHost owns the services shared by a collection of immutable snapshots.
@@ -36,7 +36,7 @@ pub struct SnapshotHost {
     pub(crate) parse_cache: Arc<ParseCache>,
     pub(crate) content_mapped_parse_cache: Arc<ContentMappedParseCache>,
     pub(crate) extended_config_cache: Arc<ExtendedConfigCache>,
-    pub(crate) program_counter: programCounter,
+    pub(crate) program_counter: ProgramCounter,
     // (Content mappers are not ported: Go's `contentMapperHost` is always nil here.)
     snapshot_id: AtomicU64,
 }
@@ -121,7 +121,7 @@ pub fn new_snapshot_host(init: &SessionInit) -> Arc<SnapshotHost> {
         parse_cache,
         content_mapped_parse_cache,
         extended_config_cache: Arc::new(new_extended_config_cache()),
-        program_counter: programCounter::default(),
+        program_counter: ProgramCounter::default(),
         snapshot_id: AtomicU64::new(0),
     })
 }
@@ -161,6 +161,12 @@ impl SnapshotHost {
             };
             change.file_system_override = change.fs.is_some();
             change.replace_file_system = api_request.replace_file_system;
+            change.new_config.clone_from(&api_request.user_preferences);
+            if !api_request.prepare_auto_imports.0.is_empty() {
+                change.resource_request =
+                    base_snapshot.resource_request_for_document(&api_request.prepare_auto_imports);
+                change.resource_request.auto_imports = api_request.prepare_auto_imports.clone();
+            }
         }
         change.api_request = api_request;
         let snapshot = self.update(ctx, base_snapshot, change);
@@ -232,7 +238,7 @@ impl SnapshotHost {
             None,
             Some(new_watched_files(
                 "auto-import".to_string(),
-                allWatchKinds,
+                ALL_WATCH_KINDS,
                 relative_pattern_support,
                 Arc::new(|node_modules_dirs: &FxHashMap<Path, String>| {
                     let mut patterns: Vec<String> = node_modules_dirs
@@ -244,6 +250,11 @@ impl SnapshotHost {
                 }),
             )),
         ))
+    }
+
+    /// `fs` as a shared handle (a Go `vfs.FS` is a reference), for an LSP-attached API session.
+    pub fn shared_fs(&self) -> Arc<dyn FS> {
+        Arc::clone(&self.fs)
     }
 
     // snapshothost.go:184

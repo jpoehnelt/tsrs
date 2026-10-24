@@ -55,10 +55,7 @@ pub type SourceMapGenerator = tsrs_sourcemap::Generator;
 /// (`declarationMapSource`), and Go compares them by identity.
 pub type SourceMapSource = &'static dyn tsrs_sourcemap::Source;
 
-pub(crate) fn same_source_map_source(
-    a: Option<SourceMapSource>,
-    b: Option<SourceMapSource>,
-) -> bool {
+pub fn same_source_map_source(a: Option<SourceMapSource>, b: Option<SourceMapSource>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => std::ptr::addr_eq(
             std::ptr::from_ref::<dyn tsrs_sourcemap::Source>(a),
@@ -90,7 +87,7 @@ pub struct PrintHandlers {
 
 /// The state Go's `getTextOfNode`/`getLiteralTextOfNode` read from the printer, shared with the name generator's
 /// callbacks (which Go builds as closures over the printer).
-pub(crate) struct printerTextState {
+pub struct PrinterTextState {
     pub(crate) emit_context: P<EmitContext>,
     pub(crate) current_source_file: Cell<Option<P<SourceFile>>>,
     pub(crate) target: Cell<ScriptTarget>,
@@ -101,7 +98,7 @@ pub struct Printer {
     pub options: PrinterOptions,
     pub(crate) emit_context: P<EmitContext>,
     // Go `currentSourceFile` lives in `text_state` (see `current_source_file()`).
-    pub(crate) text_state: Rc<printerTextState>,
+    pub(crate) text_state: Rc<PrinterTextState>,
     pub(crate) unique_helper_names: Option<FxHashMap<String, P<Node>>>,
     pub(crate) external_helpers_module_name: Option<P<Node>>,
     pub(crate) next_list_element_pos: TextPos,
@@ -115,13 +112,13 @@ pub struct Printer {
     pub(crate) source_map_source: Option<SourceMapSource>,
     pub(crate) source_map_source_index: tsrs_sourcemap::SourceIndex,
     pub(crate) source_map_source_is_json: bool,
-    pub(crate) source_map_line_char_cache: Option<lineCharacterCache>,
+    pub(crate) source_map_line_char_cache: Option<LineCharacterCache>,
     pub(crate) most_recent_source_map_source: Option<SourceMapSource>,
     pub(crate) most_recent_source_map_source_index: tsrs_sourcemap::SourceIndex,
     pub(crate) container_pos: TextPos,
     pub(crate) container_end: TextPos,
     pub(crate) declaration_list_container_end: TextPos,
-    pub(crate) detached_comments_info: Vec<detachedCommentsInfo>,
+    pub(crate) detached_comments_info: Vec<DetachedCommentsInfo>,
     pub(crate) comments_disabled: bool,
     pub(crate) in_extends: bool, // whether we are emitting the `extends` clause of a ConditionalTypeNode or InferTypeNode
     pub(crate) name_generator: NameGenerator,
@@ -129,13 +126,13 @@ pub struct Printer {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct detachedCommentsInfo {
+pub struct DetachedCommentsInfo {
     pub(crate) node_pos: TextPos,
     pub(crate) detached_comment_end_pos: TextPos,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct commentState {
+pub struct CommentState {
     pub(crate) emit_flags: EmitFlags, // holds the emit flags for the current node
     pub(crate) comment_range: TextRange, // holds the comment range calculated for the current node
     pub(crate) container_pos: TextPos, // captures the value of containerPos prior to entering an node
@@ -144,16 +141,16 @@ pub(crate) struct commentState {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct sourceMapState {
+pub struct SourceMapState {
     pub(crate) emit_flags: EmitFlags, // holds the emit flags for the current node
     pub(crate) source_map_range: TextRange, // holds the source map range calculated for the current node
     pub(crate) has_token_source_map_range: bool, // captures whether the source map range was set for the current node
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct printerState {
-    pub(crate) comment_state: Option<commentState>,
-    pub(crate) source_map_state: Option<sourceMapState>,
+pub struct PrinterState {
+    pub(crate) comment_state: Option<CommentState>,
+    pub(crate) source_map_state: Option<SourceMapState>,
 }
 
 pub fn new_printer(
@@ -166,7 +163,7 @@ pub fn new_printer(
         Some(emit_context) => emit_context,
         None => new_emit_context(),
     };
-    let text_state = Rc::new(printerTextState {
+    let text_state = Rc::new(PrinterTextState {
         emit_context,
         current_source_file: Cell::new(None),
         target: Cell::new(options.target),
@@ -220,44 +217,41 @@ pub fn new_printer(
 }
 
 /// Go `(*Printer).getLiteralTextOfNode` over the state it reads (see `printerTextState`).
-pub(crate) fn get_literal_text_of_node_worker(
+pub fn get_literal_text_of_node_worker(
     g: &mut NameGenerator,
-    s: &printerTextState,
+    s: &PrinterTextState,
     node: P<Node>,
     source_file: Option<P<SourceFile>>,
     flags: getLiteralTextFlags,
 ) -> String {
     let mut flags = flags;
-    if is_string_literal(node) {
-        if let Some(text_source_node) = s.emit_context.text_source(node) {
-            let text = match text_source_node.kind() {
-                Kind::NumericLiteral => text_source_node.text().to_string(),
-                Kind::Identifier | Kind::PrivateIdentifier | Kind::JsxNamespacedName => {
-                    get_text_of_node_worker(g, s, text_source_node, false)
-                }
-                _ => {
-                    return get_literal_text_of_node_worker(
-                        g,
-                        s,
-                        text_source_node,
-                        get_source_file_of_node(text_source_node),
-                        flags,
-                    );
-                }
-            };
-
-            if flags.intersects(getLiteralTextFlags::JsxAttributeEscape) {
-                return format!(
-                    "\"{}\"",
-                    escape_jsx_attribute_string(&text, QuoteChar::DoubleQuote)
-                );
-            } else if flags.intersects(getLiteralTextFlags::NeverAsciiEscape)
-                || s.emit_context.emit_flags(node).intersects(EmitFlags::NoAsciiEscaping)
-            {
-                return format!("\"{}\"", escape_string(&text, QuoteChar::DoubleQuote));
+    if is_string_literal(node)
+        && let Some(text_source_node) = s.emit_context.text_source(node)
+    {
+        let text = match text_source_node.kind() {
+            Kind::NumericLiteral => text_source_node.text().to_string(),
+            Kind::Identifier | Kind::PrivateIdentifier | Kind::JsxNamespacedName => {
+                get_text_of_node_worker(g, s, text_source_node, false)
             }
-            return format!("\"{}\"", escape_non_ascii_string(&text, QuoteChar::DoubleQuote));
+            _ => {
+                return get_literal_text_of_node_worker(
+                    g,
+                    s,
+                    text_source_node,
+                    get_source_file_of_node(text_source_node),
+                    flags,
+                );
+            }
+        };
+
+        if flags.intersects(getLiteralTextFlags::JsxAttributeEscape) {
+            return format!("\"{}\"", escape_jsx_attribute_string(&text, QuoteChar::DoubleQuote));
+        } else if flags.intersects(getLiteralTextFlags::NeverAsciiEscape)
+            || s.emit_context.emit_flags(node).intersects(EmitFlags::NoAsciiEscaping)
+        {
+            return format!("\"{}\"", escape_string(&text, QuoteChar::DoubleQuote));
         }
+        return format!("\"{}\"", escape_non_ascii_string(&text, QuoteChar::DoubleQuote));
     }
     // !!! Printer option to control whether to terminate unterminated literals
     if s.emit_context.emit_flags(node).intersects(EmitFlags::NoAsciiEscaping) {
@@ -274,9 +268,9 @@ pub(crate) fn get_literal_text_of_node_worker(
 
 /// Go `(*Printer).getTextOfNode` over the state it reads (see `printerTextState`).
 // `node` must be one of Identifier | PrivateIdentifier | LiteralExpression | JsxNamespacedName
-pub(crate) fn get_text_of_node_worker(
+pub fn get_text_of_node_worker(
     g: &mut NameGenerator,
-    s: &printerTextState,
+    s: &PrinterTextState,
     node: P<Node>,
     include_trivia: bool,
 ) -> String {
@@ -284,10 +278,10 @@ pub(crate) fn get_text_of_node_worker(
         return g.generate_name(node);
     }
 
-    if is_string_literal(node) {
-        if let Some(text_source_node) = s.emit_context.text_source(node) {
-            return get_text_of_node_worker(g, s, text_source_node, include_trivia);
-        }
+    if is_string_literal(node)
+        && let Some(text_source_node) = s.emit_context.text_source(node)
+    {
+        return get_text_of_node_worker(g, s, text_source_node, include_trivia);
     }
 
     let current_source_file = s.current_source_file.get();
@@ -333,8 +327,8 @@ pub(crate) fn get_text_of_node_worker(
 
 /// Go `(*Printer).isFileLevelUniqueNameInCurrentFile` over the state it reads.
 // Returns a value indicating whether a name is unique globally or within the current file.
-pub(crate) fn is_file_level_unique_name_in_current_file_worker(
-    s: &printerTextState,
+pub fn is_file_level_unique_name_in_current_file_worker(
+    s: &PrinterTextState,
     has_global_name: Option<&dyn Fn(&str) -> bool>,
     name: &str,
 ) -> bool {
@@ -591,27 +585,26 @@ impl Printer {
             return 1;
         }
 
-        if let Some(current_source_file) = self.current_source_file() {
-            if !node_is_synthesized(parent)
-                && !node_is_synthesized(node1)
-                && !node_is_synthesized(node2)
-            {
-                if self.options.preserve_source_newlines {
-                    return self.get_effective_lines(|include_comments| {
-                        get_lines_between_range_end_and_range_start(
-                            node1.loc(),
-                            node2.loc(),
-                            current_source_file,
-                            include_comments,
-                        )
-                    });
-                }
-                return usize::from(!range_end_is_on_same_line_as_range_start(
-                    node1.loc(),
-                    node2.loc(),
-                    current_source_file,
-                ));
+        if let Some(current_source_file) = self.current_source_file()
+            && !node_is_synthesized(parent)
+            && !node_is_synthesized(node1)
+            && !node_is_synthesized(node2)
+        {
+            if self.options.preserve_source_newlines {
+                return self.get_effective_lines(|include_comments| {
+                    get_lines_between_range_end_and_range_start(
+                        node1.loc(),
+                        node2.loc(),
+                        current_source_file,
+                        include_comments,
+                    )
+                });
             }
+            return usize::from(!range_end_is_on_same_line_as_range_start(
+                node1.loc(),
+                node2.loc(),
+                current_source_file,
+            ));
         }
 
         0
@@ -694,27 +687,25 @@ impl Printer {
             }
             if let (Some(current_source_file), Some(parent_node)) =
                 (self.current_source_file(), parent_node)
+                && !position_is_synthesized(parent_node.pos())
+                && !node_is_synthesized(first_child)
+                && (first_child.parent().is_none()/*|| getOriginalNode(firstChild.Parent) == getOriginalNode(parentNode)*/)
             {
-                if !position_is_synthesized(parent_node.pos())
-                    && !node_is_synthesized(first_child)
-                    && (first_child.parent().is_none()/*|| getOriginalNode(firstChild.Parent) == getOriginalNode(parentNode)*/)
-                {
-                    if self.options.preserve_source_newlines {
-                        return self.get_effective_lines(|include_comments| {
-                            get_lines_between_position_and_preceding_non_whitespace_character(
-                                first_child.pos(),
-                                parent_node.pos(),
-                                current_source_file,
-                                include_comments,
-                            )
-                        });
-                    }
-                    return usize::from(!range_start_positions_are_on_same_line(
-                        parent_node.loc(),
-                        first_child.loc(),
-                        current_source_file,
-                    ));
+                if self.options.preserve_source_newlines {
+                    return self.get_effective_lines(|include_comments| {
+                        get_lines_between_position_and_preceding_non_whitespace_character(
+                            first_child.pos(),
+                            parent_node.pos(),
+                            current_source_file,
+                            include_comments,
+                        )
+                    });
                 }
+                return usize::from(!range_start_positions_are_on_same_line(
+                    parent_node.loc(),
+                    first_child.loc(),
+                    current_source_file,
+                ));
             }
             if self.should_emit_on_new_line(first_child, format) {
                 return 1;
@@ -807,28 +798,26 @@ impl Printer {
             };
             if let (Some(current_source_file), Some(parent_node)) =
                 (self.current_source_file(), parent_node)
+                && !position_is_synthesized(parent_node.pos())
+                && !node_is_synthesized(last_child)
+                && (last_child.parent().is_none() || last_child.parent() == Some(parent_node))
             {
-                if !position_is_synthesized(parent_node.pos())
-                    && !node_is_synthesized(last_child)
-                    && (last_child.parent().is_none() || last_child.parent() == Some(parent_node))
-                {
-                    if self.options.preserve_source_newlines {
-                        let end = greatest_end(last_child.end(), &[&children_text_range]);
-                        return self.get_effective_lines(|include_comments| {
-                            get_lines_between_position_and_next_non_whitespace_character(
-                                end,
-                                parent_node.end(),
-                                current_source_file,
-                                include_comments,
-                            )
-                        });
-                    }
-                    return usize::from(!range_end_positions_are_on_same_line(
-                        parent_node.loc(),
-                        last_child.loc(),
-                        current_source_file,
-                    ));
+                if self.options.preserve_source_newlines {
+                    let end = greatest_end(last_child.end(), &[&children_text_range]);
+                    return self.get_effective_lines(|include_comments| {
+                        get_lines_between_position_and_next_non_whitespace_character(
+                            end,
+                            parent_node.end(),
+                            current_source_file,
+                            include_comments,
+                        )
+                    });
                 }
+                return usize::from(!range_end_positions_are_on_same_line(
+                    parent_node.loc(),
+                    last_child.loc(),
+                    current_source_file,
+                ));
             }
             if self.should_emit_on_new_line(last_child, format) {
                 return 1;
@@ -941,14 +930,14 @@ impl Printer {
                     scan += size as u32;
                 }
                 let current_line_text = text[pos as usize..end as usize].trim();
-                if !current_line_text.is_empty() {
+                if current_line_text.is_empty() {
+                    // Empty string - make sure we write empty line
+                    self.writer().write_line_force(true);
+                } else {
                     self.write_comment(current_line_text);
                     if end != loc_end {
                         self.write_line();
                     }
-                } else {
-                    // Empty string - make sure we write empty line
-                    self.writer().write_line_force(true);
                 }
 
                 pos = next_line_start;
@@ -1142,8 +1131,11 @@ impl Printer {
         }
 
         match node.kind() {
-            Kind::ObjectLiteralExpression => true,
-            Kind::ArrayLiteralExpression
+            Kind::ClassExpression | Kind::ClassDeclaration | Kind::InterfaceDeclaration => {
+                list == node.type_parameter_list()
+            }
+            Kind::ObjectLiteralExpression
+            | Kind::ArrayLiteralExpression
             | Kind::ArrowFunction
             | Kind::Constructor
             | Kind::GetAccessor
@@ -1159,13 +1151,12 @@ impl Printer {
             | Kind::ArrayBindingPattern
             | Kind::NamedImports
             | Kind::NamedExports
-            | Kind::ImportAttributes => true,
-            Kind::ClassExpression | Kind::ClassDeclaration | Kind::InterfaceDeclaration => {
-                list == node.type_parameter_list()
-            }
-            Kind::FunctionDeclaration | Kind::FunctionExpression | Kind::MethodDeclaration => true,
-            Kind::CallExpression => true,
-            Kind::NewExpression => true,
+            | Kind::ImportAttributes
+            | Kind::FunctionDeclaration
+            | Kind::FunctionExpression
+            | Kind::MethodDeclaration
+            | Kind::CallExpression
+            | Kind::NewExpression => true,
             _ => false,
         }
     }
@@ -1405,11 +1396,11 @@ impl Printer {
         );
         let text = self.get_text_of_node(node, false /*includeTrivia*/);
 
-        if let Some(id_to_symbol) = &self.id_to_symbol {
-            if let Some(symbol) = id_to_symbol.get(&node).copied() {
-                self.write_symbol(&text, Some(symbol));
-                return;
-            }
+        if let Some(id_to_symbol) = &self.id_to_symbol
+            && let Some(symbol) = id_to_symbol.get(&node).copied()
+        {
+            self.write_symbol(&text, Some(symbol));
+            return;
         }
         self.write_(&text);
     }
@@ -1525,7 +1516,7 @@ impl Printer {
         self.write_punctuation("[");
         self.emit_expression(
             node.as_computed_property_name().expression,
-            OperatorPrecedence::DisallowComma,
+            OperatorPrecedence::DISALLOW_COMMA,
         );
         self.write_punctuation("]");
         self.exit_node(node, state);
@@ -1538,7 +1529,7 @@ impl Printer {
             Kind::PropertyAccessExpression => {
                 // TypeQuery nodes may have PropertyAccessExpression as exprName (e.g. typeof foo.x).
                 // TS's emitter handles this via generic emit(); we dispatch to expression emitter here.
-                self.emit_expression(node, OperatorPrecedence::DisallowComma);
+                self.emit_expression(node, OperatorPrecedence::DISALLOW_COMMA);
             }
             _ => panic!("unexpected EntityName: {:?}", node.kind()),
         }
@@ -1877,7 +1868,7 @@ impl Printer {
         self.write_space();
         self.emit_token(Kind::EqualsToken, equal_token_pos, WriteKind::Operator, context_node);
         self.write_space();
-        self.emit_expression(node, OperatorPrecedence::DisallowComma);
+        self.emit_expression(node, OperatorPrecedence::DISALLOW_COMMA);
     }
 
     pub(crate) fn emit_parameters(
@@ -1890,7 +1881,7 @@ impl Printer {
     }
 }
 
-pub(crate) fn can_emit_simple_arrow_head(parent_node: P<Node>, parameters: P<NodeList>) -> bool {
+pub fn can_emit_simple_arrow_head(parent_node: P<Node>, parameters: P<NodeList>) -> bool {
     // only arrow functions with a single parameter may have simple arrow head
     if !is_arrow_function(parent_node) || parameters.nodes().len() != 1 {
         return false;
@@ -2310,9 +2301,9 @@ impl Printer {
             //
             // `T extends () => infer U extends V ? W : X` would parse the `? W : X` as part of a ConditionalTypeNode in the
             // return type of the FunctionTypeNode, thus we must emit as `T extends () => (infer U extends V) ? W : X`
-            self.emit_type_node_preserving_extends(node, TypePrecedence::Highest);
+            self.emit_type_node_preserving_extends(node, TypePrecedence::HIGHEST);
         } else {
-            self.emit_type_node_preserving_extends(node, TypePrecedence::Lowest);
+            self.emit_type_node_preserving_extends(node, TypePrecedence::LOWEST);
         }
     }
 
@@ -2616,20 +2607,20 @@ impl Printer {
             self.emit_type_node_outside_extends(type_);
         }
         self.write_trailing_semicolon();
-        if let Some(members) = n.members() {
-            if !members.nodes().is_empty() {
-                if single_line {
-                    self.write_space();
-                } else {
-                    self.write_line();
-                }
-                self.emit_list(
-                    Printer::emit_type_element,
-                    node,
-                    Some(members),
-                    ListFormat::PreserveLines,
-                );
+        if let Some(members) = n.members()
+            && !members.nodes().is_empty()
+        {
+            if single_line {
+                self.write_space();
+            } else {
+                self.write_line();
             }
+            self.emit_list(
+                Printer::emit_type_element,
+                node,
+                Some(members),
+                ListFormat::PreserveLines,
+            );
         }
         if single_line {
             self.write_space();
@@ -2719,7 +2710,7 @@ impl Printer {
     pub(crate) fn emit_type_node_in_extends(&mut self, node: P<Node>) {
         let saved_in_extends = self.in_extends;
         self.in_extends = true;
-        self.emit_type_node_preserving_extends(node, TypePrecedence::Lowest);
+        self.emit_type_node_preserving_extends(node, TypePrecedence::LOWEST);
         self.in_extends = saved_in_extends;
     }
 
@@ -2727,7 +2718,7 @@ impl Printer {
     pub(crate) fn emit_type_node_outside_extends(&mut self, node: P<Node>) {
         let saved_in_extends = self.in_extends;
         self.in_extends = false;
-        self.emit_type_node_preserving_extends(node, TypePrecedence::Lowest);
+        self.emit_type_node_preserving_extends(node, TypePrecedence::LOWEST);
         self.in_extends = saved_in_extends;
     }
 

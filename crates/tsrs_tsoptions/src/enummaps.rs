@@ -5,7 +5,7 @@ use tsrs_core::collections::OrderedMap;
 use tsrs_core::tspath;
 use tsrs_core::{
     CompilerOptions, JsxEmit, ModuleDetectionKind, ModuleKind, ModuleResolutionKind, NewLineKind,
-    PollingKind, ScriptTarget, WatchDirectoryKind, WatchFileKind,
+    ScriptTarget,
 };
 
 use crate::commandlineoption::CompilerOptionsValue;
@@ -204,7 +204,6 @@ pub static LIB_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
             ("esnext.regexp", CompilerOptionsValue::String("lib.es2024.regexp.d.ts".to_string())),
             ("esnext.string", CompilerOptionsValue::String("lib.es2024.string.d.ts".to_string())),
             ("esnext.float16", CompilerOptionsValue::String("lib.es2025.float16.d.ts".to_string())),
-            ("esnext.promise", CompilerOptionsValue::String("lib.es2025.promise.d.ts".to_string())),
             ("esnext.array", CompilerOptionsValue::String("lib.es2026.array.d.ts".to_string())),
             (
                 "esnext.collection",
@@ -212,13 +211,14 @@ pub static LIB_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
             ),
             ("esnext.error", CompilerOptionsValue::String("lib.es2026.error.d.ts".to_string())),
             (
-                "esnext.iterator",
-                CompilerOptionsValue::String("lib.es2026.iterator.d.ts".to_string()),
-            ),
-            (
                 "esnext.typedarrays",
                 CompilerOptionsValue::String("lib.es2026.typedarrays.d.ts".to_string()),
             ),
+            (
+                "esnext.iterator",
+                CompilerOptionsValue::String("lib.esnext.iterator.d.ts".to_string()),
+            ),
+            ("esnext.promise", CompilerOptionsValue::String("lib.esnext.promise.d.ts".to_string())),
             // ESNext By-feature options
             ("esnext.date", CompilerOptionsValue::String("lib.esnext.date.d.ts".to_string())),
             (
@@ -230,6 +230,10 @@ pub static LIB_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
                 CompilerOptionsValue::String("lib.esnext.disposable.d.ts".to_string()),
             ),
             ("esnext.intl", CompilerOptionsValue::String("lib.esnext.intl.d.ts".to_string())),
+            (
+                "esnext.modulesource",
+                CompilerOptionsValue::String("lib.esnext.modulesource.d.ts".to_string()),
+            ),
             (
                 "esnext.sharedmemory",
                 CompilerOptionsValue::String("lib.esnext.sharedmemory.d.ts".to_string()),
@@ -261,20 +265,22 @@ pub fn get_lib_file_name(lib_name: &str) -> Option<String> {
     Some(lib.as_str().unwrap().to_string())
 }
 
-pub(crate) static MODULE_RESOLUTION_OPTION_MAP: LazyLock<
-    OrderedMap<&'static str, CompilerOptionsValue>,
-> = LazyLock::new(|| {
-    new_map(&[
-        ("node16", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::Node16)),
-        ("nodenext", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NodeNext)),
-        ("bundler", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::Bundler)),
-        ("classic", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::Classic)),
-        ("node", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::Node10)),
-        ("node10", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::Node10)),
-    ])
-});
+pub static MODULE_RESOLUTION_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+    LazyLock::new(|| {
+        new_map(&[
+            ("node16", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE16)),
+            (
+                "nodenext",
+                CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE_NEXT),
+            ),
+            ("bundler", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::BUNDLER)),
+            ("classic", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::CLASSIC)),
+            ("node", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE10)),
+            ("node10", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE10)),
+        ])
+    });
 
-pub(crate) static TARGET_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+pub static TARGET_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     LazyLock::new(|| {
         new_map(&[
             ("es5", CompilerOptionsValue::ScriptTarget(ScriptTarget::ES5)),
@@ -291,52 +297,51 @@ pub(crate) static TARGET_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerO
             ("es2024", CompilerOptionsValue::ScriptTarget(ScriptTarget::ES2024)),
             ("es2025", CompilerOptionsValue::ScriptTarget(ScriptTarget::ES2025)),
             ("es2026", CompilerOptionsValue::ScriptTarget(ScriptTarget::ES2026)),
-            ("esnext", CompilerOptionsValue::ScriptTarget(ScriptTarget::ESNext)),
+            ("esnext", CompilerOptionsValue::ScriptTarget(ScriptTarget::ES_NEXT)),
         ])
     });
 
-pub(crate) static MODULE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+pub static MODULE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     LazyLock::new(|| {
         new_map(&[
-            ("commonjs", CompilerOptionsValue::ModuleKind(ModuleKind::CommonJS)),
+            ("commonjs", CompilerOptionsValue::ModuleKind(ModuleKind::COMMON_JS)),
             ("amd", CompilerOptionsValue::ModuleKind(ModuleKind::AMD)),
-            ("system", CompilerOptionsValue::ModuleKind(ModuleKind::System)),
+            ("system", CompilerOptionsValue::ModuleKind(ModuleKind::SYSTEM)),
             ("umd", CompilerOptionsValue::ModuleKind(ModuleKind::UMD)),
             ("es6", CompilerOptionsValue::ModuleKind(ModuleKind::ES2015)),
             ("es2015", CompilerOptionsValue::ModuleKind(ModuleKind::ES2015)),
             ("es2020", CompilerOptionsValue::ModuleKind(ModuleKind::ES2020)),
             ("es2022", CompilerOptionsValue::ModuleKind(ModuleKind::ES2022)),
-            ("esnext", CompilerOptionsValue::ModuleKind(ModuleKind::ESNext)),
-            ("node16", CompilerOptionsValue::ModuleKind(ModuleKind::Node16)),
-            ("node18", CompilerOptionsValue::ModuleKind(ModuleKind::Node18)),
-            ("node20", CompilerOptionsValue::ModuleKind(ModuleKind::Node20)),
-            ("nodenext", CompilerOptionsValue::ModuleKind(ModuleKind::NodeNext)),
-            ("preserve", CompilerOptionsValue::ModuleKind(ModuleKind::Preserve)),
+            ("esnext", CompilerOptionsValue::ModuleKind(ModuleKind::ES_NEXT)),
+            ("node16", CompilerOptionsValue::ModuleKind(ModuleKind::NODE16)),
+            ("node18", CompilerOptionsValue::ModuleKind(ModuleKind::NODE18)),
+            ("node20", CompilerOptionsValue::ModuleKind(ModuleKind::NODE20)),
+            ("nodenext", CompilerOptionsValue::ModuleKind(ModuleKind::NODE_NEXT)),
+            ("preserve", CompilerOptionsValue::ModuleKind(ModuleKind::PRESERVE)),
         ])
     });
 
-pub(crate) static MODULE_DETECTION_OPTION_MAP: LazyLock<
-    OrderedMap<&'static str, CompilerOptionsValue>,
-> = LazyLock::new(|| {
-    new_map(&[
-        ("auto", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Auto)),
-        ("legacy", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Legacy)),
-        ("force", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Force)),
-    ])
-});
-
-pub(crate) static JSX_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+pub static MODULE_DETECTION_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     LazyLock::new(|| {
         new_map(&[
-            ("preserve", CompilerOptionsValue::JsxEmit(JsxEmit::Preserve)),
-            ("react-native", CompilerOptionsValue::JsxEmit(JsxEmit::ReactNative)),
-            ("react-jsx", CompilerOptionsValue::JsxEmit(JsxEmit::ReactJSX)),
-            ("react-jsxdev", CompilerOptionsValue::JsxEmit(JsxEmit::ReactJSXDev)),
-            ("react", CompilerOptionsValue::JsxEmit(JsxEmit::React)),
+            ("auto", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Auto)),
+            ("legacy", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Legacy)),
+            ("force", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Force)),
         ])
     });
 
-pub(crate) static NEW_LINE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+pub static JSX_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+    LazyLock::new(|| {
+        new_map(&[
+            ("preserve", CompilerOptionsValue::JsxEmit(JsxEmit::PRESERVE)),
+            ("react-native", CompilerOptionsValue::JsxEmit(JsxEmit::REACT_NATIVE)),
+            ("react-jsx", CompilerOptionsValue::JsxEmit(JsxEmit::REACT_JSX)),
+            ("react-jsxdev", CompilerOptionsValue::JsxEmit(JsxEmit::REACT_JSX_DEV)),
+            ("react", CompilerOptionsValue::JsxEmit(JsxEmit::REACT)),
+        ])
+    });
+
+pub static NEW_LINE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     LazyLock::new(|| {
         new_map(&[
             ("crlf", CompilerOptionsValue::NewLineKind(NewLineKind::CRLF)),
@@ -344,10 +349,10 @@ pub(crate) static NEW_LINE_OPTION_MAP: LazyLock<OrderedMap<&'static str, Compile
         ])
     });
 
-pub(crate) static TARGET_TO_LIB_MAP: LazyLock<FxHashMap<ScriptTarget, &'static str>> =
+pub static TARGET_TO_LIB_MAP: LazyLock<FxHashMap<ScriptTarget, &'static str>> =
     LazyLock::new(|| {
         let mut m = FxHashMap::default();
-        m.insert(ScriptTarget::ESNext, "lib.esnext.full.d.ts");
+        m.insert(ScriptTarget::ES_NEXT, "lib.esnext.full.d.ts");
         m.insert(ScriptTarget::ES2026, "lib.es2026.full.d.ts");
         m.insert(ScriptTarget::ES2025, "lib.es2025.full.d.ts");
         m.insert(ScriptTarget::ES2024, "lib.es2024.full.d.ts");
@@ -373,60 +378,3 @@ pub fn get_default_lib_file_name(options: &CompilerOptions) -> &'static str {
         None => "lib.d.ts",
     }
 }
-
-pub(crate) static WATCH_FILE_ENUM_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
-    LazyLock::new(|| {
-        new_map(&[
-            (
-                "fixedpollinginterval",
-                CompilerOptionsValue::WatchFileKind(WatchFileKind::FixedPollingInterval),
-            ),
-            (
-                "prioritypollinginterval",
-                CompilerOptionsValue::WatchFileKind(WatchFileKind::PriorityPollingInterval),
-            ),
-            (
-                "dynamicprioritypolling",
-                CompilerOptionsValue::WatchFileKind(WatchFileKind::DynamicPriorityPolling),
-            ),
-            (
-                "fixedchunksizepolling",
-                CompilerOptionsValue::WatchFileKind(WatchFileKind::FixedChunkSizePolling),
-            ),
-            ("usefsevents", CompilerOptionsValue::WatchFileKind(WatchFileKind::UseFsEvents)),
-            (
-                "usefseventsonparentdirectory",
-                CompilerOptionsValue::WatchFileKind(WatchFileKind::UseFsEventsOnParentDirectory),
-            ),
-        ])
-    });
-
-pub(crate) static WATCH_DIRECTORY_ENUM_MAP: LazyLock<
-    OrderedMap<&'static str, CompilerOptionsValue>,
-> = LazyLock::new(|| {
-    new_map(&[
-        ("usefsevents", CompilerOptionsValue::WatchDirectoryKind(WatchDirectoryKind::UseFsEvents)),
-        (
-            "fixedpollinginterval",
-            CompilerOptionsValue::WatchDirectoryKind(WatchDirectoryKind::FixedPollingInterval),
-        ),
-        (
-            "dynamicprioritypolling",
-            CompilerOptionsValue::WatchDirectoryKind(WatchDirectoryKind::DynamicPriorityPolling),
-        ),
-        (
-            "fixedchunksizepolling",
-            CompilerOptionsValue::WatchDirectoryKind(WatchDirectoryKind::FixedChunkSizePolling),
-        ),
-    ])
-});
-
-pub(crate) static FALLBACK_ENUM_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
-    LazyLock::new(|| {
-        new_map(&[
-            ("fixedinterval", CompilerOptionsValue::PollingKind(PollingKind::FixedInterval)),
-            ("priorityinterval", CompilerOptionsValue::PollingKind(PollingKind::PriorityInterval)),
-            ("dynamicpriority", CompilerOptionsValue::PollingKind(PollingKind::DynamicPriority)),
-            ("fixedchunksize", CompilerOptionsValue::PollingKind(PollingKind::FixedChunkSize)),
-        ])
-    });

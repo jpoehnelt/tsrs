@@ -1,9 +1,7 @@
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
-use tsrs_ast::{
-    self as ast, Diagnostic, Kind, Node, NodeFlags, NodeList, NodeVisitorHooks, SourceFile,
-};
+use tsrs_ast::{self as ast, Diagnostic, Kind, Node, NodeFlags, NodeList, SourceFile};
 use tsrs_core::stringutil::{decode_rune, is_white_space_single_line};
 use tsrs_core::{P, TextChange, TextRange};
 use tsrs_scanner as scanner;
@@ -11,10 +9,11 @@ use tsrs_scanner as scanner;
 use super::*;
 use crate::astnav;
 use crate::lsutil::FormatCodeSettings;
+use crate::visitedchildren::{VisitedChild, collect_visited_children};
 
 // span.go:20
 /* find node that fully contains given text range */
-pub(crate) fn find_enclosing_node(r: TextRange, source_file: P<SourceFile>) -> P<Node> {
+pub fn find_enclosing_node(r: TextRange, source_file: P<SourceFile>) -> P<Node> {
     fn find(n: P<Node>, r: TextRange, source_file: P<SourceFile>) -> P<Node> {
         let mut candidate: Option<P<Node>> = None;
         n.for_each_child(&mut |c| {
@@ -42,7 +41,7 @@ pub(crate) fn find_enclosing_node(r: TextRange, source_file: P<SourceFile>) -> P
  * This function will look for token that is located before the start of target range
  * and return its end as start position for the scanner.
  */
-pub(crate) fn get_scan_start_position(
+pub fn get_scan_start_position(
     enclosing_node: P<Node>,
     original_range: TextRange,
     source_file: P<SourceFile>,
@@ -90,7 +89,7 @@ pub(crate) fn get_scan_start_position(
  * if parent is on the different line - its delta was already contributed
  * to the initial indentation.
  */
-pub(crate) fn get_own_or_inherited_delta(
+pub fn get_own_or_inherited_delta(
     n: P<Node>,
     options: &FormatCodeSettings,
     source_file: P<SourceFile>,
@@ -125,10 +124,10 @@ fn range_has_no_errors(_: TextRange) -> bool {
     false
 }
 
-pub(crate) type RangeContainsError = Box<dyn FnMut(TextRange) -> bool>;
+pub type RangeContainsError = Box<dyn FnMut(TextRange) -> bool>;
 
 // span.go:113
-pub(crate) fn prepare_range_contains_error_function(
+pub fn prepare_range_contains_error_function(
     errors: &[P<Diagnostic>],
     original_range: TextRange,
 ) -> RangeContainsError {
@@ -176,7 +175,7 @@ pub(crate) fn prepare_range_contains_error_function(
 }
 
 // span.go:155
-pub(crate) struct FormatSpanWorker {
+pub struct FormatSpanWorker {
     original_range: TextRange,
     enclosing_node: P<Node>,
     initial_indentation: i32,
@@ -209,7 +208,7 @@ pub(crate) struct FormatSpanWorker {
 }
 
 // span.go:188
-pub(crate) fn new_format_span_worker(
+pub fn new_format_span_worker(
     ctx: &FormatContext,
     original_range: TextRange,
     enclosing_node: P<Node>,
@@ -265,41 +264,6 @@ fn get_non_decorator_token_pos_of_node(node: P<Node>, file: Option<P<SourceFile>
         file.text(),
         last_decorator.end().expect_source("parsed nodes have source positions"),
     )
-}
-
-// Go walks a node's children with `node.VisitEachChild(w.visitor)`, whose callbacks re-enter the worker. The Rust
-// visitor's callbacks cannot borrow the worker, so the children are first collected in VisitEachChild order (single
-// nodes through `visit`, node lists through the `VisitNodes` hook, exactly as Go's visitor dispatches them) and then
-// processed in that order. Processing never changes the node's children, so the order and the set are the same.
-enum VisitedChild {
-    Node(P<Node>),
-    Nodes(P<NodeList>),
-}
-
-fn collect_visited_children(node: P<Node>) -> Vec<VisitedChild> {
-    let items: Rc<RefCell<Vec<VisitedChild>>> = Rc::new(RefCell::new(Vec::new()));
-    let visit_items = Rc::clone(&items);
-    let nodes_items = Rc::clone(&items);
-    let mut visitor = ast::new_node_visitor(
-        Some(Rc::new(move |_: &mut ast::NodeVisitor, child: P<Node>| {
-            visit_items.borrow_mut().push(VisitedChild::Node(child));
-            Some(child)
-        })),
-        None,
-        NodeVisitorHooks {
-            visit_nodes: Some(Rc::new(
-                move |nodes: Option<P<NodeList>>, _: &mut ast::NodeVisitor| {
-                    if let Some(list) = nodes {
-                        nodes_items.borrow_mut().push(VisitedChild::Nodes(list));
-                    }
-                    nodes
-                },
-            )),
-            ..Default::default()
-        },
-    );
-    node.visit_each_child(&mut visitor);
-    items.take()
 }
 
 impl FormatSpanWorker {
@@ -1047,7 +1011,10 @@ impl FormatSpanWorker {
         let mut trim_trailing_whitespaces = !self.fc().options.trim_trailing_whitespace.is_false();
         let mut line_action = LineAction::None;
 
-        if !self.current_rules.is_empty() {
+        if self.current_rules.is_empty() {
+            trim_trailing_whitespaces =
+                trim_trailing_whitespaces && current_item.kind != Kind::EndOfFile;
+        } else {
             // Apply rules in reverse order so that higher priority rules (which are first in the array)
             // win in a conflict with lower priority rules.
             let rules = self.current_rules.clone();
@@ -1100,12 +1067,9 @@ impl FormatSpanWorker {
 
                 // We need to trim trailing whitespace between the tokens if they were on different lines, and no rule was applied to put them on the same line
                 trim_trailing_whitespaces = trim_trailing_whitespaces
-                    && (rule.action() & RuleAction::DeleteSpace == RuleAction::None)
+                    && (rule.action() & RuleAction::DELETE_SPACE == RuleAction::NONE)
                     && rule.flags() != RuleFlags::CanDeleteNewLines;
             }
-        } else {
-            trim_trailing_whitespaces =
-                trim_trailing_whitespaces && current_item.kind != Kind::EndOfFile;
         }
 
         if current_start_line != previous_start_line && trim_trailing_whitespaces {
@@ -1131,11 +1095,11 @@ impl FormatSpanWorker {
     ) -> LineAction {
         let on_later_line = current_start_line != previous_start_line;
         match rule.action() {
-            RuleAction::StopProcessingSpaceActions => {
+            RuleAction::STOP_PROCESSING_SPACE_ACTIONS => {
                 // no action required
                 return LineAction::None;
             }
-            RuleAction::DeleteSpace => {
+            RuleAction::DELETE_SPACE => {
                 if previous_range.loc.end() != current_range.loc.pos() {
                     // delete characters starting from t1.end up to t2.pos exclusive
                     let start = previous_range
@@ -1156,7 +1120,7 @@ impl FormatSpanWorker {
                     return LineAction::None;
                 }
             }
-            RuleAction::DeleteToken => {
+            RuleAction::DELETE_TOKEN => {
                 self.record_delete(
                     previous_range
                         .loc
@@ -1165,7 +1129,7 @@ impl FormatSpanWorker {
                     previous_range.loc.len().expect("formatting ranges have source positions"),
                 );
             }
-            RuleAction::InsertNewLine => {
+            RuleAction::INSERT_NEW_LINE => {
                 // exit early if we on different lines and rule cannot change number of newlines
                 // if line1 and line2 are on subsequent lines then no edits are required - ok to exit
                 // if line1 and line2 are separated with more than one newline - ok to exit since we cannot delete extra new lines
@@ -1198,7 +1162,7 @@ impl FormatSpanWorker {
                     return LineAction::LineAdded;
                 }
             }
-            RuleAction::InsertSpace => {
+            RuleAction::INSERT_SPACE => {
                 // exit early if we on different lines and rule cannot change number of newlines
                 if rule.flags() != RuleFlags::CanDeleteNewLines
                     && previous_start_line != current_start_line
@@ -1226,7 +1190,7 @@ impl FormatSpanWorker {
                     return LineAction::None;
                 }
             }
-            RuleAction::InsertTrailingSemicolon => {
+            RuleAction::INSERT_TRAILING_SEMICOLON => {
                 self.record_insert(
                     previous_range
                         .loc
@@ -1467,7 +1431,7 @@ impl FormatSpanWorker {
 }
 
 // span.go:870
-pub(crate) fn is_string_or_regular_expression_or_template_literal(kind: Kind) -> bool {
+pub fn is_string_or_regular_expression_or_template_literal(kind: Kind) -> bool {
     kind == Kind::StringLiteral
         || kind == Kind::RegularExpressionLiteral
         || ast::is_template_literal_kind(kind)
@@ -1669,9 +1633,11 @@ impl FormatSpanWorker {
 }
 
 // span.go:998
-pub(crate) fn get_indentation_string(indentation: i32, options: &FormatCodeSettings) -> String {
+pub fn get_indentation_string(indentation: i32, options: &FormatCodeSettings) -> String {
     // go's `strings.Repeat` already has static, global caching for repeated tabs and spaces, so there's no need to cache here like in strada
-    if !options.convert_tabs_to_spaces.is_true() {
+    if options.convert_tabs_to_spaces.is_true() {
+        " ".repeat(indentation.max(0) as usize)
+    } else {
         if options.tab_size == 0 {
             return String::new();
         }
@@ -1683,8 +1649,6 @@ pub(crate) fn get_indentation_string(indentation: i32, options: &FormatCodeSetti
         }
 
         res
-    } else {
-        " ".repeat(indentation.max(0) as usize)
     }
 }
 
@@ -1772,7 +1736,11 @@ impl FormatSpanWorker {
             if !range_has_error {
                 if line_action == LineAction::None {
                     // indent token only if end line of previous range does not match start line of the token
-                    if save_previous_range != new_text_range_with_kind(0, 0, Kind::Unknown) {
+                    if save_previous_range == new_text_range_with_kind(0, 0, Kind::Unknown) {
+                        // When there's no previous range (first token), TS sets prevEndLine to undefined.
+                        // tokenStart.line !== undefined is always true in JS, so indentToken = lastTriviaWasNewLine.
+                        indent_token = last_trivia_was_new_line;
+                    } else {
                         let prev_end_line = scanner::get_ecma_line_of_position(
                             self.source_file.get(),
                             save_previous_range
@@ -1782,10 +1750,6 @@ impl FormatSpanWorker {
                         );
                         indent_token =
                             last_trivia_was_new_line && token_start_line != prev_end_line;
-                    } else {
-                        // When there's no previous range (first token), TS sets prevEndLine to undefined.
-                        // tokenStart.line !== undefined is always true in JS, so indentToken = lastTriviaWasNewLine.
-                        indent_token = last_trivia_was_new_line;
                     }
                 } else {
                     indent_token = line_action == LineAction::LineAdded;
@@ -1876,7 +1840,7 @@ impl FormatSpanWorker {
 }
 
 // span.go:1121
-pub(crate) struct DynamicIndenter {
+pub struct DynamicIndenter {
     node: P<Node>,
     node_start_line: usize,
     indentation: Cell<i32>,
@@ -1887,7 +1851,7 @@ pub(crate) struct DynamicIndenter {
 }
 
 // Go passes `*dynamicIndenter` around and mutates it in place (recomputeIndentation).
-pub(crate) type DynamicIndenterRef = Rc<DynamicIndenter>;
+pub type DynamicIndenterRef = Rc<DynamicIndenter>;
 
 impl DynamicIndenter {
     // span.go:1131

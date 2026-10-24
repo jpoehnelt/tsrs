@@ -87,7 +87,7 @@ fn type_node(
         None,
     )
 }
-pub(crate) fn update_jsdoc(
+pub fn update_jsdoc(
     changes: &mut change::Tracker,
     file: P<SourceFile>,
     node: P<Node>,
@@ -603,30 +603,29 @@ fn missing_member(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>
             Kind::AnyKeyword
         });
         let mut parameters = Vec::new();
-        if kind == 0 {
-            if let Some(call) = access
+        if kind == 0
+            && let Some(call) = access
                 .parent()
                 .filter(|n| ast::is_call_expression(*n) && n.expression() == Some(access))
-            {
-                for (index, &argument) in call.arguments().iter().enumerate() {
-                    let t = c.get_type_at_location(argument);
-                    let t = c.get_base_type_of_literal_type(t);
-                    let t = c.get_widened_type(t);
-                    let parameter_type = type_node(&mut c, &changes, t, declaration);
-                    let name = if ast::is_identifier(argument) {
-                        argument.text().to_string()
-                    } else {
-                        format!("arg{index}")
-                    };
-                    parameters.push(changes.new_parameter_declaration(
-                        None,
-                        None,
-                        changes.new_identifier(changes.alloc_text(&name)),
-                        None,
-                        parameter_type,
-                        None,
-                    ));
-                }
+        {
+            for (index, &argument) in call.arguments().iter().enumerate() {
+                let t = c.get_type_at_location(argument);
+                let t = c.get_base_type_of_literal_type(t);
+                let t = c.get_widened_type(t);
+                let parameter_type = type_node(&mut c, &changes, t, declaration);
+                let name = if ast::is_identifier(argument) {
+                    argument.text().to_string()
+                } else {
+                    format!("arg{index}")
+                };
+                parameters.push(changes.new_parameter_declaration(
+                    None,
+                    None,
+                    changes.new_identifier(changes.alloc_text(&name)),
+                    None,
+                    parameter_type,
+                    None,
+                ));
             }
         }
         let member = match kind {
@@ -845,15 +844,15 @@ fn missing_member_all(
             missing_member(ctx, &local)?.into_iter().find(|a| a.fix_name.as_deref() == fix.fix_id)
         {
             for (file, edits) in a.changes_by_file {
-                if let Some(first) = edits.first() {
-                    if !seen.insert((
+                if let Some(first) = edits.first()
+                    && !seen.insert((
                         file.clone(),
                         a.description.clone(),
                         first.range.start.line,
                         first.range.start.character,
-                    )) {
-                        continue;
-                    }
+                    ))
+                {
+                    continue;
                 }
                 let existing: &mut Vec<lsp::TextEdit> = changes.entry(file).or_default();
                 for edit in edits {

@@ -7,28 +7,29 @@ use tsrs_ipc as ipc;
 use tsrs_spanmap::{Feature, Kind, Segment};
 
 use crate::protocol::{
-    initialize_result, marshal_span_map, no_notifications, testHandler, unexpected_method,
+    TestHandler, initialize_result, marshal_span_map, no_notifications, unexpected_method,
     unmarshal_params,
 };
 
 // supplemental_diagnostics.go:13
-pub(crate) struct supplementalDiagnosticsHandler;
+pub struct SupplementalDiagnosticsHandler;
 
-impl testHandler for supplementalDiagnosticsHandler {}
+impl TestHandler for SupplementalDiagnosticsHandler {}
 
-impl ipc::Handler for supplementalDiagnosticsHandler {
+impl ipc::Handler for SupplementalDiagnosticsHandler {
     // supplemental_diagnostics.go:15
     fn handle_request(&self, method: &str, params: Option<&Value>) -> Result<Value, ipc::Error> {
         match method {
             METHOD_INITIALIZE => Ok(initialize_result("mapper").marshal_json()),
             METHOD_TRANSFORM => {
-                let p: TransformParams = unmarshal_params(params)?;
                 const PREFIX: &str = "missingSupplementalGlobal;\n";
+
+                let p: TransformParams = unmarshal_params(params)?;
                 let mappings = marshal_span_map(&[Segment {
                     virtual_start: PREFIX.len() as u32,
                     virtual_end: (PREFIX.len() + p.content.len()) as u32,
                     original_end: p.content.len() as u32,
-                    kind: Kind::Verbatim,
+                    kind: Kind::VERBATIM,
                     features: Feature::All,
                     ..Default::default()
                 }])?;

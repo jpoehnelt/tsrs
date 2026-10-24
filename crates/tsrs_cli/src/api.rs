@@ -1,24 +1,18 @@
 // Port of cmd/tsc/api.go (`tsrs --api`): flag parsing, the session filesystem (bundled libs over the OS
-// filesystem, optionally behind the client callback filesystem), the in-process build backend for the
-// API's build orchestrator methods, and the connection to the wire runtime.
+// filesystem, optionally behind the client callback filesystem), and the connection to the wire runtime.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use tsrs_api::build::{BuildBackend, BuildOrchestrator, BuildOutcome, BuildRequest};
-use tsrs_api::{ClientConn, Handler as _, Session, SessionOptions};
+use tsrs_api::adapter::{ClientConnAdapter, SessionHandler};
+use tsrs_api::{Session, SessionOptions};
 use tsrs_api_transport as transport;
 use tsrs_api_transport::{CallbackConfig, CallbackFs};
-use tsrs_core::P;
-use tsrs_tsoptions::ParseConfigHost;
 use tsrs_vfs::{FS, bundled, osvfs};
 
-use crate::build::{Options, new_orchestrator};
-use crate::lsp::flagSet;
-use crate::tsc::System;
+use crate::lsp::FlagSet;
 
 /// Go `apiFlags`.
-pub(crate) struct ApiFlags {
+pub struct ApiFlags {
     pub cwd: String,
     pub pipe_path: String,
     pub callbacks: Vec<String>,
@@ -29,10 +23,13 @@ pub(crate) struct ApiFlags {
 }
 
 /// Go `parseAPIFlags`.
-pub(crate) fn parse_api_flags(args: &[String]) -> Result<ApiFlags, ()> {
-    let mut flags = flagSet::new("api");
+pub fn parse_api_flags(args: &[String]) -> Result<ApiFlags, ()> {
+    let mut flags = FlagSet::new("api");
     flags.string("cwd", "current working directory");
-    flags.string("pipe", "use named pipe or Unix domain socket for communication instead of stdio");
+    flags.string(
+        "pipe",
+        "use a named pipe (Windows) or create a private Unix socket at <path>/socket, where <path> must not exist",
+    );
     flags.string("callbacks", "comma-separated list of FS callbacks and defaults to enable");
     flags.bool("useCaseSensitiveFileNames", "treat filesystem paths as case-sensitive");
     flags.bool("async", "use JSON-RPC protocol instead of MessagePack (for async API)");
@@ -76,7 +73,7 @@ pub(crate) fn parse_api_flags(args: &[String]) -> Result<ApiFlags, ()> {
 
 /// Go `StdioServer.Run` setup: the session over bundled libs + OS filesystem, wrapped by the client
 /// callback filesystem (the CLI always passes a case-sensitivity setting, so Go always wraps).
-pub(crate) fn new_api_session(flags: &ApiFlags) -> Result<(Arc<Session>, Arc<CallbackFs>), String> {
+pub fn new_api_session(flags: &ApiFlags) -> Result<(Arc<Session>, Arc<CallbackFs>), String> {
     let base: Arc<dyn FS> = Arc::new(bundled::wrap_fs(osvfs::fs()));
     let config = CallbackConfig::parse(&flags.callbacks)?;
     let callback_fs = Arc::new(CallbackFs::new(base, &config, Some(flags.case_sensitive)));
@@ -85,52 +82,7 @@ pub(crate) fn new_api_session(flags: &ApiFlags) -> Result<(Arc<Session>, Arc<Cal
         SessionOptions::new(flags.cwd.clone(), bundled::default_lib_path(), fs, !flags.is_async);
     options.run_external_code = flags.run_external_code;
     let session = Session::new(options);
-    session.set_build_backend(Arc::new(CliBuildBackend));
     Ok((session, callback_fs))
-}
-
-/// Adapts the core session to the transport's handler (contract: `crates/tsrs_api_transport/README.md`).
-struct SessionHandler(Arc<Session>);
-
-impl transport::Handler for SessionHandler {
-    fn handle_request(
-        &self,
-        cx: &transport::RequestContext,
-        method: &str,
-        params: &[u8],
-    ) -> Result<transport::Response, transport::ApiError> {
-        // Go: errors are CodeInternalError with err.Error().
-        match self.0.handle_nested_request(method, params, cx.depth) {
-            Ok(tsrs_api::Response::Value(value)) => tsrs_core::json::marshal(&value)
-                .map(|s| transport::Response::Json(s.into_bytes()))
-                .map_err(transport::ApiError::internal),
-            Ok(tsrs_api::Response::Json(s)) => Ok(transport::Response::Json(s.into_bytes())),
-            Ok(tsrs_api::Response::Binary(b)) => Ok(transport::Response::Binary(b)),
-            Err(e) => Err(transport::ApiError::internal(e.to_string())),
-        }
-    }
-
-    fn handle_notification(&self, _cx: &transport::RequestContext, method: &str, params: &[u8]) {
-        let _ = self.0.handle_notification(method, params);
-    }
-}
-
-impl Drop for SessionHandler {
-    fn drop(&mut self) {
-        self.0.close();
-    }
-}
-
-struct ClientConnAdapter(Arc<dyn transport::Caller>);
-
-impl ClientConn for ClientConnAdapter {
-    fn call(&self, method: &str, params: &str) -> tsrs_api::ApiResult<String> {
-        let raw = self
-            .0
-            .call(method, Some(params.as_bytes()))
-            .map_err(|e| tsrs_api::ApiError::internal(e.to_string()))?;
-        tsrs_core::utf8::into_string(raw).map_err(|e| tsrs_api::ApiError::internal(e.to_string()))
-    }
 }
 
 /// `tsrs --api` (Go `runAPI` + `StdioServer.Run`). stdout carries only protocol bytes.
@@ -160,162 +112,6 @@ pub fn run_api(args: &[String]) -> i32 {
             eprintln!("{err}");
             1
         }
-    }
-}
-
-/// Go `apiBuildSystem`: output is discarded, the filesystem is the session's host filesystem.
-struct ApiBuildSystem {
-    fs: Arc<dyn FS>,
-    default_library_path: String,
-    current_directory: String,
-    start: Instant,
-}
-
-impl System for ApiBuildSystem {
-    fn fs(&self) -> Arc<dyn FS> {
-        Arc::clone(&self.fs)
-    }
-    fn default_library_path(&self) -> &str {
-        &self.default_library_path
-    }
-    fn get_current_directory(&self) -> &str {
-        &self.current_directory
-    }
-    fn write(&self, _text: &str) {}
-    fn flush(&self) {}
-    fn write_output_is_tty(&self) -> bool {
-        false
-    }
-    fn get_environment_variable(&self, _name: &str) -> Option<String> {
-        None
-    }
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-    fn since_start(&self) -> Duration {
-        self.start.elapsed()
-    }
-    // session.go:1919
-    fn spawn(
-        &self,
-        _command: &[String],
-        _dir: &str,
-        _stderr: Option<Box<dyn std::io::Write + Send>>,
-    ) -> Result<tsrs_execute::tsc::ReadWriteCloser, String> {
-        Err("spawning processes is not supported by the API build orchestrator".to_string())
-    }
-}
-
-impl ParseConfigHost for ApiBuildSystem {
-    fn fs(&self) -> &dyn FS {
-        &*self.fs
-    }
-    fn get_current_directory(&self) -> &str {
-        &self.current_directory
-    }
-}
-
-struct CliBuildBackend;
-
-/// One API build orchestrator handle. Go keeps one `build.Orchestrator`: `Build` rechecks every project in the
-/// build order (statuses, configs, mtimes, caches) and regenerates the graph; `Clean` uses the graph of the last
-/// build ("cleans the last built configuration"). Here each build gets a fresh CLI orchestrator (the state Go's
-/// recheck leaves) whose allocations live in collectable regions; it is kept for later cleans and freed when the
-/// next build replaces it or the handle is disposed, so memory stays bounded by one build.
-struct CliOrchestrator {
-    sys: &'static ApiBuildSystem,
-    command: P<tsrs_tsoptions::ParsedBuildCommandLine>,
-    orchestrator: Option<&'static crate::build::Orchestrator>,
-}
-
-impl CliOrchestrator {
-    fn fresh(&self) -> &'static crate::build::Orchestrator {
-        let o = new_orchestrator(Options { sys: self.sys, command: self.command, testing: None });
-        o.enable_api_mode();
-        o
-    }
-
-    fn replace(&mut self, o: &'static crate::build::Orchestrator) {
-        if let Some(old) = self.orchestrator.replace(o) {
-            // SAFETY: no build is running on `old` (builds are serialized per handle) and its results were
-            // converted to owned `BuildOutcome`s.
-            unsafe { crate::build::free_api_orchestrator(old) };
-        }
-    }
-}
-
-impl Drop for CliOrchestrator {
-    fn drop(&mut self) {
-        if let Some(o) = self.orchestrator.take() {
-            // SAFETY: as in `replace`; the handle is being disposed.
-            unsafe { crate::build::free_api_orchestrator(o) };
-        }
-    }
-}
-
-impl BuildBackend for CliBuildBackend {
-    fn create(&self, request: BuildRequest) -> Box<dyn BuildOrchestrator> {
-        // `&'static` system and command line: the CLI build module requires them (one small leak per orchestrator).
-        let sys: &'static ApiBuildSystem = Box::leak(Box::new(ApiBuildSystem {
-            fs: request.fs,
-            default_library_path: request.default_library_path,
-            current_directory: request.current_directory,
-            start: Instant::now(),
-        }));
-        let mut command = tsrs_tsoptions::parse_build_command_line(&request.root_names, sys);
-        if let Some(options) = request.compiler_options {
-            command.compiler_options = options;
-        }
-        if let Some(options) = request.build_options {
-            command.build_options = options;
-        }
-        // API builds allocate in per-task regions (CliOrchestrator); program construction and checking must stay on
-        // the task's thread so their allocations land there, not in the compiler worker pool's thread arenas.
-        command.compiler_options.single_threaded = tsrs_core::Tristate::True;
-        Box::new(CliOrchestrator { sys, command: P::new(command), orchestrator: None })
-    }
-}
-
-fn outcome(result: crate::build::OrchestratorResult) -> BuildOutcome {
-    BuildOutcome {
-        status: result.status.unwrap_or(crate::tsc::ExitStatus::Success) as i32,
-        diagnostics: result.errors.unwrap_or_default(),
-        projects: result.statistics.projects,
-        projects_built: result.statistics.projects_built,
-        timestamp_updates: result.statistics.timestamp_updates,
-        files_deleted: result.files_to_delete.unwrap_or_default(),
-    }
-}
-
-impl BuildOrchestrator for CliOrchestrator {
-    fn build(&mut self, project: &str, only_references: bool) -> BuildOutcome {
-        let o = self.fresh();
-        // A build can unwind (a panic while building a program, e.g. the module resolver's `Unexpected
-        // moduleResolution`, which the API turns into an error). The fresh orchestrator is then freed here instead
-        // of being leaked; the retained one (for later cleans) is untouched.
-        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            o.build_for_api(project, only_references)
-        })) {
-            Ok(result) => outcome(result),
-            Err(panic) => {
-                // SAFETY: the build ran inline on this thread and has unwound (its scoped workers were joined), so
-                // nothing uses `o`; it was never stored, and nothing returned from it outlives this call.
-                unsafe { crate::build::free_api_orchestrator(o) };
-                std::panic::resume_unwind(panic);
-            }
-        };
-        self.replace(o);
-        result
-    }
-    fn clean(&mut self, project: &str, only_references: bool) -> BuildOutcome {
-        let o = if let Some(o) = self.orchestrator {
-            o
-        } else {
-            let o = self.fresh();
-            self.replace(o);
-            o
-        };
-        outcome(o.clean_for_api(project, only_references))
     }
 }
 
@@ -380,7 +176,7 @@ mod tests {
         let Value::Object(options) = config_object.get_mut("compilerOptions").unwrap() else {
             unreachable!()
         };
-        options.insert("incremental".into(), Value::Bool(true));
+        options.insert("incremental", Value::Bool(true));
         std::fs::write(dir.join("tsconfig.json"), json::marshal(&config).unwrap()).unwrap();
         let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("tsrs");
         let cli = || {
@@ -394,7 +190,7 @@ mod tests {
             String::from_utf8(output.stdout).unwrap()
         };
         let expected_cli = cli();
-        assert_eq!(expected_cli.matches("error TS2320").count(), 2);
+        assert_eq!(expected_cli.matches("error TS2320").count(), 1);
         let info = dir.join("tsconfig.tsbuildinfo");
         let cli_info = std::fs::read_to_string(&info).unwrap();
         assert!(cli_info.contains("tsrsCanonicalCheckSignature"));
@@ -418,7 +214,7 @@ mod tests {
         };
         assert_eq!(
             diagnostics.iter().filter(|d| get(d, "code") == &Value::Number(2320.0)).count(),
-            4
+            1
         );
         let api_info = std::fs::read_to_string(&info).unwrap();
         assert!(!api_info.contains("tsrsCanonicalCheckSignature"));

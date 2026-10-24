@@ -8,7 +8,7 @@ use tsrs_ast::{self as ast, Kind, Node};
 use tsrs_core::P;
 use tsrs_core::context::Context;
 
-pub(crate) fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Plan> {
+pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Plan> {
     let f = fix.source_file;
     let n = astnav::get_token_at_position(f, fix.span.pos().expect_source("conversion diagnostic"));
     let mut c = fix.program.get_type_checker_for_file(ctx, f);
@@ -92,26 +92,6 @@ pub(crate) fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) ->
                 deletions.push(Edit::Delete(statement));
             }
         }
-        fn initializes_instance(n: P<Node>) -> bool {
-            if n.kind() == Kind::BinaryExpression {
-                let b = n.as_binary_expression();
-                if b.operator_token.kind() == Kind::EqualsToken
-                    && ast::is_property_access_expression(b.left)
-                    && b.left.expression().is_some_and(|n| n.kind() == Kind::ThisKeyword)
-                {
-                    return true;
-                }
-            }
-            if ast::is_function_like(n) {
-                return false;
-            }
-            let mut found = false;
-            n.for_each_child(&mut |child| {
-                found = initializes_instance(child);
-                found
-            });
-            found
-        }
         if deletions.is_empty() && function.body().is_none_or(|b| !initializes_instance(b)) {
             return vec![];
         }
@@ -177,26 +157,10 @@ pub(crate) fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) ->
                 continue;
             };
             let mut refs = FxHashSet::default();
-            fn visit(
-                n: P<Node>,
-                checker: &mut tsrs_checker::Checker,
-                symbol: P<ast::Symbol>,
-                out: &mut FxHashSet<P<Node>>,
-            ) {
-                if ast::is_identifier(n)
-                    && checker.get_symbol_at_location_exported(n) == Some(symbol)
-                {
-                    out.insert(n);
-                }
-                n.for_each_child(&mut |child| {
-                    visit(child, checker, symbol, out);
-                    false
-                });
-            }
             let Some(callback_body) = callback.body() else {
                 continue;
             };
-            visit(callback_body, &mut c, parameter_symbol, &mut refs);
+            collect_callback_references(callback_body, &mut c, parameter_symbol, &mut refs);
             let unique = t.emit_context.factory.new_unique_name_ex(
                 name.text(),
                 tsrs_printer::AutoGenerateOptions {
@@ -239,4 +203,40 @@ pub(crate) fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) ->
         }
     }
     Vec::new()
+}
+
+fn initializes_instance(n: P<Node>) -> bool {
+    if n.kind() == Kind::BinaryExpression {
+        let b = n.as_binary_expression();
+        if b.operator_token.kind() == Kind::EqualsToken
+            && ast::is_property_access_expression(b.left)
+            && b.left.expression().is_some_and(|n| n.kind() == Kind::ThisKeyword)
+        {
+            return true;
+        }
+    }
+    if ast::is_function_like(n) {
+        return false;
+    }
+    let mut found = false;
+    n.for_each_child(&mut |child| {
+        found = initializes_instance(child);
+        found
+    });
+    found
+}
+
+fn collect_callback_references(
+    n: P<Node>,
+    checker: &mut tsrs_checker::Checker,
+    symbol: P<ast::Symbol>,
+    out: &mut FxHashSet<P<Node>>,
+) {
+    if ast::is_identifier(n) && checker.get_symbol_at_location_exported(n) == Some(symbol) {
+        out.insert(n);
+    }
+    n.for_each_child(&mut |child| {
+        collect_callback_references(child, checker, symbol, out);
+        false
+    });
 }

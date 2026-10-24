@@ -4,7 +4,7 @@ use crate::codeactions::CodeFixContext;
 use crate::codeactions_syntax::{Edit, Plan, plan};
 use tsrs_ast as ast;
 use tsrs_core::context::Context;
-pub(crate) fn plans(_ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Plan> {
+pub fn plans(_ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Plan> {
     if !matches!(fix.error_code, 1378 | 17004) {
         return Vec::new();
     }

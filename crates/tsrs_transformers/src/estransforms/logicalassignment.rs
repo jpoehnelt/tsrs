@@ -1,11 +1,11 @@
 use crate::*;
 
 // logicalassignment.go:8
-pub struct logicalAssignmentTransformer {
+pub struct LogicalAssignmentTransformer {
     pub base: Transformer,
 }
 
-impl logicalAssignmentTransformer {
+impl LogicalAssignmentTransformer {
     fn emit_context(&self) -> P<EmitContext> {
         self.base.emit_context()
     }
@@ -116,7 +116,7 @@ impl logicalAssignmentTransformer {
     reason = "Transformer factories share an optional result so disabled transforms can return None."
 )]
 pub fn new_logical_assignment_transformer(opt: &TransformOptions) -> Option<P<Transformer>> {
-    let tx = P::new(logicalAssignmentTransformer { base: Transformer::default() });
+    let tx = P::new(LogicalAssignmentTransformer { base: Transformer::default() });
     Some(tx.get().base.new_transformer(
         Rc::new(move |_: &mut NodeVisitor, n: P<Node>| tx.visit(n)),
         Some(opt.context),

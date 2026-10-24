@@ -122,8 +122,8 @@ The pinned decoder rejects duplicate member names anywhere in a document (even i
 ignores), unpaired surrogate escapes and invalid UTF-8 — nothing is replaced with U+FFFD.
 `decode_message` (JSON-RPC: a violation is a fatal read error, as in Go, so a lone surrogate in an async
 callback result ends the connection) and the callback filesystem (the triggering request fails with
-`panic: jsontext: ...`) apply it. Session params decoding is core's: apply `strictjson::validate` to
-request params before serde so duplicates are rejected like Go's `unmarshalPayload`.
+`panic: jsontext: ...`) apply it. Session params decoding is core's: it reads request params with `strictjson::decode`, which validates
+and builds the value in one scan, so duplicates are rejected like Go's `unmarshalPayload`.
 
 ## Tests
 
@@ -134,7 +134,9 @@ request params before serde so duplicates are rejected like Go's `unmarshalPaylo
   and `async` clients (from `ts-ref`, `node --conditions=@typescript/source`) against
   `examples/transport_test_server.rs`, including fs callbacks with every serverFS sentinel, callback
   re-entry, astral text, lone surrogates (rejected like Go), 5 MiB payloads, timing, server exit, and
-  `--pipe` sockets. Mandatory: it fails with install instructions when node or ts-ref is missing.
+  `--pipe` sockets. On Unix `--pipe` creates a private directory containing a `socket` file; on Windows it
+  creates a named pipe restricted to the current user. Mandatory: it fails with install instructions when node
+  or ts-ref is missing.
   Rust-only: `cargo test -p tsrs_api_transport --lib --test conn --test go_frames --test strictjson_oracle --test reentrancy`.
 - `tests/strictjson_oracle.rs`: 38 inputs decoded by a Go binary built at the pinned commit
   (duplicate names at any depth, lone/unpaired surrogates, invalid UTF-8, valid astral pairs): same
@@ -152,8 +154,6 @@ request params before serde so duplicates are rejected like Go's `unmarshalPaylo
 
 ## Not supported
 
-- Windows named pipes (`--pipe` on Windows returns an `Unsupported` error). The pinned sync Node client
-  always uses `--pipe` on Windows, so the sync client is unsupported there.
 - `$/cancelRequest` and other notifications are ignored, exactly as the pinned session does.
 - External content-mapper spawning (`--runExternalCode`) is not part of this crate.
 

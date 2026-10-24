@@ -98,6 +98,10 @@ fn create_source_file_leases() {
         r#"{"fileName":"/component.tsx","sourceText":"export const e = <div />;","options":{}}"#,
     );
     assert!(str_of(get(&r, "data")).len() > 50);
+    for method in ["createSourceFile", "createSourceFileFromFile"] {
+        let error = call_err(&s, method, r#"{"fileName":""}"#);
+        assert!(error.contains("fileName must not be empty"), "{method}: {error}");
+    }
     let e = call_err(
         &s,
         "createSourceFile",
@@ -113,6 +117,41 @@ fn create_source_file_leases() {
         r#"{"file":{"fileName":"/a.ts","path":"/a.ts","contentHash":"00","parseOptionsKey":"0","scriptKind":3,"nodeId":"1"}}"#,
     );
     assert!(e.contains("invalid source file descriptor"), "{e}");
+}
+
+#[test]
+fn get_symbol_of_declaration_uses_cached_file_node_index() {
+    let dir = TempDir::new("declsym");
+    let file = dir.write("symbols.ts", "function present() {}\nimport {} from './missing';\n");
+    let s = session(&dir.dir(), false);
+    let (snapshot, project) = program(&s, &file);
+    let symbol = call(
+        &s,
+        "getSymbolAtPosition",
+        &format!(
+            "{{\"snapshot\":{snapshot},\"project\":{},\"file\":{},\"position\":9}}",
+            quote(&project),
+            quote(&file),
+        ),
+    );
+    let descriptor = json::marshal(get(&symbol, "reference.file")).unwrap();
+    let index =
+        str_of(get(&symbol, "declarations.0")).split('.').next().unwrap().parse::<u32>().unwrap();
+    let lookup = |index: u32| format!("{{\"file\":{descriptor},\"index\":{index}}}");
+    let from_declaration = call(&s, "getSymbolOfDeclaration", &lookup(index));
+    assert_eq!(get(&from_declaration, "name"), get(&symbol, "name"));
+    assert_eq!(get(&from_declaration, "reference"), get(&symbol, "reference"));
+
+    let zero = call_err(&s, "getSymbolOfDeclaration", &lookup(0));
+    assert!(zero.contains("declaration node index 0 is out of range"), "{zero}");
+    let outside = call_err(&s, "getSymbolOfDeclaration", &lookup(u32::MAX));
+    assert!(outside.contains("is out of range"), "{outside}");
+    let malformed = call_err(
+        &s,
+        "getSymbolOfDeclaration",
+        &format!("{{\"file\":{descriptor},\"index\":4294967296}}"),
+    );
+    assert!(malformed.contains("api: invalid request"), "{malformed}");
 }
 
 #[test]

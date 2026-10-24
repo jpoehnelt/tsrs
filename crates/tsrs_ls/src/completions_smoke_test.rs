@@ -1,7 +1,7 @@
 // Not a Go test: an end-to-end smoke test of completions (textDocument/completion, completionItem/resolve,
 // linked editing, auto-insert) over an in-memory program with the bundled libs. The expected responses in
 // testdata/completions_smoke/*.out were recorded from `tsgo-ref --lsp -stdio` with the same project, client
-// capabilities and user preferences (tools/oracle/completions/record.py); project paths are rewritten to `/`.
+// capabilities and user preferences (tools/oracle/completions/record.mjs); project paths are rewritten to `/`.
 //
 // Go returns some completion lists in map order (globals, path completions), and clients sort them by sort text
 // and label (fourslash does the same with ls.CompareCompletionEntries), so both lists are stably sorted that way
@@ -11,9 +11,8 @@ use std::sync::Arc;
 
 use tsrs_compiler::{CompilerHost, Program, ProgramOptions, new_compiler_host, new_program};
 use tsrs_core::P;
-use tsrs_core::collections::OrderedMap;
 use tsrs_core::context::Context;
-use tsrs_core::json::{self, Value};
+use tsrs_core::json::{self, JsonMap, Value};
 use tsrs_lsproto::{self as lsproto, Json};
 use tsrs_tsoptions::{self as tsoptions, ParseConfigHost};
 use tsrs_vfs::{FS, bundled, vfsmatch, vfstest};
@@ -81,11 +80,11 @@ impl Host for TestHost {
     }
 }
 
-struct parseConfigHost {
+struct ParseConfigHostImpl {
     fs: Arc<dyn FS>,
 }
 
-impl ParseConfigHost for parseConfigHost {
+impl ParseConfigHost for ParseConfigHostImpl {
     fn fs(&self) -> &dyn FS {
         &*self.fs
     }
@@ -95,7 +94,6 @@ impl ParseConfigHost for parseConfigHost {
 }
 
 fn project_files() -> Vec<(String, String)> {
-    let mut files = Vec::new();
     fn walk(dir: &std::path::Path, rel: &str, files: &mut Vec<(String, String)>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
@@ -108,6 +106,8 @@ fn project_files() -> Vec<(String, String)> {
             }
         }
     }
+
+    let mut files = Vec::new();
     walk(&std::path::Path::new(DIR).join("proj"), "", &mut files);
     files
 }
@@ -118,8 +118,8 @@ fn setup(spec: &Value) -> (LanguageService, Context, Vec<(String, String)>) {
         files.iter().map(|(k, v)| (k.as_str(), v.as_str())),
         true,
     )));
-    let config_host: &'static parseConfigHost =
-        Box::leak(Box::new(parseConfigHost { fs: std::sync::Arc::clone(&fs) }));
+    let config_host: &'static ParseConfigHostImpl =
+        Box::leak(Box::new(ParseConfigHostImpl { fs: std::sync::Arc::clone(&fs) }));
     let (config, diagnostics) = tsoptions::get_parsed_command_line_of_config_file(
         "/tsconfig.json",
         None,
@@ -137,7 +137,7 @@ fn setup(spec: &Value) -> (LanguageService, Context, Vec<(String, String)>) {
             fs_for_lines.read_file(file_name).map(|text| compute_lsp_line_starts(&text))
         });
     // Go: lsutil.ParseUserPreferences(map[string]any{"js/ts": initializationOptions.userPreferences})
-    let mut items: OrderedMap<String, Value> = OrderedMap::default();
+    let mut items: JsonMap = JsonMap::new();
     items.insert("js/ts".to_string(), field(spec, "preferences").clone());
     let preferences = parse_user_preferences(&items);
     let host = Arc::new(TestHost { fs, converters, preferences });
@@ -175,14 +175,14 @@ fn position_of(text: &str, caret: &str) -> lsproto::Position {
 // Sorts completion list items the way clients (and fourslash) do, then renders the result as JSON.
 fn normalize(result: &Value) -> String {
     let mut result = result.clone();
-    if let Value::Object(m) = &mut result {
-        if let Some(Value::Array(items)) = m.get("items") {
-            let mut parsed: Vec<lsproto::CompletionItem> =
-                items.iter().map(|i| lsproto::CompletionItem::from_json(i).unwrap()).collect();
-            parsed.sort_by(compare_completion_entries);
-            let sorted: Vec<Value> = parsed.iter().map(tsrs_lsproto::Json::to_json).collect();
-            m.insert("items".to_string(), Value::Array(sorted));
-        }
+    if let Value::Object(m) = &mut result
+        && let Some(Value::Array(items)) = m.get("items")
+    {
+        let mut parsed: Vec<lsproto::CompletionItem> =
+            items.iter().map(|i| lsproto::CompletionItem::from_json(i).unwrap()).collect();
+        parsed.sort_by(compare_completion_entries);
+        let sorted: Vec<Value> = parsed.iter().map(tsrs_lsproto::Json::to_json).collect();
+        m.insert("items".to_string(), Value::Array(sorted));
     }
     json::marshal(&result).unwrap()
 }
@@ -197,8 +197,8 @@ fn position_in(case: &Value, files: &[(String, String)]) -> lsproto::Position {
     position_of(text, str_field(case, "caret"))
 }
 
-fn read_expected(name: &str) -> OrderedMap<String, Value> {
-    let mut expected: OrderedMap<String, Value> = OrderedMap::default();
+fn read_expected(name: &str) -> JsonMap {
+    let mut expected: JsonMap = JsonMap::new();
     let Ok(text) = std::fs::read_to_string(format!("{DIR}/{name}.out")) else {
         return expected;
     };
@@ -209,7 +209,7 @@ fn read_expected(name: &str) -> OrderedMap<String, Value> {
     expected
 }
 
-fn rich_expected() -> OrderedMap<String, Value> {
+fn rich_expected() -> JsonMap {
     read_expected("rich")
 }
 
@@ -255,7 +255,7 @@ fn run_profile(name: &str) {
                 "textDocument/completion" => {
                     let context = match field(case, "context") {
                         Value::Null => lsproto::CompletionContext {
-                            trigger_kind: lsproto::CompletionTriggerKind::Invoked,
+                            trigger_kind: lsproto::CompletionTriggerKind::INVOKED,
                             ..Default::default()
                         },
                         c => lsproto::CompletionContext::from_json(c).unwrap(),

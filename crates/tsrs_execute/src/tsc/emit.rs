@@ -58,9 +58,9 @@ pub fn emit_and_report_statistics(input: &EmitInput) -> (CompileAndEmitResult, O
     }
 
     if result.emit_skipped && !result.diagnostics.is_empty() {
-        result.status = ExitStatus::DiagnosticsPresent_OutputsSkipped;
+        result.status = ExitStatus::DiagnosticsPresentOutputsSkipped;
     } else if !result.diagnostics.is_empty() {
-        result.status = ExitStatus::DiagnosticsPresent_OutputsGenerated;
+        result.status = ExitStatus::DiagnosticsPresentOutputsGenerated;
     }
     (result, statistics)
 }
@@ -203,11 +203,12 @@ fn emit_files_and_report_errors_incremental(
     input: &EmitInput,
     program_like: P<tsrs_incremental::Program>,
 ) -> CompileAndEmitResult {
-    let program_like: &'static tsrs_incremental::Program = program_like.get();
     use tsrs_incremental::emit::{
         EmitOptions, EmitResult, ProgramLike,
         get_diagnostics_of_any_program as get_diagnostics_of_any_program_like,
     };
+
+    let program_like: &'static tsrs_incremental::Program = program_like.get();
     let mut times = input.compile_times.clone();
     let bind_time = Cell::new(times.bind_time);
     let check_time = Cell::new(times.check_time);

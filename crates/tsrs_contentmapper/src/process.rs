@@ -57,10 +57,10 @@ pub fn spawn_process(
         return Err("exec: no command".to_string());
     }
     // os.StartProcess checks the working directory before it starts the process.
-    if !dir.is_empty() {
-        if let Err(err) = std::fs::metadata(dir) {
-            return Err(format!("chdir {dir}: {}", errno_text(&err)));
-        }
+    if !dir.is_empty()
+        && let Err(err) = std::fs::metadata(dir)
+    {
+        return Err(format!("chdir {dir}: {}", errno_text(&err)));
     }
     // Go's child changes to cmd.Dir before it executes cmd.Path, so a relative path names a file in that directory.
     let mut program = PathBuf::from(&path);
@@ -98,8 +98,8 @@ pub fn spawn_process(
     let stdin = Arc::new(Mutex::new(Some(stdin)));
     Ok(ReadWriteCloser {
         reader: Box::new(stdout),
-        writer: Box::new(childStdin(Arc::clone(&stdin))),
-        closer: Arc::new(childProcess {
+        writer: Box::new(SharedChildStdin(Arc::clone(&stdin))),
+        closer: Arc::new(ChildProcess {
             child: Mutex::new(Some(child)),
             stdin,
             stderr_copied: Mutex::new(stderr_copied),
@@ -111,7 +111,7 @@ pub fn spawn_process(
 // childProcess adapts a spawned process's stdout (read) and stdin (write) into one io.ReadWriteCloser.
 // Close kills and reaps the process.
 // sys.go:94 (The reader is the child's stdout; the writer and this closer share its stdin, so Close can close it.)
-struct childProcess {
+struct ChildProcess {
     // cmd: taken by Close, which waits for it.
     child: Mutex<Option<Child>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
@@ -121,7 +121,7 @@ struct childProcess {
     exit_code: OnceLock<i32>,
 }
 
-impl Closer for childProcess {
+impl Closer for ChildProcess {
     // sys.go:108 (Go's Wait also closes the parent's end of stdout; see the module comment.)
     fn close(&self) -> io::Result<()> {
         // p.stdin.Close(). A write blocked on a full pipe holds the stdin; the kill below makes that write fail.
@@ -155,9 +155,9 @@ impl Closer for childProcess {
 }
 
 // The child's stdin, which Go writes through cmd.StdinPipe's *os.File and which Close closes.
-struct childStdin(Arc<Mutex<Option<ChildStdin>>>);
+struct SharedChildStdin(Arc<Mutex<Option<ChildStdin>>>);
 
-impl Write for childStdin {
+impl Write for SharedChildStdin {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         match lock(&self.0).as_mut() {
             Some(stdin) => stdin.write(data),
@@ -187,8 +187,8 @@ fn look_path(file: &str) -> Result<String, String> {
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
     // filepath.SplitList returns no elements for an empty list.
-    if !path.is_empty() {
-        if let Some(result) = std::env::split_paths(&path).into_iter().find_map(|dir| {
+    if !path.is_empty()
+        && let Some(result) = std::env::split_paths(&path).into_iter().find_map(|dir| {
             // Unix shell semantics: path element "" means "."
             let dir = if dir.as_os_str().is_empty() { PathBuf::from(".") } else { dir };
             let path = dir.join(file);
@@ -203,9 +203,9 @@ fn look_path(file: &str) -> Result<String, String> {
             }
 
             None
-        }) {
-            return result;
-        }
+        })
+    {
+        return result;
     }
     Err(format!("exec: {}: executable file not found in $PATH", quote(file)))
 }

@@ -36,6 +36,17 @@ impl Id {
     }
 }
 
+impl Id {
+    /// The `Display` text, borrowed when the id is a non-empty string (the msgpack protocol's ids are method
+    /// names, written on every response).
+    pub fn text(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Id::Str(s) if !s.is_empty() => std::borrow::Cow::Borrowed(s),
+            _ => std::borrow::Cow::Owned(self.to_string()),
+        }
+    }
+}
+
 impl fmt::Display for Id {
     // jsonrpc.go ID.String.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -96,12 +107,14 @@ impl Message {
 
 /// A handler result.
 ///
-/// `Json` must hold one complete JSON value (validated before it is written); `Binary` is api.RawBinary:
-/// written verbatim as the `MessagePack` tuple payload, and (like Go's json.Marshal of a byte slice) as a
-/// base64 JSON string under JSON-RPC.
+/// `Json` must hold one complete JSON value (validated before it is written, as Go's json.Marshal of a
+/// json.Value does). `ValidJson` is JSON its producer guarantees valid (a JSON encoder's output), written
+/// without that check. `Binary` is api.RawBinary: written verbatim as the `MessagePack` tuple payload, and
+/// (like Go's json.Marshal of a byte slice) as a base64 JSON string under JSON-RPC.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Response {
     Json(Vec<u8>),
+    ValidJson(Vec<u8>),
     Binary(Vec<u8>),
 }
 
@@ -178,14 +191,13 @@ impl fmt::Display for TransportError {
             TransportError::Eof => f.write_str("EOF"),
             TransportError::UnexpectedEof(what) => write!(f, "{what}: unexpected EOF"),
             TransportError::Io(e) => write!(f, "{e}"),
-            TransportError::Protocol(msg) => f.write_str(msg),
+            TransportError::Protocol(msg) | TransportError::Unexpected(msg) => f.write_str(msg),
             TransportError::FrameTooLarge { declared, limit } => {
                 write!(f, "ipc: frame of {declared} bytes exceeds the {limit} byte limit")
             }
             TransportError::Closed(None) => f.write_str("ipc: connection closed"),
             TransportError::Closed(Some(cause)) => write!(f, "ipc: connection closed\n{cause}"),
             TransportError::Remote(e) => write!(f, "ipc: remote error [{}]: {}", e.code, e.message),
-            TransportError::Unexpected(msg) => f.write_str(msg),
         }
     }
 }
@@ -209,10 +221,11 @@ pub(crate) fn read_exact_bounded<R: std::io::Read>(
     limit: u64,
     what: &'static str,
 ) -> Result<Vec<u8>, TransportError> {
+    const INITIAL: u64 = 64 * 1024;
+
     if len > limit {
         return Err(TransportError::FrameTooLarge { declared: len, limit });
     }
-    const INITIAL: u64 = 64 * 1024;
     let mut out = Vec::with_capacity(len.min(INITIAL) as usize);
     let n = (&mut *r).take(len).read_to_end(&mut out)?;
     if (n as u64) < len {

@@ -1,11 +1,11 @@
 use super::*;
 
 // optionalchain.go:10
-pub struct optionalChainTransformer {
+pub struct OptionalChainTransformer {
     pub base: Transformer,
 }
 
-impl optionalChainTransformer {
+impl OptionalChainTransformer {
     fn emit_context(&self) -> P<EmitContext> {
         self.base.emit_context()
     }
@@ -118,13 +118,13 @@ impl optionalChainTransformer {
 
         let mut this_arg: Option<P<Node>> = None;
         if capture_this_arg {
-            if !is_simple_copiable_expression(expression.unwrap()) {
+            if is_simple_copiable_expression(expression.unwrap()) {
+                this_arg = expression;
+            } else {
                 let t = f.new_temp_variable();
                 this_arg = Some(t);
                 self.emit_context().add_variable_declaration(t);
                 expression = Some(f.new_assignment_expression(t, expression.unwrap()));
-            } else {
-                this_arg = expression;
             }
         }
 
@@ -189,7 +189,7 @@ impl optionalChainTransformer {
 }
 
 // optionalchain.go:126
-struct flattenResult {
+struct FlattenResult {
     expression: P<Node>,
     chain: Vec<P<Node>>,
 }
@@ -200,7 +200,7 @@ fn is_non_null_chain(node: P<Node>) -> bool {
 }
 
 // optionalchain.go:135
-fn flatten_chain(mut chain: P<Node>) -> flattenResult {
+fn flatten_chain(mut chain: P<Node>) -> FlattenResult {
     assert!(!is_non_null_chain(chain));
     let mut links: Vec<P<Node>> = vec![chain];
     while !ast::is_tagged_template_expression(chain) && chain.question_dot_token().is_none() {
@@ -208,7 +208,7 @@ fn flatten_chain(mut chain: P<Node>) -> flattenResult {
         assert!(!is_non_null_chain(chain));
         links.insert(0, chain);
     }
-    flattenResult { expression: chain.expression().unwrap(), chain: links }
+    FlattenResult { expression: chain.expression().unwrap(), chain: links }
 }
 
 // optionalchain.go:146
@@ -216,7 +216,7 @@ fn is_call_chain(node: P<Node>) -> bool {
     ast::is_call_expression(node) && node.flags().intersects(NodeFlags::OptionalChain)
 }
 
-impl optionalChainTransformer {
+impl OptionalChainTransformer {
     // optionalchain.go:150
     fn visit_optional_expression(
         &self,
@@ -256,13 +256,13 @@ impl optionalChainTransformer {
             match segment.kind() {
                 Kind::ElementAccessExpression | Kind::PropertyAccessExpression => {
                     if i == chain.len() - 1 && capture_this_arg {
-                        if !is_simple_copiable_expression(right_expression) {
+                        if is_simple_copiable_expression(right_expression) {
+                            this_arg = Some(right_expression);
+                        } else {
                             let t = f.new_temp_variable();
                             this_arg = Some(t);
                             self.emit_context().add_variable_declaration(t);
                             right_expression = f.new_assignment_expression(t, right_expression);
-                        } else {
-                            this_arg = Some(right_expression);
                         }
                     }
                     if segment.kind() == Kind::ElementAccessExpression {
@@ -359,7 +359,7 @@ impl optionalChainTransformer {
     reason = "Transformer factories share an optional result so disabled transforms can return None."
 )]
 pub fn new_optional_chain_transformer(opt: &TransformOptions) -> Option<P<Transformer>> {
-    let tx = P::new(optionalChainTransformer { base: Transformer::default() });
+    let tx = P::new(OptionalChainTransformer { base: Transformer::default() });
     Some(tx.get().base.new_transformer(
         Rc::new(move |_: &mut NodeVisitor, n: P<Node>| tx.visit(n)),
         Some(opt.context),

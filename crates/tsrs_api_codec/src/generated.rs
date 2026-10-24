@@ -11,7 +11,7 @@ use crate::format::*;
 use crate::stringtable::StringTable;
 
 /// Go `getNodeDataType`.
-pub(crate) fn node_data_type(node: P<Node>) -> u32 {
+pub fn node_data_type(node: P<Node>) -> u32 {
     match node.kind() {
         Kind::Identifier
         | Kind::PrivateIdentifier
@@ -34,7 +34,7 @@ pub(crate) fn node_data_type(node: P<Node>) -> u32 {
 }
 
 /// Go `getChildrenPropertyMask`: one bit per encoded child property, in visitor order.
-pub(crate) fn children_property_mask(node: P<Node>) -> u8 {
+pub fn children_property_mask(node: P<Node>) -> u8 {
     match node.kind() {
         Kind::QualifiedName => {
             let n = node.as_qualified_name();
@@ -911,7 +911,7 @@ pub(crate) fn children_property_mask(node: P<Node>) -> u8 {
 }
 
 /// Go `getNodeCommonData`: the 6 bits at 24..30 of the node data word.
-pub(crate) fn node_common_data(node: P<Node>) -> Result<u32, EncodeError> {
+pub fn node_common_data(node: P<Node>) -> Result<u32, EncodeError> {
     Ok(match node.kind() {
         Kind::Block => {
             let n = node.as_block();
@@ -1016,6 +1016,7 @@ pub(crate) fn node_common_data(node: P<Node>) -> Result<u32, EncodeError> {
             let phase_modifier_idx: u32 = match n.phase_modifier() {
                 Kind::TypeKeyword => 1,
                 Kind::DeferKeyword => 2,
+                Kind::SourceKeyword => 3,
                 _ => 0,
             };
             phase_modifier_idx << 24
@@ -1037,7 +1038,7 @@ pub(crate) fn node_common_data(node: P<Node>) -> Result<u32, EncodeError> {
 }
 
 /// Go `recordNodeStrings`.
-pub(crate) fn record_node_strings(node: P<Node>, strs: &mut StringTable) -> u32 {
+pub fn record_node_strings(node: P<Node>, strs: &mut StringTable) -> u32 {
     match node.kind() {
         Kind::Identifier => {
             strs.add(node.as_identifier().text(), node.kind(), node.pos(), node.end())
@@ -1046,19 +1047,15 @@ pub(crate) fn record_node_strings(node: P<Node>, strs: &mut StringTable) -> u32 
             strs.add(node.as_private_identifier().text(), node.kind(), node.pos(), node.end())
         }
         Kind::JsxText => strs.add(node.as_jsx_text().text(), node.kind(), node.pos(), node.end()),
-        Kind::JSDocText => strs.add(node.text(), node.kind(), node.pos(), node.end()),
-        Kind::JSDocLink => strs.add(node.text(), node.kind(), node.pos(), node.end()),
-        Kind::JSDocLinkPlain => strs.add(node.text(), node.kind(), node.pos(), node.end()),
-        Kind::JSDocLinkCode => strs.add(node.text(), node.kind(), node.pos(), node.end()),
+        Kind::JSDocText | Kind::JSDocLink | Kind::JSDocLinkPlain | Kind::JSDocLinkCode => {
+            strs.add(node.text(), node.kind(), node.pos(), node.end())
+        }
         k => unreachable!("record_node_strings: {k:?} is not a string node"),
     }
 }
 
 /// Go `recordExtendedData`: dispatches to the hand-written `record_extended_data_*` functions.
-pub(crate) fn record_extended_data(
-    node: P<Node>,
-    cx: &mut EncodeContext,
-) -> Result<u32, EncodeError> {
+pub fn record_extended_data(node: P<Node>, cx: &mut EncodeContext) -> Result<u32, EncodeError> {
     let offset = cx.extended_data.len() as u32;
     match node.kind() {
         Kind::StringLiteral => {
@@ -1325,7 +1322,8 @@ impl Decoder<'_> {
             | Kind::GlobalKeyword
             | Kind::OverrideKeyword
             | Kind::OfKeyword
-            | Kind::DeferKeyword => f.new_token(kind),
+            | Kind::DeferKeyword
+            | Kind::SourceKeyword => f.new_token(kind),
             Kind::QualifiedName => {
                 let mut it = ChildIter::new(child_indices);
                 let left = from_node(self.node_at_opt(it.next_if(mask, 0)))?;
@@ -2537,6 +2535,7 @@ impl Decoder<'_> {
                 let phase_modifier = match common_data & 3 {
                     1 => Kind::TypeKeyword,
                     2 => Kind::DeferKeyword,
+                    3 => Kind::SourceKeyword,
                     _ => Kind::Unknown,
                 };
                 let mut it = ChildIter::new(child_indices);

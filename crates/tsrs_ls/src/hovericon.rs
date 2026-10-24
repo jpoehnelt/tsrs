@@ -52,10 +52,12 @@ fn new_vs_image_id(id: i32) -> lsproto::VSImageId {
 // legacy (TSServer-backed) hover path uses; Corsa has no TSServer to source that mapping from, so
 // the LSP hover response must carry the equivalent icon directly.
 // hovericon.go:56
-pub(crate) fn get_vs_hover_image_id(
+pub fn get_vs_hover_image_id(
     kind: ScriptElementKind,
     modifiers: ScriptElementKindModifier,
 ) -> lsproto::VSImageId {
+    use ScriptElementKind as K;
+
     let is_private = modifiers.intersects(ScriptElementKindModifier::Private);
     let is_protected = modifiers.intersects(ScriptElementKindModifier::Protected);
 
@@ -71,14 +73,13 @@ pub(crate) fn get_vs_hover_image_id(
         }
     };
 
-    use ScriptElementKind as K;
     match kind {
         K::Warning => new_vs_image_id(IMAGE_ID_WARNING),
         K::Keyword => new_vs_image_id(IMAGE_ID_KEYWORD),
         K::ScriptElement => {
             pick(IMAGE_ID_MODULE_PRIVATE, IMAGE_ID_MODULE_PROTECTED, IMAGE_ID_MODULE_PUBLIC)
         }
-        K::PrimitiveType => new_vs_image_id(IMAGE_ID_TYPE),
+        K::PrimitiveType | K::TypeParameterElement => new_vs_image_id(IMAGE_ID_TYPE),
         K::ModuleElement => new_vs_image_id(IMAGE_ID_NAMESPACE),
         K::ConstructorImplementationElement
         | K::ClassElement
@@ -119,7 +120,6 @@ pub(crate) fn get_vs_hover_image_id(
         | K::ConstructSignatureElement => {
             pick(IMAGE_ID_METHOD_PRIVATE, IMAGE_ID_METHOD_PROTECTED, IMAGE_ID_METHOD_PUBLIC)
         }
-        K::TypeParameterElement => new_vs_image_id(IMAGE_ID_TYPE),
         K::Label => new_vs_image_id(IMAGE_ID_LABEL),
         K::Alias => new_vs_image_id(IMAGE_ID_MODULE_PUBLIC),
         _ => new_vs_image_id(IMAGE_ID_ASSEMBLY),
@@ -131,7 +131,7 @@ pub(crate) fn get_vs_hover_image_id(
 // TypeScript-VS's legacy HoverService.cs builds from TSServer's quickinfo-full response
 // (ImageElement + ClassifiedTextElement wrapped in a ContainerElement).
 // hovericon.go:133
-pub(crate) fn build_vs_hover_raw_content(
+pub fn build_vs_hover_raw_content(
     image_id: lsproto::VSImageId,
     quick_info_runs: Vec<lsproto::VSClassifiedTextRun>,
     documentation_runs: Vec<lsproto::VSClassifiedTextRun>,
@@ -141,7 +141,7 @@ pub(crate) fn build_vs_hover_raw_content(
     }
 
     let display_line = lsproto::VSContainerElement {
-        style: lsproto::VSContainerElementStyle::Wrapped,
+        style: lsproto::VSContainerElementStyle::WRAPPED,
         elements: vec![
             lsproto::VSImageElementOrClassifiedTextElementOrContainerElement {
                 image_element: Some(lsproto::VSImageElement { image_id, ..Default::default() }),
@@ -163,7 +163,7 @@ pub(crate) fn build_vs_hover_raw_content(
     }
 
     Some(lsproto::VSContainerElement {
-        style: lsproto::VSContainerElementStyle::Stacked,
+        style: lsproto::VSContainerElementStyle::STACKED,
         elements: vec![
             lsproto::VSImageElementOrClassifiedTextElementOrContainerElement {
                 container_element: Some(display_line),

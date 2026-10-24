@@ -10,7 +10,7 @@ impl CommonJSModuleTransformer {
             self.visitor().visit_node(n.condition),
             self.discarded_value_visitor().visit_node(n.incrementor),
             self.emit_context()
-                .visit_iteration_body(Some(n.statement()), &mut self.top_level_nested_visitor())
+                .visit_iteration_body(Some(n.statement()), &mut self.visitor())
                 .unwrap(),
         )
     }
@@ -24,7 +24,7 @@ impl CommonJSModuleTransformer {
             self.discarded_value_visitor().visit_node(Some(n.initializer)).unwrap(),
             self.visitor().visit_node(Some(n.expression)).unwrap(),
             self.emit_context()
-                .visit_iteration_body(Some(n.statement()), &mut self.top_level_nested_visitor())
+                .visit_iteration_body(Some(n.statement()), &mut self.visitor())
                 .unwrap(),
         )
     }
@@ -644,15 +644,16 @@ impl CommonJSModuleTransformer {
     // commonjsmodule.go:1826
     pub(crate) fn visit_call_expression(&self, node: P<Node>) -> P<Node> {
         let mut needs_rewrite = false;
-        if self.compiler_options.rewrite_relative_import_extensions.is_true() {
-            if ast::is_import_call(node) && !node.arguments().is_empty()
+        if self.compiler_options.rewrite_relative_import_extensions.is_true()
+            && (ast::is_import_call(node) && !node.arguments().is_empty()
                 || ast::is_in_js_file(node)
-                    && ast::is_require_call(node, false /*requireStringLiteralLikeArgument*/)
-            {
-                needs_rewrite = true;
-            }
+                    && ast::is_require_call(node, false /*requireStringLiteralLikeArgument*/))
+        {
+            needs_rewrite = true;
         }
-        if ast::is_import_call(node) && self.should_transform_import_call() {
+        if node.expression().unwrap().kind() == Kind::ImportKeyword
+            && self.should_transform_import_call()
+        {
             return self.visit_import_call_expression(node, needs_rewrite);
         }
         if needs_rewrite {
@@ -698,7 +699,7 @@ impl CommonJSModuleTransformer {
 
     // commonjsmodule.go:1872
     fn visit_import_call_expression(&self, node: P<Node>, rewrite_or_shim: bool) -> P<Node> {
-        if self.module_kind == ModuleKind::None && self.language_version >= ScriptTarget::ES2020 {
+        if self.module_kind == ModuleKind::NONE && self.language_version >= ScriptTarget::ES2020 {
             return self.visitor().visit_each_child(Some(node)).unwrap();
         }
 
@@ -726,11 +727,15 @@ impl CommonJSModuleTransformer {
                     self.emit_context(),
                     Some(first_argument),
                     &self.compiler_options,
+                    &self.content_mapper_extension_rewrites,
+                    self.use_case_sensitive_file_names,
                 )
             } else {
                 Some(f.new_rewrite_relative_import_extensions_helper(
                     first_argument,
-                    self.compiler_options.jsx == tsrs_core::JsxEmit::Preserve,
+                    self.compiler_options.jsx == tsrs_core::JsxEmit::PRESERVE,
+                    &self.content_mapper_extension_rewrites,
+                    self.use_case_sensitive_file_names,
                 ))
             }
         } else {
@@ -842,6 +847,8 @@ impl CommonJSModuleTransformer {
                     self.emit_context(),
                     Some(first_argument),
                     &self.compiler_options,
+                    &self.content_mapper_extension_rewrites,
+                    self.use_case_sensitive_file_names,
                 )
                 .unwrap();
                 first_argument_changed = rewritten != first_argument;
@@ -849,7 +856,9 @@ impl CommonJSModuleTransformer {
             } else {
                 first_argument = f.new_rewrite_relative_import_extensions_helper(
                     first_argument,
-                    self.compiler_options.jsx == tsrs_core::JsxEmit::Preserve,
+                    self.compiler_options.jsx == tsrs_core::JsxEmit::PRESERVE,
+                    &self.content_mapper_extension_rewrites,
+                    self.use_case_sensitive_file_names,
                 );
                 first_argument_changed = true;
             }

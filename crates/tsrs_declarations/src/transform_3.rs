@@ -56,7 +56,7 @@ impl DeclarationTransformer {
         params: Option<P<NodeList>>,
     ) -> Option<P<NodeList>> {
         if !self
-            .host
+            .resolver
             .get_effective_declaration_flags(
                 self.emit_context().parse_node(Some(node)).unwrap(),
                 ModifierFlags::Private,
@@ -80,19 +80,17 @@ impl DeclarationTransformer {
             }
         }
 
-        if let Some(data) = node.function_like_data() {
-            if data.full_signature.get().is_some() {
-                if let Some(nodes) = self.resolver.create_type_parameters_of_signature_declaration(
-                    self.emit_context(),
-                    node,
-                    self.enclosing_declaration.get(),
-                    declarationEmitNodeBuilderFlags,
-                    declarationEmitInternalNodeBuilderFlags,
-                    self.tracker.get(),
-                ) {
-                    type_parameters = Some(P::new(NodeList::new(node.loc(), alloc_vec(nodes))));
-                }
-            }
+        if let Some(data) = node.function_like_data()
+            && data.full_signature.get().is_some()
+            && let Some(nodes) = self.resolver.create_type_parameters_of_signature_declaration(
+                node,
+                self.enclosing_declaration.get(),
+                DECLARATION_EMIT_NODE_BUILDER_FLAGS,
+                DECLARATION_EMIT_INTERNAL_NODE_BUILDER_FLAGS,
+                self.tracker.get(),
+            )
+        {
+            type_parameters = Some(P::new(NodeList::new(node.loc(), alloc_vec(nodes))));
         }
 
         self.state.error_name_node.set(old_error_name_node);
@@ -105,7 +103,7 @@ impl DeclarationTransformer {
     // transform.go:2399
     pub(crate) fn update_param_list(&self, node: P<Node>, params: P<NodeList>) -> P<NodeList> {
         if !self
-            .host
+            .resolver
             .get_effective_declaration_flags(
                 self.emit_context().parse_node(Some(node)).unwrap(),
                 ModifierFlags::Private,
@@ -158,7 +156,6 @@ impl DeclarationTransformer {
                 self.resolver.lock(|c| self.tracker.report_inference_fallback(c, node));
             }
             return self.resolver.create_literal_const_value(
-                self.emit_context(),
                 self.emit_context().parse_node(Some(node)).unwrap(),
                 self.tracker.get(),
             );
@@ -169,20 +166,18 @@ impl DeclarationTransformer {
     // transform.go:2447
     pub(crate) fn visit_binding_name(&self, node: P<Node>) -> P<Node> {
         match node.kind() {
-            Kind::Identifier | Kind::OmittedExpression => node,
             Kind::ArrayBindingPattern | Kind::ObjectBindingPattern => {
                 self.binding_name_visitor().visit_each_child(Some(node)).unwrap()
             }
             Kind::BindingElement => {
-                if let Some(property_name) = node.property_name() {
-                    if ast::is_computed_property_name(property_name)
-                        && ast::is_entity_name_expression(property_name.expression().unwrap())
-                    {
-                        self.check_entity_name_visibility(
-                            property_name.expression().unwrap(),
-                            self.enclosing_declaration.get(),
-                        );
-                    }
+                if let Some(property_name) = node.property_name()
+                    && ast::is_computed_property_name(property_name)
+                    && ast::is_entity_name_expression(property_name.expression().unwrap())
+                {
+                    self.check_entity_name_visibility(
+                        property_name.expression().unwrap(),
+                        self.enclosing_declaration.get(),
+                    );
                 }
                 let elem = node.as_binding_element();
                 self.factory().update_binding_element(
@@ -321,7 +316,7 @@ impl DeclarationTransformer {
         // Augmentation of export depends on import
         if self.resolver.is_import_required_by_augmentation(decl) {
             if self.state.isolated_declarations {
-                self.state.add_diagnostic(create_diagnostic_for_node(decl, &diagnostics::Declaration_emit_for_this_file_requires_preserving_this_import_for_augmentations_This_is_not_supported_with_isolatedDeclarations, &[]));
+                self.state.add_diagnostic(create_diagnostic_for_node(decl, &diagnostics::DECLARATION_EMIT_FOR_THIS_FILE_REQUIRES_PRESERVING_THIS_IMPORT_FOR_AUGMENTATIONS_THIS_IS_NOT_SUPPORTED_WITH_ISOLATED_DECLARATIONS, &[]));
             }
             return Some(self.factory().update_import_declaration(
                 decl,
@@ -434,7 +429,7 @@ impl DeclarationTransformer {
 }
 
 // transform.go:2668
-pub(crate) fn is_not_declare_modifier(mod_: P<Node>) -> bool {
+pub fn is_not_declare_modifier(mod_: P<Node>) -> bool {
     mod_.kind() != Kind::DeclareKeyword
 }
 
@@ -460,20 +455,19 @@ impl DeclarationTransformer {
     ) -> Option<P<Node>> {
         let expression = expression?;
         let (_, mut cleanup_diagnostic_context) = self.setup_diagnostic_context(expression);
-        if ast::get_assignment_declaration_kind(expression) == JSDeclarationKind::ModuleExports {
-            if self.state.current_source_file.get().unwrap().common_js_module_indicator().is_some()
-            {
-                let result = Some(self.transform_export_assignment(
-                    expression.parent().unwrap(),
-                    expression,
-                    expression.as_binary_expression().right(),
-                    true, /*isExportEquals*/
-                ));
-                if let Some(result) = result {
-                    self.cjs_export_assignment.set(Some(result));
-                    self.result_has_scope_marker.set(true);
-                    self.result_has_external_module_indicator.set(true);
-                }
+        if ast::get_assignment_declaration_kind(expression) == JSDeclarationKind::ModuleExports
+            && self.state.current_source_file.get().unwrap().common_js_module_indicator().is_some()
+        {
+            let result = Some(self.transform_export_assignment(
+                expression.parent().unwrap(),
+                expression,
+                expression.as_binary_expression().right(),
+                true, /*isExportEquals*/
+            ));
+            if let Some(result) = result {
+                self.cjs_export_assignment.set(Some(result));
+                self.result_has_scope_marker.set(true);
+                self.result_has_external_module_indicator.set(true);
             }
         }
         let result = self.cjs_export_assignment_visitor().visit_each_child(Some(expression)); // recur through the whole tree, looking for module.exports=
@@ -626,7 +620,16 @@ impl DeclarationTransformer {
 
         let (_, mut cleanup_diagnostic_context) = self.setup_diagnostic_context(node);
 
+        let preexisting_expando_has_export = self
+            .expando_members
+            .borrow()
+            .get(&host_id)
+            .is_some_and(|members| members.iter().any(|&m| ast::is_export_declaration(m)));
+
         if ast::is_identifier(node.as_binary_expression().right()) {
+            if !preexisting_expando_has_export {
+                self.add_export_modifier_to_expando_members(host_id);
+            }
             // alias-like, emit an `export {name}` or `export {name as alias}`
             let result = self.transform_binary_expression_to_export_declaration(node, export_name);
             self.expando_members.borrow_mut().entry(host_id).or_default().push(result);
@@ -634,11 +637,6 @@ impl DeclarationTransformer {
             return;
         }
 
-        let preexisting_expando_has_export = self
-            .expando_members
-            .borrow()
-            .get(&host_id)
-            .is_some_and(|members| members.iter().any(|&m| ast::is_export_declaration(m)));
         let mut var_modifiers = None;
 
         if preexisting_expando_has_export {
@@ -696,24 +694,29 @@ impl DeclarationTransformer {
                 None, /*moduleSpecifier*/
                 None, /*attributes*/
             ));
-        }
-
-        if statements.len() > 1 && !preexisting_expando_has_export {
-            // Add an `export` modifier to all existing expando members so they remain exported after the `export {}` is added
-            let members = self.expando_members.borrow().get(&host_id).cloned().unwrap_or_default();
-            for decl in members {
-                let modifier_flags = ModifierFlags::Export | ast::get_combined_modifier_flags(decl);
-                decl.as_mutable().set_modifiers(Some(self.factory().new_modifier_list(
-                    ast::create_modifiers_from_modifier_flags(modifier_flags, |k| {
-                        self.factory().new_modifier(k)
-                    }),
-                )));
+            if !preexisting_expando_has_export {
+                // Done before adding statements to expando members to keep the initial variable statement, before we rename anything, private
+                self.add_export_modifier_to_expando_members(host_id);
             }
         }
         self.expando_members.borrow_mut().entry(host_id).or_default().extend(statements);
 
         self.enclosing_declaration.set(old_enclosing);
         cleanup_diagnostic_context();
+    }
+
+    pub(crate) fn add_export_modifier_to_expando_members(&self, host_id: NodeId) {
+        // Add an `export` modifier to all existing expando members so they remain exported after the `export {}` is added
+        let members = self.expando_members.borrow().get(&host_id).cloned().unwrap_or_default();
+        for decl in members {
+            // only invoked when `self.expando_members` does not *yet* contain an `export` declaration, so no need to skip one here to prevent `export export {}`
+            let modifier_flags = ModifierFlags::Export | ast::get_combined_modifier_flags(decl);
+            decl.as_mutable().set_modifiers(Some(self.factory().new_modifier_list(
+                ast::create_modifiers_from_modifier_flags(modifier_flags, |k| {
+                    self.factory().new_modifier(k)
+                }),
+            )));
+        }
     }
 
     // transform.go:2868
@@ -881,7 +884,7 @@ impl DeclarationTransformer {
 }
 
 // transform.go:2980
-pub(crate) fn extract_expando_host_params(
+pub fn extract_expando_host_params(
     node: P<Node>,
 ) -> (Option<P<NodeList>>, Option<P<NodeList>>, Option<P<Node>>) {
     match node.kind() {

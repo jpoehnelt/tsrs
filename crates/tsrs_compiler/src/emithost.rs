@@ -5,7 +5,7 @@
 // holds the checker (`CheckerHandle`/`&mut Checker`) and lends it to `checker_slot` for the duration of the
 // transform, and the host's `Resolver` borrows it from there (see tsrs_declarations::Resolver).
 
-use tsrs_ast::{FileReference, ModifierFlags, Node, SourceFile};
+use tsrs_ast::{FileReference, Node, SourceFile};
 use tsrs_checker::CheckerSlot;
 use tsrs_core::tspath::Path;
 use tsrs_core::{P, ResolutionMode};
@@ -20,13 +20,13 @@ use crate::program::Program;
 // Every method that reaches the program escapes a scratch region (one file's emit, notes/mem-emit-regions.md): the
 // program's lazily filled caches (package.json entries, symlinks, module-name memos) outlive the file.
 
-pub(crate) struct EmitHost {
+pub struct EmitHost {
     program: &'static Program,
     emit_resolver: Resolver,
 }
 
 // emitHost.go:38 (the checker acquisition is the caller's; see above)
-pub(crate) fn new_emit_host(
+pub fn new_emit_host(
     program: &'static Program,
     emit_resolver: P<tsrs_checker::EmitResolver>,
     checker_slot: P<CheckerSlot>,
@@ -43,6 +43,11 @@ impl OutputPathsHost for EmitHost {
     fn content_mapper_extensions(&self) -> Vec<String> {
         let _outer = tsrs_core::arena::escape_scratch();
         OutputPathsHost::content_mapper_extensions(self.program)
+    }
+
+    fn content_mapper_extension_rewrites(&self) -> Vec<tsrs_core::tspath::ExtensionRewrite> {
+        let _outer = tsrs_core::arena::escape_scratch();
+        OutputPathsHost::content_mapper_extension_rewrites(self.program)
     }
 
     fn get_current_directory(&self) -> &str {
@@ -181,21 +186,6 @@ impl DeclarationEmitHost for EmitHost {
         let _outer = tsrs_core::arena::escape_scratch();
         emitter::source_file_may_be_emitted(file, self.program, force_dts_emit, false)
     }
-
-    // emitHost.go:90
-    fn get_effective_declaration_flags(
-        &self,
-        node: P<Node>,
-        flags: ModifierFlags,
-    ) -> ModifierFlags {
-        let _outer = tsrs_core::arena::escape_scratch();
-        self.get_emit_resolver().get_effective_declaration_flags(node, flags)
-    }
-
-    // emitHost.go:120 (GetEmitResolver)
-    fn get_emit_resolver(&self) -> Resolver {
-        self.emit_resolver
-    }
 }
 
 impl tsrs_transformers::EmitHost for EmitHost {
@@ -209,6 +199,11 @@ impl tsrs_transformers::EmitHost for EmitHost {
     fn source_files(&self) -> &'static [P<SourceFile>] {
         let _outer = tsrs_core::arena::escape_scratch();
         self.program.source_files()
+    }
+
+    fn content_mapper_extension_rewrites(&self) -> Vec<tsrs_core::tspath::ExtensionRewrite> {
+        let _outer = tsrs_core::arena::escape_scratch();
+        self.program.content_mapper_extension_rewrites()
     }
 
     // emitHost.go:122

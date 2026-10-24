@@ -33,4 +33,3 @@ tsrs_api.workspace = true
 tsrs_ls.workspace = true
 tsrs_lsproto.workspace = true
 tsrs_project.workspace = true
-

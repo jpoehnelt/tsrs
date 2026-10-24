@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MemberInfo, NodeType } from "./schema.ts";
 import { api, kindGuardName } from "./schema.ts";
+import { screamingSnakeCase } from "../lib/rust-names.mjs";
 
 const root = path.resolve(import.meta.dirname, "../..");
 const outPath = path.join(root, "crates/tsrs_ast/src/generated.rs");
@@ -478,7 +479,52 @@ function hasTextContent(node: NodeType): boolean {
     return schemaMembers(node).some(m => !m.isKindParam() && !m.goOnly && isStringType(rustType(m)));
 }
 
+// Later concrete node definitions override Token and other shared kind ranges.
+// This is the same canonical kind mapping used by Go's generated casts and factories.
+function canonicalKindsByNode(): Map<NodeType, string[]> {
+    const nodeByKind = new Map<string, NodeType>();
+    for (const node of nodes) {
+        for (const kind of node.allKinds()) nodeByKind.set(kind.name, node);
+    }
+    const kindsByNode = new Map<NodeType, string[]>();
+    for (const [kind, node] of nodeByKind) {
+        const kinds = kindsByNode.get(node) ?? [];
+        kinds.push(kind);
+        kindsByNode.set(node, kinds);
+    }
+    return kindsByNode;
+}
+
+// NewToken must use the canonical payload for kinds also owned by a concrete node.
+// The generated accessors dispatch through NodeDataTag, so a generic Token payload
+// would make, for example, a NullKeyword lack KeywordExpression's flow data.
+function genNewTokenFactory(token: NodeType) {
+    const tokenKinds = new Set(token.allKinds().map(kind => kind.name));
+
+    w("    pub fn new_token(&self, kind: Kind) -> P<Node> {");
+    w('        assert!(is_token_kind(kind), "Invalid token kind");');
+    w("        match kind {");
+    for (const [node, canonicalKinds] of canonicalKindsByNode()) {
+        const kinds = canonicalKinds.filter(kind => tokenKinds.has(kind));
+        if (kinds.length === 0 || node === token) continue;
+        const payload = node.name === "Identifier"
+            ? "self.new_identifier_token()"
+            : isEmptyLayout(layouts.get(node.name)!)
+            ? `self.new_empty_node(kind, NodeDataTag::${node.name})`
+            : `self.new_node(kind, ${structLiteral(layouts.get(node.name)!, new Map(), "                ")})`;
+        w(`            ${kinds.map(kind => `Kind::${kind}`).join(" | ")} => ${payload},`);
+    }
+    w("            _ => self.new_empty_node(kind, NodeDataTag::Token),");
+    w("        }");
+    w("    }");
+    w();
+}
+
 function genNewFactory(node: NodeType) {
+    if (node.name === "Token") {
+        genNewTokenFactory(node);
+        return;
+    }
     if (HAND_WRITTEN_DATA.has(node.name)) return;
     const l = layouts.get(node.name)!;
     const params = factoryParams(node);
@@ -486,6 +532,11 @@ function genNewFactory(node: NodeType) {
     const flagsMembers = params.filter(p => isNodeFlagsMember(p.m));
     const emit = (fnName: string, kindName: string) => {
         w(`    pub fn ${fnName}(&self${params.map(p => `, ${p.name}: ${p.ty}`).join("")}) -> P<Node> {`);
+        if (kindMember) {
+            const kinds = canonicalKindsByNode().get(node) ?? [];
+            if (kinds.length === 0) throw new Error(`${node.name}: no canonical kinds`);
+            w(`        assert!(matches!(kind, ${kinds.map(kind => `Kind::${kind}`).join(" | ")}), "Invalid node kind for ${node.name}");`);
+        }
         const values = new Map<string, string>();
         for (const p of params) {
             if (p.m.isKindParam() || isNodeFlagsMember(p.m)) continue;
@@ -925,7 +976,7 @@ function genKindAliasGuards() {
         const fn = snake(tsName);
         w(`pub fn ${fn}(kind: Kind) -> bool {`);
         if (g.type === "range") {
-            w(`    kind >= Kind::${g.first} && kind <= Kind::${g.last}`);
+            w(`    kind >= Kind::${screamingSnakeCase(g.first)} && kind <= Kind::${screamingSnakeCase(g.last)}`);
         }
         else {
             const expanded = api.expandKindAliasMembers(g.aliasName);

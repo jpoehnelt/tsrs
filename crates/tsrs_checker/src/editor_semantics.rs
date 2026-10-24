@@ -18,7 +18,7 @@ impl Checker {
             return None;
         }
         let file = ast::get_source_file_of_node(access)?;
-        let export = file.symbol()?.exports()?.lookup(ast::InternalSymbolNameExportEquals)?;
+        let export = file.symbol()?.exports()?.lookup(ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS)?;
         let links = self.symbol_node_links.get(access);
         if let Some(symbol) = links
             .resolved_symbol
@@ -45,7 +45,7 @@ impl Checker {
             if symbol.flags().intersects(SymbolFlags::ModuleExports) {
                 let file = ast::get_source_file_of_node(node)?;
                 let export =
-                    file.symbol()?.exports()?.lookup(ast::InternalSymbolNameExportEquals)?;
+                    file.symbol()?.exports()?.lookup(ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS)?;
                 return Some(self.get_type_of_symbol(export));
             }
         }

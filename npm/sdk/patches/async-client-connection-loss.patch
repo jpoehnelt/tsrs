@@ -1,20 +1,18 @@
-tsrs patch to microsoft/TypeScript@b85298b6a81f packages/typescript/src/api/async/client.ts
-(applied by npm/sdk/sync-upstream.mjs; the pinned original is recorded in npm/tsrs/UPSTREAM.json "patchedFiles").
+tsrs patch to microsoft/TypeScript@39be28ba77f4 packages/typescript/src/api/async/client.ts
+(applied by npm/sdk/sync-upstream.mjs; the selected original is recorded in npm/tsrs/UPSTREAM.json "patchedFiles").
 
 Upstream, if the API server process dies or closes the connection while the async client is open, vscode-jsonrpc
 marks the connection closed but never settles pending responses, so in-flight and queued requests hang forever
 (with both tsgo and tsrs as the server). With this patch the client records the loss once (child "exit",
-connection close or a failed write, whichever comes first; never after close()), rejects queued requests, disposes the connection so
-in-flight requests reject, and rejects every later request, all with one Error whose message starts with
-"API server connection lost: " (the stable part) followed by a best-effort detail: the exit code/signal,
-"server closed the connection" or "writing to the server failed: ...", whichever was observed first.
-close() behaves as upstream.
+connection close or a failed write, whichever comes first; never after close()), rejects queued requests, disposes
+the connection so in-flight requests reject, and rejects every later request, all with one Error whose message
+starts with "API server connection lost: " followed by a best-effort detail. The source-109 close() timing dump
+and idempotent close lifecycle remain upstream's; a lost connection records serverTimingError and still writes the dump.
 The sync client is unchanged: its next call already throws at once, with the raw pipe error (EBADF/EPIPE)
 or "Unexpected EOF while reading from child process (...)".
-
---- a/src/api/async/client.ts
-+++ b/src/api/async/client.ts
-@@ -53,6 +53,9 @@
+--- a/target/scratch/source109/upstream.ts
++++ b/target/scratch/source109/merged.ts
+@@ -59,6 +59,9 @@ export class Client {
      private connected = false;
      private closed = false;
      private connecting: Promise<void> | undefined;
@@ -22,9 +20,9 @@ or "Unexpected EOF while reading from child process (...)".
 +    // goes away without close(); every pending and later request rejects with it instead of never settling.
 +    private failure: Error | undefined;
      private timing: TimingCollector | undefined;
-     private batchedRequests: { method: APIRequest["method"]; params: APIRequest["params"]; resolve: (value: unknown) => void; reject: (reason?: any) => void; }[] = [];
-     private nextBatch: NodeJS.Immediate | "manual" | undefined;
-@@ -112,6 +115,10 @@
+     private timingDump: TimingDump | undefined;
+     private closing: Promise<void> | undefined;
+@@ -124,6 +127,10 @@ export class Client {
              const writer = new StreamMessageWriter(this.process.stdin!);
              this.connection = createMessageConnection(reader, writer);
              this.registerFSCallbacks(this.connection, options.fs, fsConfiguration);
@@ -35,7 +33,7 @@ or "Unexpected EOF while reading from child process (...)".
              this.connection.listen();
          });
      }
-@@ -124,6 +131,7 @@
+@@ -136,6 +143,7 @@ export class Client {
                  const reader = new SocketMessageReader(this.socket!);
                  const writer = new SocketMessageWriter(this.socket!);
                  this.connection = createMessageConnection(reader, writer);
@@ -43,7 +41,7 @@ or "Unexpected EOF while reading from child process (...)".
                  this.connection.listen();
                  this.connected = true;
                  resolve();
-@@ -252,10 +260,24 @@
+@@ -312,10 +320,24 @@ export class Client {
              }
          }
          catch (error) {
@@ -69,7 +67,7 @@ or "Unexpected EOF while reading from child process (...)".
      private scheduleImmediateBatch(): void {
          if (this.nextBatch) return;
          this.nextBatch = setImmediate(this.doBatch.bind(this));
-@@ -280,6 +302,7 @@
+@@ -340,6 +362,7 @@ export class Client {
  
      async apiRequest<K extends APIRequest["method"]>(method: K, params: APIMethodInfo[K]["params"]): Promise<APIMethodInfo[K]["result"]> {
          if (this.closed) throw new Error("Client is closed");

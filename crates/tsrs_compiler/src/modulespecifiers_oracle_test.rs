@@ -1,12 +1,11 @@
 // Differential test of tsrs_modulespecifiers + `Program`'s ModuleSpecifierGenerationHost (incl. GetSymlinkCache)
 // against the Go implementation (tools/oracle/modulespecifiers). Regenerate the data with
-//   python3 tools/oracle/modulespecifiers/gen.py > crates/tsrs_compiler/testdata/modulespecifiers_oracle/scenarios.jsonl
+//   node tools/oracle/modulespecifiers/gen.mjs > crates/tsrs_compiler/testdata/modulespecifiers_oracle/scenarios.jsonl
 //   bin/tsrs-oracle-modulespecifiers < .../scenarios.jsonl > .../expected.jsonl
 
 use std::sync::Arc;
 
-use tsrs_core::collections::OrderedMap;
-use tsrs_core::json::{self, Value};
+use tsrs_core::json::{self, JsonMap, Value};
 use tsrs_core::{CompilerOptions, ModuleKind, P, Tristate};
 use tsrs_modulespecifiers as modulespecifiers;
 use tsrs_tsoptions::{self as tsoptions, ParseConfigHost};
@@ -14,12 +13,12 @@ use tsrs_vfs::{FS, bundled, vfstest};
 
 use crate::{ProgramOptions, new_compiler_host, new_program};
 
-struct parseConfigHost {
+struct ParseConfigHostImpl {
     fs: Arc<dyn FS>,
     cwd: String,
 }
 
-impl ParseConfigHost for parseConfigHost {
+impl ParseConfigHost for ParseConfigHostImpl {
     fn fs(&self) -> &dyn FS {
         &*self.fs
     }
@@ -43,7 +42,7 @@ fn str_field(v: &Value, name: &str) -> String {
 }
 
 fn object(entries: Vec<(&str, Value)>) -> Value {
-    let mut m = OrderedMap::default();
+    let mut m = JsonMap::new();
     m.extend(entries.into_iter().map(|(k, v)| (k.to_string(), v)));
     Value::Object(m)
 }
@@ -59,20 +58,20 @@ fn run(s: &Value) -> Value {
     if let Value::Object(m) = field(s, "files") {
         files.extend(m.into_iter().map(|(k, v)| {
             let Value::String(text) = v else { unreachable!() };
-            (k.clone(), vfstest::MapFile::from(text.as_str()))
+            (k.to_string(), vfstest::MapFile::from(text.as_str()))
         }));
     }
     if let Value::Object(m) = field(s, "symlinks") {
         files.extend(m.into_iter().map(|(k, v)| {
             let Value::String(target) = v else { unreachable!() };
-            (k.clone(), vfstest::symlink(target))
+            (k.to_string(), vfstest::symlink(target))
         }));
     }
     let fs: Arc<dyn FS> = Arc::new(bundled::wrap_fs(vfstest::from_map(files, case_sensitive)));
     let host =
         new_compiler_host(&cwd, std::sync::Arc::clone(&fs), &bundled::lib_path(), None, None, None);
-    let parse_host: &'static parseConfigHost =
-        Box::leak(Box::new(parseConfigHost { fs, cwd: cwd.clone() }));
+    let parse_host: &'static ParseConfigHostImpl =
+        Box::leak(Box::new(ParseConfigHostImpl { fs, cwd: cwd.clone() }));
     let (config, errors) = tsoptions::get_parsed_command_line_of_config_file(
         &str_field(s, "config"),
         Some(&CompilerOptions::default()),
@@ -144,9 +143,9 @@ fn run(s: &Value) -> Value {
                     modulespecifiers::ImportModuleSpecifierEndingPreference::Js;
             }
             let override_import_mode = match mode {
-                0 => ModuleKind::None,
-                1 => ModuleKind::CommonJS,
-                99 => ModuleKind::ESNext,
+                0 => ModuleKind::NONE,
+                1 => ModuleKind::COMMON_JS,
+                99 => ModuleKind::ES_NEXT,
                 _ => panic!("unknown mode {mode}"),
             };
             let options = program.options();

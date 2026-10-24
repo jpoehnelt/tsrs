@@ -83,7 +83,7 @@ impl LanguageService {
 
         Ok(lsproto::VSOnAutoInsertResponse {
             vs_on_auto_insert_response_item: Some(lsproto::VSOnAutoInsertResponseItem {
-                vs_text_edit_format: lsproto::InsertTextFormat::Snippet,
+                vs_text_edit_format: lsproto::InsertTextFormat::SNIPPET,
                 vs_text_edit: lsproto::TextEdit {
                     range: lsproto::Range { start: params.vs_position, end: params.vs_position },
                     // Tag names can contain `$` (valid JSX identifier characters), so

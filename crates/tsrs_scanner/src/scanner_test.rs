@@ -1,8 +1,19 @@
 use tsrs_ast::Kind;
-use tsrs_core::stringutil;
+use tsrs_core::{alloc_str, stringutil};
 
 use crate::Scanner;
 use crate::utilities::normalize_jsdoc_type_source_text;
+
+#[test]
+fn test_scan_source_keyword() {
+    let mut scanner = Scanner::new();
+    scanner.set_text("source sourceValue");
+    assert_eq!(scanner.scan(), Kind::SourceKeyword);
+    assert_eq!(crate::token_to_string(Kind::SourceKeyword), "source");
+    assert_eq!(crate::string_to_token("source"), Kind::SourceKeyword);
+    assert_eq!(scanner.scan(), Kind::Identifier);
+    assert_eq!(scanner.token_value(), "sourceValue");
+}
 
 #[test]
 fn test_scan_string_preserves_lone_surrogates() {
@@ -56,6 +67,56 @@ fn test_mark_rewind_restores_token_and_comment_directives() {
 }
 
 #[test]
+fn test_saved_state_preserves_directives_across_text_changes() {
+    let mut s = Scanner::new();
+    let text = "// @ts-ignore\na /* @ts-expect-error */ b";
+    s.set_text(text);
+    assert_eq!(s.scan(), Kind::Identifier);
+    let directive = s.comment_directives()[0];
+    let saved = s.take_state();
+    s.set_text("// @ts-expect-error\nc");
+    let temporary_start = s.mark();
+    assert_eq!(s.scan(), Kind::Identifier);
+    assert_eq!(s.comment_directives().len(), 1);
+    s.rewind(temporary_start);
+    assert_eq!(s.comment_directives().len(), 0);
+    assert_eq!(s.scan(), Kind::Identifier);
+    assert_eq!(s.comment_directives()[0].kind, tsrs_ast::CommentDirectiveKind::ExpectError);
+    let temporary = s.take_state();
+    s.set_text("d");
+    assert_eq!(s.scan(), Kind::Identifier);
+    assert_eq!(s.comment_directives().len(), 0);
+    s.set_text("// @ts-expect-error\nc");
+    s.restore_state(temporary);
+    assert_eq!(s.token_value(), "c");
+    assert_eq!(s.comment_directives().len(), 1);
+    s.set_text(text);
+    s.restore_state(saved);
+    assert_eq!(s.token_value(), "a");
+    assert_eq!(s.comment_directives().len(), 1);
+    assert_eq!(s.comment_directives()[0].loc, directive.loc);
+    assert_eq!(s.comment_directives()[0].kind, directive.kind);
+    assert_eq!(s.scan(), Kind::Identifier);
+    assert_eq!(s.token_value(), "b");
+    assert_eq!(s.comment_directives().len(), 2);
+    assert_eq!(s.comment_directives()[1].kind, tsrs_ast::CommentDirectiveKind::ExpectError);
+}
+
+#[test]
+fn test_comment_directives_scale_linearly() {
+    // Copying every preceding directive would retain over 30 GB for this input.
+    let mut source = String::from("export const values: number[] = [];\n");
+    for _ in 0..75000 {
+        source.push_str("// @ts-ignore -- note\n");
+        source.push_str("values.push(0);\n");
+    }
+    let mut s = Scanner::new();
+    s.set_text(alloc_str(&source));
+    while s.scan() != Kind::EndOfFile {}
+    assert_eq!(s.comment_directives().len(), 75000);
+}
+
+#[test]
 fn test_errors_are_buffered_in_report_order() {
     let mut s = Scanner::new();
     s.set_text("'abc\n1__2");
@@ -63,7 +124,7 @@ fn test_errors_are_buffered_in_report_order() {
     assert_eq!(s.scan(), Kind::StringLiteral);
     let errors = s.take_errors();
     assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].message.code(), tsrs_diagnostics::Unterminated_string_literal.code());
+    assert_eq!(errors[0].message.code(), tsrs_diagnostics::UNTERMINATED_STRING_LITERAL.code());
     assert_eq!((errors[0].start, errors[0].length), (4, 0));
     assert_eq!(s.scan(), Kind::NumericLiteral);
     assert_eq!(s.token_value(), "12");
@@ -71,7 +132,7 @@ fn test_errors_are_buffered_in_report_order() {
     assert_eq!(errors.len(), 1);
     assert_eq!(
         errors[0].message.code(),
-        tsrs_diagnostics::Multiple_consecutive_numeric_separators_are_not_permitted.code()
+        tsrs_diagnostics::MULTIPLE_CONSECUTIVE_NUMERIC_SEPARATORS_ARE_NOT_PERMITTED.code()
     );
     assert!(!s.has_errors());
 }

@@ -10920,7 +10920,136 @@ impl Node {
 
 impl NodeFactory {
     pub fn new_token(&self, kind: Kind) -> P<Node> {
-        self.new_empty_node(kind, NodeDataTag::Token)
+        assert!(is_token_kind(kind), "Invalid token kind");
+        match kind {
+            Kind::NumericLiteral => self.new_node(
+                kind,
+                NumericLiteral {
+                    literal_like_node_base: LiteralLikeNodeBase {
+                        text: PackedStr::new(""),
+                        token_flags: OwnedCell::new(TokenFlags::None),
+                    },
+                },
+            ),
+            Kind::BigIntLiteral => self.new_node(
+                kind,
+                BigIntLiteral {
+                    literal_like_node_base: LiteralLikeNodeBase {
+                        text: PackedStr::new(""),
+                        token_flags: OwnedCell::new(TokenFlags::None),
+                    },
+                },
+            ),
+            Kind::StringLiteral => self.new_node(
+                kind,
+                StringLiteral {
+                    literal_like_node_base: LiteralLikeNodeBase {
+                        text: PackedStr::new(""),
+                        token_flags: OwnedCell::new(TokenFlags::None),
+                    },
+                },
+            ),
+            Kind::JsxText => self.new_node(
+                kind,
+                JsxText {
+                    literal_like_node_base: LiteralLikeNodeBase {
+                        text: PackedStr::new(""),
+                        token_flags: OwnedCell::new(TokenFlags::None),
+                    },
+                    contains_only_trivia_white_spaces: false,
+                },
+            ),
+            Kind::RegularExpressionLiteral => self.new_node(
+                kind,
+                RegularExpressionLiteral {
+                    literal_like_node_base: LiteralLikeNodeBase {
+                        text: PackedStr::new(""),
+                        token_flags: OwnedCell::new(TokenFlags::None),
+                    },
+                },
+            ),
+            Kind::NoSubstitutionTemplateLiteral => self.new_node(
+                kind,
+                NoSubstitutionTemplateLiteral {
+                    template_literal_like_node_base: TemplateLiteralLikeNodeBase {
+                        literal_like_node_base: LiteralLikeNodeBase {
+                            text: PackedStr::new(""),
+                            token_flags: OwnedCell::new(TokenFlags::None),
+                        },
+                        raw_text: "",
+                        template_flags: TokenFlags::None,
+                    },
+                    declaration_base: DeclarationBase { symbol: OwnedCell::new(None) },
+                },
+            ),
+            Kind::TemplateHead => self.new_node(
+                kind,
+                TemplateHead {
+                    template_literal_like_node_base: TemplateLiteralLikeNodeBase {
+                        literal_like_node_base: LiteralLikeNodeBase {
+                            text: PackedStr::new(""),
+                            token_flags: OwnedCell::new(TokenFlags::None),
+                        },
+                        raw_text: "",
+                        template_flags: TokenFlags::None,
+                    },
+                },
+            ),
+            Kind::TemplateMiddle => self.new_node(
+                kind,
+                TemplateMiddle {
+                    template_literal_like_node_base: TemplateLiteralLikeNodeBase {
+                        literal_like_node_base: LiteralLikeNodeBase {
+                            text: PackedStr::new(""),
+                            token_flags: OwnedCell::new(TokenFlags::None),
+                        },
+                        raw_text: "",
+                        template_flags: TokenFlags::None,
+                    },
+                },
+            ),
+            Kind::TemplateTail => self.new_node(
+                kind,
+                TemplateTail {
+                    template_literal_like_node_base: TemplateLiteralLikeNodeBase {
+                        literal_like_node_base: LiteralLikeNodeBase {
+                            text: PackedStr::new(""),
+                            token_flags: OwnedCell::new(TokenFlags::None),
+                        },
+                        raw_text: "",
+                        template_flags: TokenFlags::None,
+                    },
+                },
+            ),
+            Kind::Identifier => self.new_identifier_token(),
+            Kind::PrivateIdentifier => {
+                self.new_node(kind, PrivateIdentifier { text: PackedStr::new("") })
+            }
+            Kind::FalseKeyword
+            | Kind::ImportKeyword
+            | Kind::NullKeyword
+            | Kind::SuperKeyword
+            | Kind::ThisKeyword
+            | Kind::TrueKeyword => self.new_node(
+                kind,
+                KeywordExpression {
+                    flow_node_base: FlowNodeBase { flow_node: OwnedCell::new(None) },
+                },
+            ),
+            Kind::VoidKeyword
+            | Kind::AnyKeyword
+            | Kind::BooleanKeyword
+            | Kind::IntrinsicKeyword
+            | Kind::NeverKeyword
+            | Kind::NumberKeyword
+            | Kind::ObjectKeyword
+            | Kind::StringKeyword
+            | Kind::SymbolKeyword
+            | Kind::UndefinedKeyword
+            | Kind::UnknownKeyword
+            | Kind::BigIntKeyword => self.new_empty_node(kind, NodeDataTag::KeywordTypeNode),
+            _ => self.new_empty_node(kind, NodeDataTag::Token),
+        }
     }
 
     pub fn new_private_identifier(&self, text: &'static str) -> P<Node> {
@@ -11124,6 +11253,10 @@ impl NodeFactory {
         expression: P<Node>,
         statement: P<Node>,
     ) -> P<Node> {
+        assert!(
+            matches!(kind, Kind::ForInStatement | Kind::ForOfStatement),
+            "Invalid node kind for ForInOrOfStatement"
+        );
         self.new_node(
             kind,
             ForInOrOfStatement {
@@ -11302,6 +11435,10 @@ impl NodeFactory {
         expression: Option<P<Node>>,
         statements: P<NodeList>,
     ) -> P<Node> {
+        assert!(
+            matches!(kind, Kind::CaseClause | Kind::DefaultClause),
+            "Invalid node kind for CaseOrDefaultClause"
+        );
         self.new_node(
             kind,
             CaseOrDefaultClause {
@@ -11614,6 +11751,10 @@ impl NodeFactory {
     }
 
     pub fn new_binding_pattern(&self, kind: Kind, elements: P<NodeList>) -> P<Node> {
+        assert!(
+            matches!(kind, Kind::ObjectBindingPattern | Kind::ArrayBindingPattern),
+            "Invalid node kind for BindingPattern"
+        );
         self.new_node(kind, BindingPattern { elements })
     }
 
@@ -13179,6 +13320,18 @@ impl NodeFactory {
     }
 
     pub fn new_keyword_expression(&self, kind: Kind) -> P<Node> {
+        assert!(
+            matches!(
+                kind,
+                Kind::FalseKeyword
+                    | Kind::ImportKeyword
+                    | Kind::NullKeyword
+                    | Kind::SuperKeyword
+                    | Kind::ThisKeyword
+                    | Kind::TrueKeyword
+            ),
+            "Invalid node kind for KeywordExpression"
+        );
         self.new_node(
             kind,
             KeywordExpression { flow_node_base: FlowNodeBase { flow_node: OwnedCell::new(None) } },
@@ -14230,6 +14383,24 @@ impl NodeFactory {
     }
 
     pub fn new_keyword_type_node(&self, kind: Kind) -> P<Node> {
+        assert!(
+            matches!(
+                kind,
+                Kind::VoidKeyword
+                    | Kind::AnyKeyword
+                    | Kind::BooleanKeyword
+                    | Kind::IntrinsicKeyword
+                    | Kind::NeverKeyword
+                    | Kind::NumberKeyword
+                    | Kind::ObjectKeyword
+                    | Kind::StringKeyword
+                    | Kind::SymbolKeyword
+                    | Kind::UndefinedKeyword
+                    | Kind::UnknownKeyword
+                    | Kind::BigIntKeyword
+            ),
+            "Invalid node kind for KeywordTypeNode"
+        );
         self.new_empty_node(kind, NodeDataTag::KeywordTypeNode)
     }
 
@@ -16559,6 +16730,10 @@ impl NodeFactory {
         is_name_first: bool,
         comment: Option<P<NodeList>>,
     ) -> P<Node> {
+        assert!(
+            matches!(kind, Kind::JSDocParameterTag | Kind::JSDocPropertyTag),
+            "Invalid node kind for JSDocParameterOrPropertyTag"
+        );
         self.new_node(
             kind,
             JSDocParameterOrPropertyTag {
@@ -21640,6 +21815,7 @@ pub fn is_token(node: P<Node>) -> bool {
             | Kind::OverrideKeyword
             | Kind::OfKeyword
             | Kind::DeferKeyword
+            | Kind::SourceKeyword
     )
 }
 
@@ -22467,7 +22643,7 @@ pub fn is_trivia_kind(kind: Kind) -> bool {
 }
 
 pub fn is_literal_kind(kind: Kind) -> bool {
-    kind >= Kind::FirstLiteralToken && kind <= Kind::LastLiteralToken
+    kind >= Kind::FIRST_LITERAL_TOKEN && kind <= Kind::LAST_LITERAL_TOKEN
 }
 
 pub fn is_pseudo_literal_kind(kind: Kind) -> bool {
@@ -22475,11 +22651,11 @@ pub fn is_pseudo_literal_kind(kind: Kind) -> bool {
 }
 
 pub fn is_punctuation_kind(kind: Kind) -> bool {
-    kind >= Kind::FirstPunctuation && kind <= Kind::LastPunctuation
+    kind >= Kind::FIRST_PUNCTUATION && kind <= Kind::LAST_PUNCTUATION
 }
 
 pub fn is_keyword_kind(kind: Kind) -> bool {
-    kind >= Kind::FirstKeyword && kind <= Kind::LastKeyword
+    kind >= Kind::FIRST_KEYWORD && kind <= Kind::LAST_KEYWORD
 }
 
 pub fn is_modifier_kind(kind: Kind) -> bool {
@@ -22534,7 +22710,7 @@ pub fn is_keyword_expression_kind(kind: Kind) -> bool {
 }
 
 pub fn is_token_kind(kind: Kind) -> bool {
-    kind >= Kind::FirstToken && kind <= Kind::LastToken
+    kind >= Kind::FIRST_TOKEN && kind <= Kind::LAST_TOKEN
 }
 
 pub fn is_jsx_token_kind(kind: Kind) -> bool {
@@ -22551,11 +22727,11 @@ pub fn is_jsx_token_kind(kind: Kind) -> bool {
 }
 
 pub fn is_jsdoc_node_kind(kind: Kind) -> bool {
-    kind >= Kind::FirstJSDocNode && kind <= Kind::LastJSDocNode
+    kind >= Kind::FIRST_JSDOC_NODE && kind <= Kind::LAST_JSDOC_NODE
 }
 
 pub fn is_import_phase_modifier_kind(kind: Kind) -> bool {
-    matches!(kind, Kind::TypeKeyword | Kind::DeferKeyword)
+    matches!(kind, Kind::TypeKeyword | Kind::DeferKeyword | Kind::SourceKeyword)
 }
 
 pub fn is_postfix_unary_operator(kind: Kind) -> bool {

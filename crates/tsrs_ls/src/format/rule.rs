@@ -3,7 +3,7 @@ use tsrs_ast::Kind;
 use super::*;
 
 // rule.go:5
-pub(crate) struct RuleImpl {
+pub struct RuleImpl {
     pub(crate) debug_name: &'static str,
     pub(crate) context: Vec<ContextPredicate>,
     pub(crate) action: RuleAction,
@@ -38,20 +38,20 @@ impl RuleImpl {
 
 // rule.go:28
 #[derive(Clone)]
-pub(crate) struct TokenRange {
+pub struct TokenRange {
     pub(crate) tokens: Vec<Kind>,
     pub(crate) is_specific: bool,
 }
 
 // rule.go:33
-pub(crate) struct RuleSpec {
+pub struct RuleSpec {
     pub(crate) left_token_range: TokenRange,
     pub(crate) right_token_range: TokenRange,
     pub(crate) rule: &'static RuleImpl,
 }
 
 // Go's `rule` takes `left`/`right` as `any` (ast.Kind, []ast.Kind or tokenRange); toTokenRange dispatches on the type.
-pub(crate) trait ToTokenRange {
+pub trait ToTokenRange {
     fn to_token_range(self) -> TokenRange;
 }
 
@@ -98,7 +98,7 @@ impl ToTokenRange for &TokenRange {
  * @param action a declaration of the expected whitespace
  * @param flags whether the rule deletes a line or not, defaults to no-op
  */
-pub(crate) fn rule(
+pub fn rule(
     debug_name: &'static str,
     left: impl ToTokenRange,
     right: impl ToTokenRange,
@@ -123,33 +123,33 @@ fn to_token_range(e: impl ToTokenRange) -> TokenRange {
 }
 
 // rule.go:83
-pub(crate) type ContextPredicate = &'static (dyn Fn(&FormattingContext) -> bool + Send + Sync);
+pub type ContextPredicate = &'static (dyn Fn(&FormattingContext) -> bool + Send + Sync);
 
 // rule.go:85
-pub(crate) fn any_context() -> Vec<ContextPredicate> {
+pub fn any_context() -> Vec<ContextPredicate> {
     Vec::new()
 }
 
 // rule.go:87
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct RuleAction(pub(crate) u32);
+pub struct RuleAction(pub(crate) u32);
 
 impl RuleAction {
-    pub(crate) const None: RuleAction = RuleAction(0);
-    pub(crate) const StopProcessingSpaceActions: RuleAction = RuleAction(1 << 0);
-    pub(crate) const StopProcessingTokenActions: RuleAction = RuleAction(1 << 1);
-    pub(crate) const InsertSpace: RuleAction = RuleAction(1 << 2);
-    pub(crate) const InsertNewLine: RuleAction = RuleAction(1 << 3);
-    pub(crate) const DeleteSpace: RuleAction = RuleAction(1 << 4);
-    pub(crate) const DeleteToken: RuleAction = RuleAction(1 << 5);
-    pub(crate) const InsertTrailingSemicolon: RuleAction = RuleAction(1 << 6);
+    pub(crate) const NONE: RuleAction = RuleAction(0);
+    pub(crate) const STOP_PROCESSING_SPACE_ACTIONS: RuleAction = RuleAction(1 << 0);
+    pub(crate) const STOP_PROCESSING_TOKEN_ACTIONS: RuleAction = RuleAction(1 << 1);
+    pub(crate) const INSERT_SPACE: RuleAction = RuleAction(1 << 2);
+    pub(crate) const INSERT_NEW_LINE: RuleAction = RuleAction(1 << 3);
+    pub(crate) const DELETE_SPACE: RuleAction = RuleAction(1 << 4);
+    pub(crate) const DELETE_TOKEN: RuleAction = RuleAction(1 << 5);
+    pub(crate) const INSERT_TRAILING_SEMICOLON: RuleAction = RuleAction(1 << 6);
 
-    pub(crate) const StopAction: RuleAction =
-        RuleAction(Self::StopProcessingSpaceActions.0 | Self::StopProcessingTokenActions.0);
-    pub(crate) const ModifySpaceAction: RuleAction =
-        RuleAction(Self::InsertSpace.0 | Self::InsertNewLine.0 | Self::DeleteSpace.0);
-    pub(crate) const ModifyTokenAction: RuleAction =
-        RuleAction(Self::DeleteToken.0 | Self::InsertTrailingSemicolon.0);
+    pub(crate) const STOP_ACTION: RuleAction =
+        RuleAction(Self::STOP_PROCESSING_SPACE_ACTIONS.0 | Self::STOP_PROCESSING_TOKEN_ACTIONS.0);
+    pub(crate) const MODIFY_SPACE_ACTION: RuleAction =
+        RuleAction(Self::INSERT_SPACE.0 | Self::INSERT_NEW_LINE.0 | Self::DELETE_SPACE.0);
+    pub(crate) const MODIFY_TOKEN_ACTION: RuleAction =
+        RuleAction(Self::DELETE_TOKEN.0 | Self::INSERT_TRAILING_SEMICOLON.0);
 }
 
 impl std::ops::BitAnd for RuleAction {
@@ -181,7 +181,7 @@ impl std::ops::Not for RuleAction {
 
 // rule.go:104
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RuleFlags {
+pub enum RuleFlags {
     None,
     CanDeleteNewLines,
 }

@@ -8,7 +8,7 @@
 use rustc_hash::FxHashMap;
 use tsrs_ast::RepopulateDiagnosticKind;
 use tsrs_core::collections::OrderedMap;
-use tsrs_core::json::Value;
+use tsrs_core::json::{JsonMap, Value};
 use tsrs_core::tspath::{self, ComparePathsOptions, Path};
 use tsrs_core::{CompilerOptions, ModuleKind, ResolutionMode};
 use tsrs_diagnostics::Category;
@@ -67,7 +67,7 @@ impl BuildInfoRoot {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct buildInfoFileInfoNoSignature {
+pub struct BuildInfoFileInfoNoSignature {
     pub version: String,
     pub no_signature: bool,
     pub affects_global_scope: bool,
@@ -78,7 +78,7 @@ pub struct buildInfoFileInfoNoSignature {
 //		 - undefined if FileInfo.version === FileInfo.signature
 //		 - string actual signature
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct buildInfoFileInfoWithSignature {
+pub struct BuildInfoFileInfoWithSignature {
     pub version: String,
     pub signature: String,
     pub affects_global_scope: bool,
@@ -88,14 +88,14 @@ pub struct buildInfoFileInfoWithSignature {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildInfoFileInfo {
     signature: String,
-    no_signature: Option<buildInfoFileInfoNoSignature>,
-    file_info: Option<buildInfoFileInfoWithSignature>,
+    no_signature: Option<BuildInfoFileInfoNoSignature>,
+    file_info: Option<BuildInfoFileInfoWithSignature>,
 }
 
 // buildInfo.go:98
 pub fn new_build_info_file_info(file_info: &FileInfo) -> BuildInfoFileInfo {
     if file_info.version == file_info.signature {
-        if !file_info.affects_global_scope && file_info.implied_node_format == ModuleKind::CommonJS
+        if !file_info.affects_global_scope && file_info.implied_node_format == ModuleKind::COMMON_JS
         {
             return BuildInfoFileInfo {
                 signature: file_info.signature.clone(),
@@ -104,7 +104,7 @@ pub fn new_build_info_file_info(file_info: &FileInfo) -> BuildInfoFileInfo {
         }
     } else if file_info.signature.is_empty() {
         return BuildInfoFileInfo {
-            no_signature: Some(buildInfoFileInfoNoSignature {
+            no_signature: Some(BuildInfoFileInfoNoSignature {
                 version: file_info.version.clone(),
                 no_signature: true,
                 affects_global_scope: file_info.affects_global_scope,
@@ -114,7 +114,7 @@ pub fn new_build_info_file_info(file_info: &FileInfo) -> BuildInfoFileInfo {
         };
     }
     BuildInfoFileInfo {
-        file_info: Some(buildInfoFileInfoWithSignature {
+        file_info: Some(BuildInfoFileInfoWithSignature {
             version: file_info.version.clone(),
             signature: if file_info.signature == file_info.version {
                 String::new()
@@ -136,7 +136,7 @@ impl BuildInfoFileInfo {
                 version: self.signature.clone(),
                 signature: self.signature.clone(),
                 affects_global_scope: false,
-                implied_node_format: ModuleKind::CommonJS,
+                implied_node_format: ModuleKind::COMMON_JS,
             };
         }
         if let Some(no_signature) = &self.no_signature {
@@ -192,9 +192,9 @@ impl BuildInfoFileInfo {
         if let Value::String(v_signature) = data {
             return Ok(BuildInfoFileInfo { signature: v_signature.clone(), ..Default::default() });
         }
-        let no_signature = (|| -> Result<buildInfoFileInfoNoSignature, String> {
+        let no_signature = (|| -> Result<BuildInfoFileInfoNoSignature, String> {
             let o = as_object(data)?;
-            Ok(buildInfoFileInfoNoSignature {
+            Ok(BuildInfoFileInfoNoSignature {
                 version: get_string(o, "version")?,
                 no_signature: get_bool(o, "noSignature")?,
                 affects_global_scope: get_bool(o, "affectsGlobalScope")?,
@@ -206,9 +206,9 @@ impl BuildInfoFileInfo {
                 Ok(BuildInfoFileInfo { no_signature: Some(no_signature), ..Default::default() })
             }
             _ => {
-                let file_info = (|| -> Result<buildInfoFileInfoWithSignature, String> {
+                let file_info = (|| -> Result<BuildInfoFileInfoWithSignature, String> {
                     let o = as_object(data)?;
-                    Ok(buildInfoFileInfoWithSignature {
+                    Ok(BuildInfoFileInfoWithSignature {
                         version: get_string(o, "version")?,
                         signature: get_string(o, "signature")?,
                         affects_global_scope: get_bool(o, "affectsGlobalScope")?,
@@ -652,7 +652,7 @@ pub struct BuildInfo {
     // Go marshals a non-nil empty `FileInfos` (a program without files) as `[]`; omitzero drops only nil.
     pub file_infos_non_nil: bool,
     pub file_ids_list: Vec<Vec<BuildInfoFileId>>,
-    pub options: Option<OrderedMap<String, Value>>,
+    pub options: Option<JsonMap>,
     pub referenced_map: Vec<BuildInfoReferenceMapEntry>,
     pub semantic_diagnostics_per_file: Vec<BuildInfoSemanticDiagnostic>,
     pub emit_diagnostics_per_file: Vec<BuildInfoDiagnosticsOfFile>,
@@ -926,16 +926,16 @@ impl BuildInfo {
         if let Some(entries) = &self.options {
             for (option, value) in entries {
                 let value = json_to_option_value(value);
-                if !build_info_directory.is_empty() {
-                    if let Some(result) = tsoptions::convert_option_to_absolute_path(
+                if !build_info_directory.is_empty()
+                    && let Some(result) = tsoptions::convert_option_to_absolute_path(
                         option,
                         &value,
                         &tsoptions::COMMAND_LINE_COMPILER_OPTIONS_MAP,
                         build_info_directory,
-                    ) {
-                        tsoptions::parse_compiler_options(option, &result, &mut options);
-                        continue;
-                    }
+                    )
+                {
+                    tsoptions::parse_compiler_options(option, &result, &mut options);
+                    continue;
                 }
                 tsoptions::parse_compiler_options(option, &value, &mut options);
             }
@@ -1153,16 +1153,16 @@ impl ObjWriter<'_> {
     }
     fn opt_strings(&mut self, key: &str, v: Option<&[String]>) {
         // omitzero on a slice omits nil and empty slices.
-        if let Some(v) = v {
-            if !v.is_empty() {
-                self.strings(key, v);
-            }
+        if let Some(v) = v
+            && !v.is_empty()
+        {
+            self.strings(key, v);
         }
     }
 }
 
 #[derive(Default)]
-struct Obj(OrderedMap<String, Value>);
+struct Obj(JsonMap);
 
 impl Obj {
     fn set(&mut self, key: &str, v: Value) {
@@ -1195,10 +1195,10 @@ impl Obj {
     }
     fn opt_strings(&mut self, key: &str, v: Option<&[String]>) {
         // omitzero on a slice omits nil and empty slices.
-        if let Some(v) = v {
-            if !v.is_empty() {
-                self.set(key, strings(v));
-            }
+        if let Some(v) = v
+            && !v.is_empty()
+        {
+            self.set(key, strings(v));
         }
     }
     fn done(self) -> Value {
@@ -1255,14 +1255,14 @@ fn as_uint_tuple<const N: usize>(v: &Value) -> Option<[u32; N]> {
     Some(out)
 }
 
-fn as_object(v: &Value) -> Result<&OrderedMap<String, Value>, String> {
+fn as_object(v: &Value) -> Result<&JsonMap, String> {
     match v {
         Value::Object(o) => Ok(o),
         _ => Err(format!("expected object, got {}", show(v))),
     }
 }
 
-fn get_string(o: &OrderedMap<String, Value>, key: &str) -> Result<String, String> {
+fn get_string(o: &JsonMap, key: &str) -> Result<String, String> {
     match o.get(key) {
         None | Some(Value::Null) => Ok(String::new()),
         Some(Value::String(s)) => Ok(s.clone()),
@@ -1270,7 +1270,7 @@ fn get_string(o: &OrderedMap<String, Value>, key: &str) -> Result<String, String
     }
 }
 
-fn get_bool(o: &OrderedMap<String, Value>, key: &str) -> Result<bool, String> {
+fn get_bool(o: &JsonMap, key: &str) -> Result<bool, String> {
     match o.get(key) {
         None | Some(Value::Null) => Ok(false),
         Some(Value::Bool(b)) => Ok(*b),
@@ -1278,14 +1278,14 @@ fn get_bool(o: &OrderedMap<String, Value>, key: &str) -> Result<bool, String> {
     }
 }
 
-fn get_int(o: &OrderedMap<String, Value>, key: &str) -> Result<i32, String> {
+fn get_int(o: &JsonMap, key: &str) -> Result<i32, String> {
     match o.get(key) {
         None | Some(Value::Null) => Ok(0),
         Some(v) => as_int(v).ok_or_else(|| format!("invalid {key}: {}", show(v))),
     }
 }
 
-fn get_uint(o: &OrderedMap<String, Value>, key: &str) -> Result<u32, String> {
+fn get_uint(o: &JsonMap, key: &str) -> Result<u32, String> {
     match o.get(key) {
         None | Some(Value::Null) => Ok(0),
         Some(Value::Number(n)) if n.fract() == 0.0 && *n >= 0.0 && *n <= u32::MAX as f64 => {
@@ -1296,7 +1296,7 @@ fn get_uint(o: &OrderedMap<String, Value>, key: &str) -> Result<u32, String> {
 }
 
 fn get_array<T>(
-    o: &OrderedMap<String, Value>,
+    o: &JsonMap,
     key: &str,
     f: impl Fn(&Value) -> Result<T, String>,
 ) -> Result<Vec<T>, String> {
@@ -1307,14 +1307,11 @@ fn get_array<T>(
     }
 }
 
-fn get_string_array(o: &OrderedMap<String, Value>, key: &str) -> Result<Vec<String>, String> {
+fn get_string_array(o: &JsonMap, key: &str) -> Result<Vec<String>, String> {
     Ok(get_opt_string_array(o, key)?.unwrap_or_default())
 }
 
-fn get_opt_string_array(
-    o: &OrderedMap<String, Value>,
-    key: &str,
-) -> Result<Option<Vec<String>>, String> {
+fn get_opt_string_array(o: &JsonMap, key: &str) -> Result<Option<Vec<String>>, String> {
     match o.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Array(items)) => items
@@ -1338,7 +1335,7 @@ pub fn category_to_i32(c: Category) -> i32 {
     }
 }
 
-pub(crate) fn category_from_i32(c: i32) -> Category {
+pub fn category_from_i32(c: i32) -> Category {
     match c {
         1 => Category::Error,
         2 => Category::Suggestion,
@@ -1347,27 +1344,27 @@ pub(crate) fn category_from_i32(c: i32) -> Category {
     }
 }
 
-pub(crate) fn module_kind_from_i32(v: i32) -> ModuleKind {
+pub fn module_kind_from_i32(v: i32) -> ModuleKind {
     match v {
-        1 => ModuleKind::CommonJS,
+        1 => ModuleKind::COMMON_JS,
         2 => ModuleKind::AMD,
         3 => ModuleKind::UMD,
-        4 => ModuleKind::System,
+        4 => ModuleKind::SYSTEM,
         5 => ModuleKind::ES2015,
         6 => ModuleKind::ES2020,
         7 => ModuleKind::ES2022,
-        99 => ModuleKind::ESNext,
-        100 => ModuleKind::Node16,
-        101 => ModuleKind::Node18,
-        102 => ModuleKind::Node20,
-        199 => ModuleKind::NodeNext,
-        200 => ModuleKind::Preserve,
-        _ => ModuleKind::None,
+        99 => ModuleKind::ES_NEXT,
+        100 => ModuleKind::NODE16,
+        101 => ModuleKind::NODE18,
+        102 => ModuleKind::NODE20,
+        199 => ModuleKind::NODE_NEXT,
+        200 => ModuleKind::PRESERVE,
+        _ => ModuleKind::NONE,
     }
 }
 
 // A JSON value decoded into Go `any` (float64 numbers, []any arrays, map objects).
-pub(crate) fn json_to_option_value(v: &Value) -> CompilerOptionsValue {
+pub fn json_to_option_value(v: &Value) -> CompilerOptionsValue {
     match v {
         Value::Null => CompilerOptionsValue::Null,
         Value::Bool(b) => CompilerOptionsValue::Bool(*b),
@@ -1378,7 +1375,7 @@ pub(crate) fn json_to_option_value(v: &Value) -> CompilerOptionsValue {
             CompilerOptionsValue::Array(items.iter().map(json_to_option_value).collect())
         }
         Value::Object(m) => CompilerOptionsValue::Object(
-            m.iter().map(|(k, v)| (k.clone(), json_to_option_value(v))).collect(),
+            m.iter().map(|(k, v)| (k.to_string(), json_to_option_value(v))).collect(),
         ),
     }
 }
@@ -1418,7 +1415,7 @@ mod tests {
             reports_unnecessary: true,
             ..Default::default()
         };
-        let mut options = OrderedMap::default();
+        let mut options = JsonMap::new();
         options.insert("strict".to_string(), Value::Bool(true));
         options.insert("target".to_string(), Value::Number(99.0));
         options
@@ -1437,9 +1434,9 @@ mod tests {
             tsrs_canonical_check_signature: "go4-v1:0123456789abcdef0123456789abcdef".into(),
             file_names: vec!["lib.d.ts".into(), "../src/a.ts".into(), "../src/ü \"q\".ts".into()],
             file_infos: vec![
-                info("v1", "v1", false, ModuleKind::CommonJS),
-                info("v2", "", true, ModuleKind::ESNext),
-                info("v3", "s3", false, ModuleKind::ESNext),
+                info("v1", "v1", false, ModuleKind::COMMON_JS),
+                info("v2", "", true, ModuleKind::ES_NEXT),
+                info("v3", "s3", false, ModuleKind::ES_NEXT),
             ],
             file_infos_non_nil: true,
             file_ids_list: vec![vec![1, 2], vec![3], vec![1, 2, 3, 123_456_789]],

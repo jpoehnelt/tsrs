@@ -298,51 +298,48 @@ fn unused_plans(ctx: &Context, fix: &CodeFixContext, node: P<Node>, all: bool) -
     }
     let mut result = Vec::new();
     let parameter = ast::is_parameter_declaration(parent);
-    if !parameter || can_delete_parameter(ctx, fix, parent, all) {
-        if !parameter || parent.initializer().is_none() && parameter_not_provided(ctx, fix, parent)
+    if (!parameter
+        || can_delete_parameter(ctx, fix, parent, all)
+            && parent.initializer().is_none()
+            && parameter_not_provided(ctx, fix, parent))
+        && !(all
+            && parent.kind() == Kind::BindingElement
+            && parent.parent().is_some_and(|n| {
+                n.kind() == Kind::ArrayBindingPattern
+                    && n.parent().is_some_and(|d| d.initializer().is_some())
+            }))
+    {
+        let import = matches!(
+            parent.kind(),
+            Kind::ImportClause | Kind::ImportSpecifier | Kind::NamespaceImport
+        );
+        let edit = if parent.kind() == Kind::ImportClause {
+            node
+        } else if parent.kind() == Kind::ComputedPropertyName {
+            parent.parent().unwrap()
+        } else {
+            parent
+        };
+        if !all || !ast::is_identifier(node) || symbol_references_in_file(ctx, fix, node).is_empty()
         {
-            if !(all
-                && parent.kind() == Kind::BindingElement
-                && parent.parent().is_some_and(|n| {
-                    n.kind() == Kind::ArrayBindingPattern
-                        && n.parent().is_some_and(|d| d.initializer().is_some())
-                }))
-            {
-                let import = matches!(
-                    parent.kind(),
-                    Kind::ImportClause | Kind::ImportSpecifier | Kind::NamespaceImport
-                );
-                let edit = if parent.kind() == Kind::ImportClause {
-                    node
-                } else if parent.kind() == Kind::ComputedPropertyName {
-                    parent.parent().unwrap()
-                } else {
-                    parent
-                };
-                if !all
-                    || !ast::is_identifier(node)
-                    || symbol_references_in_file(ctx, fix, node).is_empty()
-                {
-                    result.push(if import {
-                        plan(
-                            Edit::Delete(edit),
-                            "unusedIdentifier",
-                            "unusedIdentifier_deleteImports",
-                            format!("Remove unused declaration for: '{name}'"),
-                            "Delete all unused imports",
-                        )
+            result.push(if import {
+                plan(
+                    Edit::Delete(edit),
+                    "unusedIdentifier",
+                    "unusedIdentifier_deleteImports",
+                    format!("Remove unused declaration for: '{name}'"),
+                    "Delete all unused imports",
+                )
+            } else {
+                unused_delete(
+                    if !all && ast::is_identifier(node) {
+                        Edit::DeleteUnused { name: node, declaration: edit }
                     } else {
-                        unused_delete(
-                            if !all && ast::is_identifier(node) {
-                                Edit::DeleteUnused { name: node, declaration: edit }
-                            } else {
-                                Edit::Delete(edit)
-                            },
-                            format!("Remove unused declaration for: '{name}'"),
-                        )
-                    });
-                }
-            }
+                        Edit::Delete(edit)
+                    },
+                    format!("Remove unused declaration for: '{name}'"),
+                )
+            });
         }
     }
     let can_prefix = parameter
@@ -505,10 +502,9 @@ fn apply(ctx: &Context, fix: &CodeFixContext, changes: &mut change::Tracker, edi
                 if let Some(tag) =
                     jsdoc::get_jsdoc_or_tag(&mut c, n.parent(), &mut FxHashSet::default())
                         .filter(|t| t.kind() == Kind::JSDocParameterTag)
+                    && let Some(tag_name) = tag.name().filter(|t| ast::is_identifier(*t))
                 {
-                    if let Some(tag_name) = tag.name().filter(|t| ast::is_identifier(*t)) {
-                        replace(changes, tag_name);
-                    }
+                    replace(changes, tag_name);
                 }
             }
         }

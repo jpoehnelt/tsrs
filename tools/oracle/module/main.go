@@ -16,6 +16,7 @@ import (
 	"github.com/microsoft/TypeScript/tsc/internal/collections"
 	"github.com/microsoft/TypeScript/tsc/internal/core"
 	"github.com/microsoft/TypeScript/tsc/internal/module"
+	"github.com/microsoft/TypeScript/tsc/internal/tspath"
 	"github.com/microsoft/TypeScript/tsc/internal/vfs"
 	"github.com/microsoft/TypeScript/tsc/internal/vfs/vfstest"
 )
@@ -30,27 +31,27 @@ type scenario struct {
 }
 
 type options struct {
-	Module                     int                 `json:"module"`
-	ModuleResolution           int                 `json:"moduleResolution"`
-	Jsx                        int                 `json:"jsx"`
-	ResolveJsonModule          *bool               `json:"resolveJsonModule"`
-	AllowJs                    *bool               `json:"allowJs"`
-	NoDtsResolution            *bool               `json:"noDtsResolution"`
-	PreserveSymlinks           *bool               `json:"preserveSymlinks"`
-	ResolvePackageJsonExports  *bool               `json:"resolvePackageJsonExports"`
-	ResolvePackageJsonImports  *bool               `json:"resolvePackageJsonImports"`
-	AllowArbitraryExtensions   *bool               `json:"allowArbitraryExtensions"`
-	CustomConditions           []string            `json:"customConditions"`
-	ModuleSuffixes             []string            `json:"moduleSuffixes"`
-	RootDirs                   []string            `json:"rootDirs"`
-	TypeRoots                  []string            `json:"typeRoots"`
-	Types                      []string            `json:"types"`
-	Paths                      [][2]json.RawMessage `json:"paths"`
-	PathsBasePath              string              `json:"pathsBasePath"`
-	OutDir                     string              `json:"outDir"`
-	DeclarationDir             string              `json:"declarationDir"`
-	RootDir                    string              `json:"rootDir"`
-	ConfigFilePath             string              `json:"configFilePath"`
+	Module                    int                  `json:"module"`
+	ModuleResolution          int                  `json:"moduleResolution"`
+	Jsx                       int                  `json:"jsx"`
+	ResolveJsonModule         *bool                `json:"resolveJsonModule"`
+	AllowJs                   *bool                `json:"allowJs"`
+	NoDtsResolution           *bool                `json:"noDtsResolution"`
+	PreserveSymlinks          *bool                `json:"preserveSymlinks"`
+	ResolvePackageJsonExports *bool                `json:"resolvePackageJsonExports"`
+	ResolvePackageJsonImports *bool                `json:"resolvePackageJsonImports"`
+	AllowArbitraryExtensions  *bool                `json:"allowArbitraryExtensions"`
+	CustomConditions          []string             `json:"customConditions"`
+	ModuleSuffixes            []string             `json:"moduleSuffixes"`
+	RootDirs                  []string             `json:"rootDirs"`
+	TypeRoots                 []string             `json:"typeRoots"`
+	Types                     []string             `json:"types"`
+	Paths                     [][2]json.RawMessage `json:"paths"`
+	PathsBasePath             string               `json:"pathsBasePath"`
+	OutDir                    string               `json:"outDir"`
+	DeclarationDir            string               `json:"declarationDir"`
+	RootDir                   string               `json:"rootDir"`
+	ConfigFilePath            string               `json:"configFilePath"`
 }
 
 type request struct {
@@ -79,19 +80,44 @@ type result struct {
 }
 
 type output struct {
-	Name                string   `json:"name"`
-	Results             []result `json:"results"`
-	AutomaticTypes      []string `json:"automaticTypes"`
-	Error               string   `json:"error,omitempty"`
+	Name           string   `json:"name"`
+	Results        []result `json:"results"`
+	AutomaticTypes []string `json:"automaticTypes"`
+	Error          string   `json:"error,omitempty"`
 }
 
 type host struct {
 	fs  vfs.FS
-	cwd string
+	cwd tspath.RootedDirectoryPath
 }
 
-func (h *host) FS() vfs.FS                  { return h.fs }
-func (h *host) GetCurrentDirectory() string { return h.cwd }
+func (h *host) FS() vfs.FS                                      { return h.fs }
+func (h *host) GetCurrentDirectory() tspath.RootedDirectoryPath { return h.cwd }
+
+func rootedDirectory(path string, base tspath.RootedDirectoryPath) tspath.RootedDirectoryPath {
+	if path == "" {
+		return ""
+	}
+	return tspath.ToRootedDirectoryPath(path, base)
+}
+
+func rootedDirectories(paths []string, base tspath.RootedDirectoryPath) []tspath.RootedDirectoryPath {
+	if paths == nil {
+		return nil
+	}
+	result := make([]tspath.RootedDirectoryPath, len(paths))
+	for i, path := range paths {
+		result[i] = rootedDirectory(path, base)
+	}
+	return result
+}
+
+func rootedFile(path string, base tspath.RootedDirectoryPath) tspath.RootedFilePath {
+	if path == "" {
+		return ""
+	}
+	return tspath.ToRootedFilePath(path, base)
+}
 
 func tristate(b *bool) core.Tristate {
 	if b == nil {
@@ -133,7 +159,15 @@ func run(s scenario) (out output) {
 		}
 		files[path] = vfstest.Symlink(link.Symlink)
 	}
-	h := &host{fs: vfstest.FromMap(files, s.CaseSensitive), cwd: s.Cwd}
+	cwd := s.Cwd
+	if cwd == "" {
+		cwd = "/"
+	}
+	caseSensitivity := tspath.CaseInsensitive
+	if s.CaseSensitive {
+		caseSensitivity = tspath.CaseSensitive
+	}
+	h := &host{fs: vfstest.FromMap(files, caseSensitivity), cwd: tspath.RootedDirectoryPathFromAbsolute(cwd)}
 	o := s.Options
 	opts := &core.CompilerOptions{
 		Module:                    core.ModuleKind(o.Module),
@@ -148,14 +182,14 @@ func run(s scenario) (out output) {
 		AllowArbitraryExtensions:  tristate(o.AllowArbitraryExtensions),
 		CustomConditions:          o.CustomConditions,
 		ModuleSuffixes:            o.ModuleSuffixes,
-		RootDirs:                  o.RootDirs,
-		TypeRoots:                 o.TypeRoots,
+		RootDirs:                  rootedDirectories(o.RootDirs, h.cwd),
+		TypeRoots:                 rootedDirectories(o.TypeRoots, h.cwd),
 		Types:                     o.Types,
-		PathsBasePath:             o.PathsBasePath,
-		OutDir:                    o.OutDir,
-		DeclarationDir:            o.DeclarationDir,
-		RootDir:                   o.RootDir,
-		ConfigFilePath:            o.ConfigFilePath,
+		PathsBasePath:             rootedDirectory(o.PathsBasePath, h.cwd),
+		OutDir:                    rootedDirectory(o.OutDir, h.cwd),
+		DeclarationDir:            rootedDirectory(o.DeclarationDir, h.cwd),
+		RootDir:                   rootedDirectory(o.RootDir, h.cwd),
+		ConfigFilePath:            rootedFile(o.ConfigFilePath, h.cwd),
 		TraceResolution:           core.TSTrue,
 	}
 	if o.Paths != nil {
@@ -178,10 +212,10 @@ func run(s scenario) (out output) {
 		r := result{Kind: req.Kind, Name: req.Name, File: req.File, Mode: req.Mode, Diagnostics: []string{}, Traces: []string{}}
 		var traces []module.DiagAndArgs
 		if req.Kind == "module" {
-			m, t, _ := resolver.ResolveModuleName(req.Name, req.File, core.ResolutionMode(req.Mode), nil)
+			m, t, _ := resolver.ResolveModuleName(req.Name, tspath.ToRootedFilePath(req.File, h.cwd), core.ResolutionMode(req.Mode), nil)
 			traces = t
-			r.ResolvedFileName = m.ResolvedFileName
-			r.OriginalPath = m.OriginalPath
+			r.ResolvedFileName = m.ResolvedFileName.AsString()
+			r.OriginalPath = m.OriginalPath.AsString()
 			r.Extension = m.Extension
 			if m.PackageId.Name != "" {
 				r.PackageId = m.PackageId.String()
@@ -189,15 +223,15 @@ func run(s scenario) (out output) {
 			r.IsExternalLibraryImport = m.IsExternalLibraryImport
 			r.ResolvedUsingTsExtension = m.ResolvedUsingTsExtension
 			r.ResolvedUsingExtraExtensions = m.ResolvedUsingExtraExtensions
-			r.AlternateResult = m.AlternateResult
+			r.AlternateResult = m.AlternateResult.AsString()
 			for _, d := range m.ResolutionDiagnostics {
 				r.Diagnostics = append(r.Diagnostics, fmt.Sprintf("%d:%s", d.Code(), d.String()))
 			}
 		} else {
-			m, t := resolver.ResolveTypeReferenceDirective(req.Name, req.File, core.ResolutionMode(req.Mode), nil)
+			m, t := resolver.ResolveTypeReferenceDirective(req.Name, tspath.ToRootedFilePath(req.File, h.cwd), core.ResolutionMode(req.Mode), nil)
 			traces = t
-			r.ResolvedFileName = m.ResolvedFileName
-			r.OriginalPath = m.OriginalPath
+			r.ResolvedFileName = m.ResolvedFileName.AsString()
+			r.OriginalPath = m.OriginalPath.AsString()
 			if m.PackageId.Name != "" {
 				r.PackageId = m.PackageId.String()
 			}
@@ -212,7 +246,7 @@ func run(s scenario) (out output) {
 		}
 		out.Results = append(out.Results, r)
 	}
-	out.AutomaticTypes = module.GetAutomaticTypeDirectiveNames(opts, h)
+	out.AutomaticTypes = module.GetAutomaticTypeDirectiveNames(opts, resolver.BaseDirectory(), h.fs)
 	sort.Strings(out.AutomaticTypes)
 	return out
 }

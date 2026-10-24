@@ -33,6 +33,8 @@ struct GateState {
     held: bool,
     /// The request holding the gate (None when held outside a transport request).
     holder: Option<Holder>,
+    /// Acquisitions waiting on `released` (counted under this lock, so a release with none skips the wake).
+    waiters: usize,
 }
 
 #[derive(Default)]
@@ -48,14 +50,14 @@ fn lock_gates() -> std::sync::MutexGuard<'static, Option<FxHashMap<usize, Arc<Ga
 }
 
 /// Exclusive right to acquire the program's API checker; released on drop.
-pub(crate) struct ApiCheckerLease {
+pub struct ApiCheckerLease {
     key: usize,
     gate: Arc<Gate>,
 }
 
 const RESOURCE: &str = "the program's API checker";
 
-pub(crate) fn acquire(program: &'static Program) -> CheckerResult<ApiCheckerLease> {
+pub fn acquire(program: &'static Program) -> CheckerResult<ApiCheckerLease> {
     let key = std::ptr::from_ref::<Program>(program) as usize;
     let gate =
         Arc::clone(lock_gates().get_or_insert_with(FxHashMap::default).entry(key).or_default());
@@ -72,7 +74,9 @@ pub(crate) fn acquire(program: &'static Program) -> CheckerResult<ApiCheckerLeas
                 return Ok(());
             }
             let Some(cx) = tsrs_api_transport::current_request() else {
+                st.waiters += 1;
                 st = gate.released.wait(st).unwrap_or_else(std::sync::PoisonError::into_inner);
+                st.waiters -= 1;
                 continue;
             };
             let w = wait.get_or_insert_with(|| ContentionWait::new(st.holder.as_ref()));
@@ -90,11 +94,13 @@ pub(crate) fn acquire(program: &'static Program) -> CheckerResult<ApiCheckerLeas
                 });
             }
             // Re-check shortly: the holder may start or stop waiting on the client while we wait.
+            st.waiters += 1;
             st = gate
                 .released
                 .wait_timeout(st, Duration::from_millis(2))
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
+            st.waiters -= 1;
         }
     })();
     match result {
@@ -111,27 +117,30 @@ fn forget_if_unused(key: usize, gate: &Arc<Gate>) {
     // One reference in the map plus the caller's: nobody else holds or waits on this gate.
     if Arc::strong_count(gate) == 2
         && !gate.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).held
+        && let Some(map) = gates.as_mut()
     {
-        if let Some(map) = gates.as_mut() {
-            map.remove(&key);
-        }
+        map.remove(&key);
     }
 }
 
 impl Drop for ApiCheckerLease {
     fn drop(&mut self) {
-        {
+        let waiters = {
             let mut st = self.gate.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             st.held = false;
             st.holder = None;
+            st.waiters
+        };
+        // A wake is a system call even when nobody waits.
+        if waiters > 0 {
+            self.gate.released.notify_all();
         }
-        self.gate.released.notify_all();
         forget_if_unused(self.key, &self.gate);
     }
 }
 
 #[cfg(test)]
-pub(crate) fn is_tracked(program: &'static Program) -> bool {
+pub fn is_tracked(program: &'static Program) -> bool {
     lock_gates()
         .as_ref()
         .is_some_and(|m| m.contains_key(&(std::ptr::from_ref::<Program>(program) as usize)))

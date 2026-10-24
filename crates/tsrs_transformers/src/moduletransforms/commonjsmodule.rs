@@ -16,9 +16,11 @@ pub struct CommonJSModuleTransformer {
     pub module_kind: ModuleKind,
     pub language_version: ScriptTarget,
     pub current_source_file: Cell<Option<P<SourceFile>>>,
-    pub(crate) current_module_info: RefCell<Option<Rc<externalModuleInfo>>>,
+    pub(crate) current_module_info: RefCell<Option<Rc<ExternalModuleInfo>>>,
     pub parent_node: Cell<Option<P<Node>>>, // used for ancestor tracking via pushNode/popNode to detect expression identifiers
     pub current_node: Cell<Option<P<Node>>>, // used for ancestor tracking via pushNode/popNode to detect expression identifiers
+    pub content_mapper_extension_rewrites: Vec<tspath::ExtensionRewrite>,
+    pub use_case_sensitive_file_names: bool,
 }
 
 // commonjsmodule.go:32
@@ -44,6 +46,8 @@ pub fn new_common_js_module_transformer(opts: &TransformOptions) -> Option<P<Tra
         current_module_info: RefCell::new(None),
         parent_node: Cell::new(None),
         current_node: Cell::new(None),
+        content_mapper_extension_rewrites: opts.content_mapper_extension_rewrites.clone(),
+        use_case_sensitive_file_names: opts.use_case_sensitive_file_names,
     });
     let _ =
         tx.top_level_visitor.set(emit_context.new_node_visitor(Rc::new(
@@ -93,7 +97,7 @@ impl CommonJSModuleTransformer {
         self.assignment_pattern_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn module_info(&self) -> Rc<externalModuleInfo> {
+    pub(crate) fn module_info(&self) -> Rc<ExternalModuleInfo> {
         self.current_module_info.borrow().clone().unwrap()
     }
 
@@ -370,8 +374,8 @@ impl CommonJSModuleTransformer {
         // initialize all exports to `undefined`, e.g.:
         //  exports.a = exports.b = void 0;
         if !info.exported_names.is_empty() {
-            const chunkSize: usize = 50;
-            statements.extend(info.exported_names.chunks(chunkSize).map(|chunk| {
+            const CHUNK_SIZE: usize = 50;
+            statements.extend(info.exported_names.chunks(CHUNK_SIZE).map(|chunk| {
                 let mut right = f.new_void_zero_expression();
                 for &next_id in chunk {
                     let left = if next_id.kind() == Kind::StringLiteral {
@@ -673,24 +677,25 @@ impl CommonJSModuleTransformer {
             None => &mut own_seen,
         };
 
-        if let Some(name) = decl.name() {
-            if !info.export_specifiers.m.is_empty() && ast::is_identifier(name) {
-                let name = self.factory().get_declaration_name(decl);
-                let export_specifiers = info.export_specifiers.get(&name.text());
-                if !export_specifiers.is_empty() {
-                    let export_value = self.visit_expression_identifier(name);
-                    for &export_specifier in export_specifiers {
-                        let export_name = export_specifier.name().unwrap();
-                        self.append_export_statement(
-                            statements,
-                            seen,
-                            export_name,
-                            export_value,
-                            Some(export_name.loc()), /*location*/
-                            false,                   /*allowComments*/
-                            live_binding,
-                        );
-                    }
+        if let Some(name) = decl.name()
+            && !info.export_specifiers.m.is_empty()
+            && ast::is_identifier(name)
+        {
+            let name = self.factory().get_declaration_name(decl);
+            let export_specifiers = info.export_specifiers.get(&name.text());
+            if !export_specifiers.is_empty() {
+                let export_value = self.visit_expression_identifier(name);
+                for &export_specifier in export_specifiers {
+                    let export_name = export_specifier.name().unwrap();
+                    self.append_export_statement(
+                        statements,
+                        seen,
+                        export_name,
+                        export_value,
+                        Some(export_name.loc()), /*location*/
+                        false,                   /*allowComments*/
+                        live_binding,
+                    );
                 }
             }
         }

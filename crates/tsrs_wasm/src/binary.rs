@@ -5,7 +5,10 @@ use tsrs_api::{
     ApiError, ApiResult, Response,
     wire::{Obj, Params},
 };
-use tsrs_core::{collections::OrderedMap, json::Value};
+use tsrs_core::{
+    collections::OrderedMap,
+    json::{JsonMap, Value},
+};
 const MAGIC: &[u8] = b"TSRB\x01";
 const LIMIT: usize = 64 * 1024 * 1024;
 const DEPTH: usize = 128;
@@ -74,7 +77,7 @@ impl<'a> Reader<'a> {
                 if n > (self.bytes.len() - self.offset) / 5 {
                     return Err(ApiError::invalid_request("invalid map length"));
                 }
-                let mut out = OrderedMap::default();
+                let mut out = JsonMap::new();
                 for _ in 0..n {
                     let key = self.string()?;
                     if out.contains_key(&key) {

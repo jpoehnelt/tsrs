@@ -206,7 +206,7 @@ with the switch off, which is why it is not in the default build.
 - Oxc-style lightweight VFS metadata (`notes/perf-vfs-lightweight-metadata.md`): existence probes avoid constructing
   full `FileInfo`, and Linux requests only `STATX_TYPE`. Public macOS screening was -0.27% single-threaded
   instructions and -0.49% default peak RSS, below the landing bars; the Linux-only path still needs a pinned
-  `bench/count.py` run before this can be reconsidered.
+  `bench/count.mjs` run before this can be reconsidered.
 - Scanner arena string construction (notes/perf-scanner-arena-builder.md, branch
   `codex/scanner-arena-builder`): exact over 14,013 public VS Code files; parse-only heap allocations -16.8% and
   instructions about -0.10%. Abandoned growth buffers add about 0.7 MB of arena requests without changing chunk
@@ -498,6 +498,11 @@ with the switch off, which is why it is not in the default build.
   (the note has the correction used); account for that when reading those measurements. Measured and not landed there:
   `somePropertyReducesToNever`'s count map from a per-checker pool, -0.88% mui-docs / -0.83% mikro-orm instructions
   (branch `perf/property-count-pool`; landed later with notes/perf-icount-alloc.md, -0.78% there with other pools).
+- The declaration transformer's boxed closure per visited node (`setup_diagnostic_context`;
+  notes/perf-reparse-cloner.md): it runs only under `--noCheck`, which still computes declaration diagnostics
+  (55% of typeorm's `--noCheck` allocations are the transformer), never in the catalog's `--noEmit` full check
+  (no `tsrs_declarations` frame in 713,672 sampled allocations of typeorm). Nothing to take for the catalog;
+  revisit only for a `--noCheck` workload.
 - From notes/perf-icount-alloc.md (exact VM counts, locality mode, a large private monorepo at 8 checkers): the
   arguments of a pending type alias held as a `Cow` (the alias's own list when unchanged, a pooled buffer when
   changed), together with pooled lists for template-literal instantiation: +0.20%, and +0.26% with the helpers out

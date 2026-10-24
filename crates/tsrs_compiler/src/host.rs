@@ -40,7 +40,7 @@ pub trait CompilerHost: Send + Sync {
 }
 
 // host.go:35
-pub struct compilerHost {
+pub struct CompilerHostImpl {
     current_directory: String,
     fs: Arc<dyn FS>,
     default_library_path: String,
@@ -78,7 +78,7 @@ pub fn new_compiler_host(
     content_mapper_project: Option<Arc<dyn Project>>,
 ) -> Arc<dyn CompilerHost> {
     let trace = trace.unwrap_or_else(|| Box::new(|_: &'static Message, _: &[&dyn Display]| {}));
-    Arc::new(compilerHost {
+    Arc::new(CompilerHostImpl {
         current_directory: current_directory.to_string(),
         fs,
         default_library_path: default_library_path.to_string(),
@@ -114,7 +114,7 @@ pub fn get_content_mapped_source_files_with(
     Ok(files)
 }
 
-impl CompilerHost for compilerHost {
+impl CompilerHost for CompilerHostImpl {
     fn fs(&self) -> &dyn FS {
         &*self.fs
     }
@@ -181,30 +181,30 @@ impl CompilerHost for compilerHost {
         file_name: &str,
         path: Path,
     ) -> Option<P<ParsedCommandLine>> {
-        // Go passes the host itself as the `ParseConfigHost`; tsoptions keeps it for the parsed command line's
-        // lifetime, so it gets a leaked handle on the same file system and directory.
-        let sys: &'static dyn ParseConfigHost = Box::leak(Box::new(parseConfigHost {
+        // Go passes the host itself as the `ParseConfigHost`; this one borrows the same file system and directory for
+        // the parse call.
+        let sys = ParseConfigHostImpl {
             fs: Arc::clone(&self.fs),
             current_directory: self.current_directory.clone(),
-        }));
+        };
         let (command_line, _) = tsrs_tsoptions::get_parsed_command_line_of_config_file_path(
             file_name,
             path,
             None,
             None, /*optionsRaw*/
-            sys,
+            &sys,
             self.extended_config_cache.as_deref().map(|c| c as &dyn ExtendedConfigCache),
         );
         command_line.map(P::new)
     }
 }
 
-struct parseConfigHost {
+struct ParseConfigHostImpl {
     fs: Arc<dyn FS>,
     current_directory: String,
 }
 
-impl ParseConfigHost for parseConfigHost {
+impl ParseConfigHost for ParseConfigHostImpl {
     fn fs(&self) -> &dyn FS {
         &*self.fs
     }

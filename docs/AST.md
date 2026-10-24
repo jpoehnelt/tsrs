@@ -322,7 +322,7 @@ antecedents (labels) share `link`; read them with `antecedent()` / `antecedents(
 
 ## Flags, kinds, ids
 
-`Kind` (enum, `#[repr(i16)]`, `Kind::FirstKeyword`-style associated consts for range markers,
+`Kind` (enum, `#[repr(i16)]`, `Kind::FIRST_KEYWORD`-style associated consts for range markers,
 `Kind::from_i16`, `Kind::Count`), `NodeFlags`, `ModifierFlags`, `SymbolFlags`, `CheckFlags`,
 `TokenFlags` (`u32`), `FunctionFlags` (+ `get_function_flags(Option<P<Node>>)`), `FlowFlags` are
 bitflags/enums per PORTING.md (`XxxFlags::None` is the empty set). `NodeId(pub u64)`, `SymbolId(pub u64)`.

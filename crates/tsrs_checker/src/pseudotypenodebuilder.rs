@@ -18,15 +18,15 @@ impl NodeBuilderImpl {
             let ctx = self.ctx();
             if !ctx.suppress_report_inference_fallback.get() {
                 let error_nodes = t.as_pseudo_type_inferred().error_nodes;
-                if !error_nodes.is_empty() {
-                    for &n in error_nodes {
-                        ctx.tracker.get().unwrap().report_inference_fallback(c, n);
-                    }
-                } else {
+                if error_nodes.is_empty() {
                     ctx.tracker
                         .get()
                         .unwrap()
                         .report_inference_fallback(c, t.as_pseudo_type_inferred().expression);
+                } else {
+                    for &n in error_nodes {
+                        ctx.tracker.get().unwrap().report_inference_fallback(c, n);
+                    }
                 }
             }
             let old_suppress = ctx.suppress_report_inference_fallback.get();
@@ -156,10 +156,6 @@ impl NodeBuilderImpl {
                 }
             }
             PseudoTypeKind::Union => {
-                let mut res: Vec<P<Node>> = Vec::new();
-                let mut has_elided_type = false;
-                let mut has_undefined = false;
-                let members = t.as_pseudo_type_union().types;
                 fn append_type_node(
                     node: P<Node>,
                     res: &mut Vec<P<Node>>,
@@ -179,6 +175,11 @@ impl NodeBuilderImpl {
                     }
                     res.push(node);
                 }
+
+                let mut res: Vec<P<Node>> = Vec::new();
+                let mut has_elided_type = false;
+                let mut has_undefined = false;
+                let members = t.as_pseudo_type_union().types;
                 for &m in members {
                     if !c.strict_null_checks
                         && (m.kind == PseudoTypeKind::Undefined || m.kind == PseudoTypeKind::Null)
@@ -233,7 +234,7 @@ impl NodeBuilderImpl {
                     c,
                     Some(d.signature),
                     &expanded_params,
-                    signature.type_parameters.get(),
+                    signature.type_parameters(),
                     Some(signature.parameters.get()),
                     signature.mapper.get(),
                 );
@@ -303,7 +304,7 @@ impl NodeBuilderImpl {
                             c,
                             e.signature(),
                             &expanded_params,
-                            signature.type_parameters.get(),
+                            signature.type_parameters(),
                             Some(signature.parameters.get()),
                             signature.mapper.get(),
                         ));
@@ -467,10 +468,10 @@ impl NodeBuilderImpl {
         report_errors: bool,
     ) -> bool {
         // if type_ resolves to an error, we charitably assume equality, since we might be in a single-file checking mode
-        if let Some(ty) = type_ {
-            if c.is_error_type(ty) {
-                return true;
-            }
+        if let Some(ty) = type_
+            && c.is_error_type(ty)
+        {
+            return true;
         }
         // If we can easily operate on just types, we should
         let type_from_pseudo = Self::pseudo_type_to_type(c, t); // note: cannot convert complex types like objects, which must be validated separately
@@ -493,7 +494,7 @@ impl NodeBuilderImpl {
                 {
                     // does union comparison in general, since the unions may not be `==` identical due to aliasing and the like
                     if c.compare_types_identical(type_from_pseudo, undefined_stripped)
-                        == Ternary::True
+                        == Ternary::TRUE
                     {
                         return true;
                     }
@@ -509,7 +510,7 @@ impl NodeBuilderImpl {
                 && ty.flags().intersects(TypeFlags::Union)
             {
                 // handles union comparison in general, since unions may not be `==` identical due to aliasing
-                if c.compare_types_identical(type_from_pseudo, ty) == Ternary::True {
+                if c.compare_types_identical(type_from_pseudo, ty) == Ternary::TRUE {
                     return true;
                 }
             }
@@ -570,11 +571,11 @@ impl NodeBuilderImpl {
                         // Name lookup failed or returned no result; search target properties
                         // for one whose declaration name node matches the one we have
                         for &prop in target_props {
-                            if let Some(value_declaration) = prop.value_declaration() {
-                                if value_declaration.name() == Some(e.name) {
-                                    target_prop = Some(prop);
-                                    break;
-                                }
+                            if let Some(value_declaration) = prop.value_declaration()
+                                && value_declaration.name() == Some(e.name)
+                            {
+                                target_prop = Some(prop);
+                                break;
                             }
                         }
                         if target_prop.is_none() {
@@ -765,7 +766,7 @@ impl NodeBuilderImpl {
                     return false;
                 };
                 let pt = t.as_pseudo_type_single_call_signature();
-                if target_sig.type_parameters.get().len() != pt.type_parameters.len() {
+                if target_sig.type_parameters().len() != pt.type_parameters.len() {
                     if report_errors {
                         self.ctx()
                             .tracker
@@ -926,7 +927,7 @@ impl NodeBuilderImpl {
 }
 
 // pseudotypenodebuilder.go:632
-pub(crate) fn is_structural_pseudo_type(t: P<PseudoType>) -> bool {
+pub fn is_structural_pseudo_type(t: P<PseudoType>) -> bool {
     match t.kind {
         PseudoTypeKind::ObjectLiteral
         | PseudoTypeKind::Tuple
@@ -983,7 +984,7 @@ impl NodeBuilderImpl {
             };
             let predicate_type_from_node = c.get_type_from_type_node(tp_type);
             if predicate_type_from_node != predicate_t
-                && c.compare_types_identical(predicate_type_from_node, predicate_t) != Ternary::True
+                && c.compare_types_identical(predicate_type_from_node, predicate_t) != Ternary::TRUE
             {
                 return false;
             }
@@ -1016,7 +1017,12 @@ impl NodeBuilderImpl {
                 let ty = c.get_widened_type(regular);
                 Some(ty)
             }
-            PseudoTypeKind::NoResult => None, // TODO: extract type selection logic from `serializeTypeForDeclaration`, not needed for current usecases but needed if completeness becomes required
+            // TODO: extract type selection logic from `serializeTypeForDeclaration`, not needed for current usecases but needed if completeness becomes required
+            PseudoTypeKind::NoResult
+            // no simple mapping to a type, since these are structural types
+            | PseudoTypeKind::ObjectLiteral
+            | PseudoTypeKind::SingleCallSignature
+            | PseudoTypeKind::Tuple => None,
             PseudoTypeKind::MaybeConstLocation => {
                 let d = t.as_pseudo_type_maybe_const_location();
                 if c.is_const_context(d.node) {
@@ -1069,9 +1075,6 @@ impl NodeBuilderImpl {
                 let source = t.as_pseudo_type_literal().node;
                 Some(c.get_regular_type_of_expression(source)) // big shortcut, uses cached expression types where possible
             }
-            PseudoTypeKind::ObjectLiteral
-            | PseudoTypeKind::SingleCallSignature
-            | PseudoTypeKind::Tuple => None, // no simple mapping to a type, since these are structural types
         }
     }
 }

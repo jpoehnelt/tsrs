@@ -23,7 +23,7 @@ use crate::testutil::{build_options_to_json, compiler_options_to_json, write_for
 use crate::tsconfigparsing::stringify_json;
 use crate::tsoptionstest::new_vfs_parse_config_host;
 
-pub(crate) fn repo_root() -> PathBuf {
+pub fn repo_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     while !dir.join("ts-ref").exists() {
         dir = dir.parent().expect("repository root with ts-ref").to_path_buf();
@@ -31,19 +31,14 @@ pub(crate) fn repo_root() -> PathBuf {
     dir
 }
 
-pub(crate) fn reference_baseline(subfolder: &str, name: &str) -> String {
+pub fn reference_baseline(subfolder: &str, name: &str) -> String {
     let path =
         repo_root().join("ts-ref/tsc/testdata/baselines/reference").join(subfolder).join(name);
     std::fs::read_to_string(&path).unwrap_or_else(|_| "<no content>".to_string())
 }
 
 // baseline.Run: compares against the reference baseline, collecting mismatches instead of failing fast.
-pub(crate) fn check_baseline(
-    failures: &mut Vec<String>,
-    subfolder: &str,
-    name: &str,
-    actual: &str,
-) {
+pub fn check_baseline(failures: &mut Vec<String>, subfolder: &str, name: &str, actual: &str) {
     let expected = reference_baseline(subfolder, name);
     if expected != actual {
         let local =
@@ -54,7 +49,7 @@ pub(crate) fn check_baseline(
     }
 }
 
-pub(crate) struct TestCommandLineParser {
+pub struct TestCommandLineParser {
     pub(crate) file_names: Vec<String>,
     pub(crate) options: OrderedMap<String, CompilerOptionsValue>,
     pub(crate) errors: Vec<P<Diagnostic>>,
@@ -69,7 +64,7 @@ fn get_test_parse_command_line_worker_diagnostics(
     P::new(get_parse_command_line_worker_diagnostics(decls)).get()
 }
 
-pub(crate) fn parse_command_line_test_worker(
+pub fn parse_command_line_test_worker(
     decls: &[&'static CommandLineOption],
     command_line: &[String],
     fs: Option<&dyn FS>,
@@ -119,8 +114,6 @@ fn format_new_baseline(
     formatted.push(']');
     formatted.push_str("\n\nCompilerOptions::\n");
     formatted.push_str(opts);
-    // todo: watch options not implemented
-    // formatted.WriteString("WatchOptions::\n")
     formatted.push_str("\n\nFileNames::\n");
     formatted.push_str(file_names);
     formatted.push_str("\n\nErrors::\n");
@@ -149,8 +142,6 @@ fn format_new_baseline_build(
     formatted.push_str(opts);
     formatted.push_str("\n\ncompilerOptions::\n");
     formatted.push_str(compiler_opts);
-    // todo: watch options not implemented
-    // formatted.WriteString("WatchOptions::\n")
     formatted.push_str("\n\nProjects::\n");
     formatted.push_str(projects);
     formatted.push_str("\n\nErrors::\n");
@@ -297,19 +288,6 @@ fn test_command_line_parse_result() {
             "allows tsconfig only option to be set to null",
             args(&["--composite", "null", "-tsBuildInfoFile", "null", "0.ts"]),
         ),
-        // ****** Watch Options ******
-        ("parse --watchFile", args(&["--watchFile", "UseFsEvents", "0.ts"])),
-        ("parse --watchDirectory", args(&["--watchDirectory", "FixedPollingInterval", "0.ts"])),
-        ("parse --fallbackPolling", args(&["--fallbackPolling", "PriorityInterval", "0.ts"])),
-        ("parse --synchronousWatchDirectory", args(&["--synchronousWatchDirectory", "0.ts"])),
-        ("errors on missing argument to --fallbackPolling", args(&["0.ts", "--fallbackPolling"])),
-        ("parse --excludeDirectories", args(&["--excludeDirectories", "**/temp", "0.ts"])),
-        (
-            "errors on invalid excludeDirectories",
-            args(&["--excludeDirectories", "**/../*", "0.ts"]),
-        ),
-        ("parse --excludeFiles", args(&["--excludeFiles", "**/temp/*.ts", "0.ts"])),
-        ("errors on invalid excludeFiles", args(&["--excludeFiles", "**/../*", "0.ts"])),
     ];
 
     let mut failures = Vec::new();
@@ -317,6 +295,41 @@ fn test_command_line_parse_result() {
         assert_parse_result(&mut failures, "parseCommandLine", name, command_line, &[]);
     }
     assert!(failures.is_empty(), "baseline mismatches: {failures:#?}");
+}
+
+#[test]
+fn test_removed_watch_options() {
+    let host = new_vfs_parse_config_host(&[], "/project", true);
+    for option in [
+        "watchInterval",
+        "watchFile",
+        "watchDirectory",
+        "fallbackPolling",
+        "synchronousWatchDirectory",
+        "excludeDirectories",
+        "excludeFiles",
+    ] {
+        let command_line = args(&["--watch", &format!("--{option}")]);
+        let parsed = parse_command_line(&command_line, host);
+        assert!(parsed.compiler_options().unwrap().watch.is_true());
+        assert_eq!(parsed.errors.len(), 1);
+        let build = parse_build_command_line(&command_line, host);
+        assert!(build.compiler_options.watch.is_true());
+        assert_eq!(build.errors.len(), 1);
+        let output = format!(
+            "{}{}",
+            write_format_diagnostics(&parsed.errors, "\n"),
+            write_format_diagnostics(&build.errors, "\n"),
+        );
+        let mut failures = Vec::new();
+        check_baseline(
+            &mut failures,
+            "tsoptions/removedWatchOptions",
+            &format!("{option}.js"),
+            &output,
+        );
+        assert!(failures.is_empty(), "baseline mismatch for {option}");
+    }
 }
 
 #[test]
@@ -343,6 +356,18 @@ fn test_response_file_parsing() {
     let parsed = parse_command_line(&args(&["@args.txt"]), host);
     assert_eq!(parsed.errors.len(), 0);
     assert!(parsed.compiler_options().unwrap().strict.is_true());
+    assert_eq!(parsed.compiler_options().unwrap().out_dir, "/project/dist");
+
+    // Rooted path options in response files must not retain network paths.
+    let host = new_vfs_parse_config_host(
+        &[("/project/args.txt", r"--pprofDir \\server\share --outDir dist")],
+        "/project",
+        true,
+    );
+    let parsed = parse_command_line(&args(&["@args.txt"]), host);
+    assert_eq!(parsed.errors.len(), 1);
+    assert_eq!(parsed.errors[0].code(), diagnostics::NETWORK_PATH_0_IS_NOT_SUPPORTED.code());
+    assert_eq!(parsed.compiler_options().unwrap().pprof_dir, "");
     assert_eq!(parsed.compiler_options().unwrap().out_dir, "/project/dist");
 
     // cyclic response files
@@ -396,8 +421,8 @@ fn create_verify_null_for_non_null_included(
         name: "optionName",
         kind,
         is_tsconfig_only: true,
-        category: Some(&diagnostics::Backwards_Compatibility),
-        description: Some(&diagnostics::Enable_project_compilation),
+        category: Some(&diagnostics::BACKWARDS_COMPATIBILITY),
+        description: Some(&diagnostics::ENABLE_PROJECT_COMPILATION),
         default_value_description: DefaultValueDescription::None,
         ..CommandLineOption::DEFAULT
     })
@@ -520,17 +545,6 @@ fn test_parse_build_command_line() {
         ("--clean and --verbose together is invalid", args(&["--clean", "--verbose"])),
         ("--clean and --watch together is invalid", args(&["--clean", "--watch"])),
         ("--watch and --dry together is invalid", args(&["--watch", "--dry"])),
-        ("parse --watchFile", args(&["--watchFile", "UseFsEvents", "--verbose"])),
-        (
-            "parse --watchDirectory",
-            args(&["--watchDirectory", "FixedPollingInterval", "--verbose"]),
-        ),
-        ("parse --fallbackPolling", args(&["--fallbackPolling", "PriorityInterval", "--verbose"])),
-        ("parse --synchronousWatchDirectory", args(&["--synchronousWatchDirectory", "--verbose"])),
-        ("errors on missing argument", args(&["--verbose", "--fallbackPolling"])),
-        ("errors on invalid excludeDirectories", args(&["--excludeDirectories", "**/../*"])),
-        ("parse --excludeFiles", args(&["--excludeFiles", "**/temp/*.ts"])),
-        ("errors on invalid excludeFiles", args(&["--excludeFiles", "**/../*"])),
         ("parse --builders", args(&["--builders", "2"])),
         (
             "--singleThreaded and --builders together",

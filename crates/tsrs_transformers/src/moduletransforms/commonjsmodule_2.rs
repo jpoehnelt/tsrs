@@ -165,6 +165,8 @@ impl CommonJSModuleTransformer {
                     self.emit_context(),
                     Some(module_name),
                     &self.compiler_options,
+                    &self.content_mapper_extension_rewrites,
+                    self.use_case_sensitive_file_names,
                 )
                 .unwrap(),
             );
@@ -243,15 +245,15 @@ impl CommonJSModuleTransformer {
                 Some(self.get_helper_expression_for_import(node, self.create_require_call(node))),
             ));
 
-            if let Some(namespace_declaration) = namespace_declaration {
-                if ast::is_default_import(node) {
-                    variables.push(f.new_variable_declaration(
-                        namespace_declaration.name().unwrap().clone_node(f),
-                        None, /*exclamationToken*/
-                        None, /*type*/
-                        Some(f.new_generated_name_for_node(node)),
-                    ));
-                }
+            if let Some(namespace_declaration) = namespace_declaration
+                && ast::is_default_import(node)
+            {
+                variables.push(f.new_variable_declaration(
+                    namespace_declaration.name().unwrap().clone_node(f),
+                    None, /*exclamationToken*/
+                    None, /*type*/
+                    Some(f.new_generated_name_for_node(node)),
+                ));
             }
         }
 

@@ -20,6 +20,7 @@ use crate::lsutil::{self, QuotePreference, UserPreferences};
 bitflags::bitflags! {
     // codeactions_missingmemberfixer.go:18
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[expect(non_camel_case_types, reason = "Keep the upstream bitflags type name.")]
     pub(crate) struct preserveOptionalFlags: u32 {
         const Method = 1 << 0;
         const Property = 1 << 1;
@@ -28,7 +29,7 @@ bitflags::bitflags! {
 }
 
 // codeactions_missingmemberfixer.go:26
-pub(crate) struct missingMemberFixer<'a> {
+pub struct MissingMemberFixer<'a> {
     change_tracker: &'a change::Tracker,
     type_checker: &'a mut Checker,
     program: &'static Program,
@@ -42,18 +43,18 @@ pub(crate) struct missingMemberFixer<'a> {
 }
 
 // codeactions_missingmemberfixer.go:35
-pub(crate) fn new_missing_member_fixer<'a>(
+pub fn new_missing_member_fixer<'a>(
     change_tracker: &'a change::Tracker,
     program: &'static Program,
     type_checker: &'a mut Checker,
     preferences: UserPreferences,
     import_adder: Option<&'a mut (dyn ImportAdder + 'static)>,
     locale: Locale,
-) -> missingMemberFixer<'a> {
-    missingMemberFixer { change_tracker, type_checker, program, preferences, import_adder, locale }
+) -> MissingMemberFixer<'a> {
+    MissingMemberFixer { change_tracker, type_checker, program, preferences, import_adder, locale }
 }
 
-impl<'a> missingMemberFixer<'a> {
+impl<'a> MissingMemberFixer<'a> {
     fn factory(&self) -> &'a NodeFactory {
         &self.change_tracker.node_factory
     }
@@ -238,10 +239,10 @@ impl<'a> missingMemberFixer<'a> {
                 }
 
                 nodes.extend(signatures.iter().filter_map(|&signature| {
-                    if let Some(signature_declaration) = signature.declaration() {
-                        if signature_declaration.flags().intersects(NodeFlags::Ambient) {
-                            return None;
-                        }
+                    if let Some(signature_declaration) = signature.declaration()
+                        && signature_declaration.flags().intersects(NodeFlags::Ambient)
+                    {
+                        return None;
                     }
 
                     self.create_signature_declaration_from_signature(
@@ -788,7 +789,7 @@ impl<'a> missingMemberFixer<'a> {
                 factory.new_identifier("Error"),
                 None, /*typeArguments*/
                 Some(factory.new_node_list(vec![factory.new_string_literal(
-                    alloc_str(&diagnostics::Method_not_implemented.localize(&[])),
+                    alloc_str(&diagnostics::METHOD_NOT_IMPLEMENTED.localize(&[])),
                     token_flags,
                 )])),
             ))]),
@@ -798,7 +799,7 @@ impl<'a> missingMemberFixer<'a> {
 }
 
 // codeactions_missingmemberfixer.go:451
-pub(crate) fn create_dummy_parameters(
+pub fn create_dummy_parameters(
     factory: &NodeFactory,
     arg_count: usize,
     names: &[String],
@@ -849,28 +850,28 @@ pub(crate) fn create_dummy_parameters(
 }
 
 // codeactions_missingmemberfixer.go:489
-pub(crate) fn create_declaration_name(
+pub fn create_declaration_name(
     factory: &NodeFactory,
     type_checker: &Checker,
     symbol: Option<P<Symbol>>,
     declaration: Option<P<Node>>,
 ) -> Option<P<Node>> {
-    if let Some(symbol) = symbol {
-        if symbol.check_flags().intersects(CheckFlags::Mapped) {
-            let name_type = type_checker.get_name_type_of_symbol(symbol);
-            if let Some(name_type) = name_type {
-                if checker::is_type_usable_as_property_name_exported(name_type) {
-                    return Some(factory.new_identifier(alloc_str(
-                        &checker::get_property_name_from_type_exported(name_type),
-                    )));
-                }
-            }
+    if let Some(symbol) = symbol
+        && symbol.check_flags().intersects(CheckFlags::Mapped)
+    {
+        let name_type = type_checker.get_name_type_of_symbol(symbol);
+        if let Some(name_type) = name_type
+            && checker::is_type_usable_as_property_name_exported(name_type)
+        {
+            return Some(factory.new_identifier(alloc_str(
+                &checker::get_property_name_from_type_exported(name_type),
+            )));
         }
     }
-    if let Some(declaration) = declaration {
-        if let Some(name) = declaration.name() {
-            return Some(name.clone_node(factory));
-        }
+    if let Some(declaration) = declaration
+        && let Some(name) = declaration.name()
+    {
+        return Some(name.clone_node(factory));
     }
     if let Some(symbol) = symbol {
         return Some(factory.new_identifier(symbol.name()));
@@ -879,7 +880,7 @@ pub(crate) fn create_declaration_name(
 }
 
 // codeactions_missingmemberfixer.go:505
-pub(crate) fn create_property_name(
+pub fn create_property_name(
     factory: &NodeFactory,
     node: P<Node>,
     quote_preference: QuotePreference,

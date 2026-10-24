@@ -15,6 +15,7 @@ use tsrs_lsproto as lsproto;
 use tsrs_modulespecifiers::{
     self as modulespecifiers, ImportModuleSpecifierPreference, ResultKind,
 };
+use tsrs_printer::{self as printer, QuoteChar};
 use tsrs_scanner as scanner;
 
 use super::export::{Export, ExportSyntax, ModuleID};
@@ -27,7 +28,7 @@ use crate::lsutil::{self, FormatCodeSettings, QuotePreference, UserPreferences};
 
 // fix.go:30
 #[derive(Clone, Debug, Default)]
-pub(crate) struct newImportBinding {
+pub struct NewImportBinding {
     pub(crate) kind: lsproto::ImportKind,
     pub(crate) property_name: String,
     pub(crate) name: String,
@@ -53,11 +54,11 @@ impl std::ops::Deref for Fix {
 }
 
 // fix.go:45
-pub(crate) struct addToExistingImportFix {
+pub struct AddToExistingImportFix {
     pub(crate) import_clause_or_binding_pattern: P<Node>,
     // One of `defaultImport` or `namedImports` will be present
-    pub(crate) default_import: Option<newImportBinding>,
-    pub(crate) named_import: Option<newImportBinding>,
+    pub(crate) default_import: Option<NewImportBinding>,
+    pub(crate) named_import: Option<NewImportBinding>,
 }
 
 fn import_index_from_protocol(import_index: i32) -> usize {
@@ -81,16 +82,17 @@ impl Fix {
         format_options: FormatCodeSettings,
         converters: &Arc<Converters>,
         preferences: &UserPreferences,
+        include_symbol_name_in_description: bool,
     ) -> (Vec<lsproto::TextEdit>, String, bool) {
         let mut tracker =
             change::new_tracker(ctx, &compiler_options, format_options, Arc::clone(converters));
         match self.kind {
-            lsproto::AutoImportFixKind::UseNamespace => {
+            lsproto::AutoImportFixKind::USE_NAMESPACE => {
                 let description = add_namespace_qualifier(self, &mut tracker, file);
                 let (edits, safe) = file_edits(&mut tracker, file);
                 (edits, description, safe)
             }
-            lsproto::AutoImportFixKind::AddToExisting => {
+            lsproto::AutoImportFixKind::ADD_TO_EXISTING => {
                 let import_index = import_index_from_protocol(self.import_index);
                 assert!(file.imports().len() > import_index, "import index out of range");
                 let existing_fix = get_add_to_existing_import_fix(file, self);
@@ -103,11 +105,19 @@ impl Fix {
                     preferences,
                 );
                 let (edits, safe) = file_edits(&mut tracker, file);
-                (edits, diagnostics::Update_import_from_0.localize(&[&self.module_specifier]), safe)
+                if include_symbol_name_in_description {
+                    return (
+                        edits,
+                        diagnostics::IMPORT_0_FROM_1
+                            .localize(&[&self.name, &self.module_specifier]),
+                        safe,
+                    );
+                }
+                (edits, diagnostics::UPDATE_IMPORT_FROM_0.localize(&[&self.module_specifier]), safe)
             }
-            lsproto::AutoImportFixKind::AddNew => {
-                let default_import = if self.import_kind == lsproto::ImportKind::Default {
-                    Some(newImportBinding {
+            lsproto::AutoImportFixKind::ADD_NEW => {
+                let default_import = if self.import_kind == lsproto::ImportKind::DEFAULT {
+                    Some(NewImportBinding {
                         name: self.name.clone(),
                         add_as_type_only: self.add_as_type_only,
                         ..Default::default()
@@ -115,8 +125,8 @@ impl Fix {
                 } else {
                     None
                 };
-                let named_imports = if self.import_kind == lsproto::ImportKind::Named {
-                    vec![newImportBinding {
+                let named_imports = if self.import_kind == lsproto::ImportKind::NAMED {
+                    vec![NewImportBinding {
                         name: self.name.clone(),
                         add_as_type_only: self.add_as_type_only,
                         ..Default::default()
@@ -124,12 +134,12 @@ impl Fix {
                 } else {
                     Vec::new()
                 };
-                let mut namespace_like_import: Option<newImportBinding> = None;
+                let mut namespace_like_import: Option<NewImportBinding> = None;
                 // qualification := f.qualification()
-                if self.import_kind == lsproto::ImportKind::Namespace
-                    || self.import_kind == lsproto::ImportKind::CommonJS
+                if self.import_kind == lsproto::ImportKind::NAMESPACE
+                    || self.import_kind == lsproto::ImportKind::COMMON_JS
                 {
-                    namespace_like_import = Some(newImportBinding {
+                    namespace_like_import = Some(NewImportBinding {
                         kind: self.import_kind,
                         name: self.name.clone(),
                         ..Default::default()
@@ -174,9 +184,17 @@ impl Fix {
                 // 	addNamespaceQualifier(tracker, file, qualification)
                 // }
                 let (edits, safe) = file_edits(&mut tracker, file);
-                (edits, diagnostics::Add_import_from_0.localize(&[&self.module_specifier]), safe)
+                if include_symbol_name_in_description {
+                    return (
+                        edits,
+                        diagnostics::IMPORT_0_FROM_1
+                            .localize(&[&self.name, &self.module_specifier]),
+                        safe,
+                    );
+                }
+                (edits, diagnostics::ADD_IMPORT_FROM_0.localize(&[&self.module_specifier]), safe)
             }
-            lsproto::AutoImportFixKind::PromoteTypeOnly => {
+            lsproto::AutoImportFixKind::PROMOTE_TYPE_ONLY => {
                 let promoted_declaration = promote_from_type_only(
                     &mut tracker,
                     self.type_only_alias_declaration.unwrap(),
@@ -191,7 +209,7 @@ impl Fix {
                     let (edits, safe) = file_edits(&mut tracker, file);
                     return (
                         edits,
-                        diagnostics::Remove_type_from_import_of_0_from_1
+                        diagnostics::REMOVE_TYPE_FROM_IMPORT_OF_0_FROM_1
                             .localize(&[&self.name, &module_spec]),
                         safe,
                     );
@@ -200,12 +218,12 @@ impl Fix {
                 let (edits, safe) = file_edits(&mut tracker, file);
                 (
                     edits,
-                    diagnostics::Remove_type_from_import_declaration_from_0
+                    diagnostics::REMOVE_TYPE_FROM_IMPORT_DECLARATION_FROM_0
                         .localize(&[&module_spec]),
                     safe,
                 )
             }
-            lsproto::AutoImportFixKind::JsdocTypeImport => {
+            lsproto::AutoImportFixKind::JSDOC_TYPE_IMPORT => {
                 let description = add_import_type(self, file, preferences, &mut tracker);
                 let (edits, safe) = file_edits(&mut tracker, file);
                 (edits, description, safe)
@@ -231,7 +249,7 @@ fn file_edits(
 }
 
 // fix.go:137
-pub(crate) fn add_import_type(
+pub fn add_import_type(
     f: &Fix,
     file: P<SourceFile>,
     preferences: &UserPreferences,
@@ -241,17 +259,21 @@ pub(crate) fn add_import_type(
         panic!("UsagePosition must be set for JSDoc type import fix");
     };
     let quote_preference = lsutil::get_quote_preference(file, preferences);
-    let mut quote_char = "\"";
-    if quote_preference == QuotePreference::Single {
-        quote_char = "'";
-    }
-    let import_type_prefix = format!("import({}{}{}).", quote_char, f.module_specifier, quote_char);
+    let (quote_char, quote_kind) = if quote_preference == QuotePreference::Single {
+        ('\'', QuoteChar::SingleQuote)
+    } else {
+        ('"', QuoteChar::DoubleQuote)
+    };
+    let import_type_prefix = format!(
+        "import({quote_char}{}{quote_char}).",
+        printer::escape_string(&f.module_specifier, quote_kind)
+    );
     tracker.insert_text(file, usage_position, &import_type_prefix);
-    diagnostics::Change_0_to_1.localize(&[&f.name, &format!("{}{}", import_type_prefix, f.name)])
+    diagnostics::CHANGE_0_TO_1.localize(&[&f.name, &format!("{}{}", import_type_prefix, f.name)])
 }
 
 // fix.go:151
-pub(crate) fn add_namespace_qualifier(
+pub fn add_namespace_qualifier(
     f: &Fix,
     tracker: &mut change::Tracker,
     file: P<SourceFile>,
@@ -261,16 +283,13 @@ pub(crate) fn add_namespace_qualifier(
     };
     let qualified = format!("{}.{}", f.namespace_prefix, f.name);
     tracker.insert_text(file, usage_position, &format!("{}.", f.namespace_prefix));
-    diagnostics::Change_0_to_1.localize(&[&f.name, &qualified])
+    diagnostics::CHANGE_0_TO_1.localize(&[&f.name, &qualified])
 }
 
 // fix.go:160
-pub(crate) fn get_add_to_existing_import_fix(
-    file: P<SourceFile>,
-    fix: &Fix,
-) -> addToExistingImportFix {
+pub fn get_add_to_existing_import_fix(file: P<SourceFile>, fix: &Fix) -> AddToExistingImportFix {
     assert!(
-        fix.kind == lsproto::AutoImportFixKind::AddToExisting,
+        fix.kind == lsproto::AutoImportFixKind::ADD_TO_EXISTING,
         "expected add to existing import fix"
     );
     let module_specifier = file.imports()[import_index_from_protocol(fix.import_index)];
@@ -295,9 +314,9 @@ pub(crate) fn get_add_to_existing_import_fix(
         _ => panic!("expected import declaration or require call expression"),
     };
 
-    let default_import = if fix.import_kind == lsproto::ImportKind::Default {
-        Some(newImportBinding {
-            kind: lsproto::ImportKind::Default,
+    let default_import = if fix.import_kind == lsproto::ImportKind::DEFAULT {
+        Some(NewImportBinding {
+            kind: lsproto::ImportKind::DEFAULT,
             name: fix.name.clone(),
             add_as_type_only: fix.add_as_type_only,
             ..Default::default()
@@ -305,9 +324,9 @@ pub(crate) fn get_add_to_existing_import_fix(
     } else {
         None
     };
-    let named_imports = if fix.import_kind == lsproto::ImportKind::Named {
-        Some(newImportBinding {
-            kind: lsproto::ImportKind::Named,
+    let named_imports = if fix.import_kind == lsproto::ImportKind::NAMED {
+        Some(NewImportBinding {
+            kind: lsproto::ImportKind::NAMED,
             name: fix.name.clone(),
             add_as_type_only: fix.add_as_type_only,
             ..Default::default()
@@ -315,7 +334,7 @@ pub(crate) fn get_add_to_existing_import_fix(
     } else {
         None
     };
-    addToExistingImportFix {
+    AddToExistingImportFix {
         import_clause_or_binding_pattern,
         default_import,
         named_import: named_imports,
@@ -323,12 +342,12 @@ pub(crate) fn get_add_to_existing_import_fix(
 }
 
 // fix.go:200
-pub(crate) fn add_to_existing_import(
+pub fn add_to_existing_import(
     ct: &mut change::Tracker,
     file: P<SourceFile>,
     import_clause_or_binding_pattern: P<Node>,
-    default_import: Option<&newImportBinding>,
-    named_imports: &[newImportBinding],
+    default_import: Option<&NewImportBinding>,
+    named_imports: &[NewImportBinding],
     preferences: &UserPreferences,
 ) {
     match import_clause_or_binding_pattern.kind() {
@@ -360,15 +379,16 @@ pub(crate) fn add_to_existing_import(
             let promote_from_type_only = clause_is_type_only
                 && (named_imports
                     .iter()
-                    .any(|i| i.add_as_type_only == lsproto::AddAsTypeOnly::NotAllowed)
-                    || default_import
-                        .is_some_and(|i| i.add_as_type_only == lsproto::AddAsTypeOnly::NotAllowed));
+                    .any(|i| i.add_as_type_only == lsproto::AddAsTypeOnly::NOT_ALLOWED)
+                    || default_import.is_some_and(|i| {
+                        i.add_as_type_only == lsproto::AddAsTypeOnly::NOT_ALLOWED
+                    }));
 
             let mut existing_specifiers: Vec<P<Node>> = Vec::new();
-            if let Some(nb) = import_clause.named_bindings {
-                if nb.kind() == Kind::NamedImports {
-                    existing_specifiers = nb.elements().to_vec();
-                }
+            if let Some(nb) = import_clause.named_bindings
+                && nb.kind() == Kind::NamedImports
+            {
+                existing_specifiers = nb.elements().to_vec();
             }
 
             if let Some(default_import) = default_import {
@@ -534,30 +554,30 @@ fn add_element_to_binding_pattern(
         property,
     );
     let elements = binding_pattern.as_binding_pattern().elements;
-    if !elements.nodes().is_empty() {
+    if elements.nodes().is_empty() {
+        let pattern = ct.node_factory.new_binding_pattern(
+            Kind::ObjectBindingPattern,
+            ct.node_factory.new_node_list(vec![element]),
+        );
+        ct.replace_node(file, binding_pattern, pattern, None);
+    } else {
         ct.insert_node_in_list_after(
             file,
             elements.nodes()[elements.nodes().len() - 1],
             element,
             Some(elements),
         );
-    } else {
-        let pattern = ct.node_factory.new_binding_pattern(
-            Kind::ObjectBindingPattern,
-            ct.node_factory.new_node_list(vec![element]),
-        );
-        ct.replace_node(file, binding_pattern, pattern, None);
     }
 }
 
 // fix.go:353
-pub(crate) fn get_new_imports(
+pub fn get_new_imports(
     ct: &change::Tracker,
     module_specifier: &str,
     quote_preference: QuotePreference,
-    default_import: Option<&newImportBinding>,
-    named_imports: &[newImportBinding],
-    namespace_like_import: Option<&newImportBinding>, // { lsproto.importKind: lsproto.ImportKind.CommonJS | lsproto.ImportKind.Namespace; }
+    default_import: Option<&NewImportBinding>,
+    named_imports: &[NewImportBinding],
+    namespace_like_import: Option<&NewImportBinding>, // { lsproto.importKind: lsproto.ImportKind.CommonJS | lsproto.ImportKind.Namespace; }
     compiler_options: &CompilerOptions,
     preferences: &UserPreferences,
 ) -> Vec<P<Node>> {
@@ -578,10 +598,10 @@ pub(crate) fn get_new_imports(
             || (compiler_options.verbatim_module_syntax.is_true()
                 || preferences.prefer_type_only_auto_imports.is_true())
                 && default_import
-                    .is_none_or(|d| d.add_as_type_only != lsproto::AddAsTypeOnly::NotAllowed)
+                    .is_none_or(|d| d.add_as_type_only != lsproto::AddAsTypeOnly::NOT_ALLOWED)
                 && !named_imports
                     .iter()
-                    .any(|i| i.add_as_type_only == lsproto::AddAsTypeOnly::NotAllowed);
+                    .any(|i| i.add_as_type_only == lsproto::AddAsTypeOnly::NOT_ALLOWED);
 
         let default_import_node =
             default_import.map(|d| ct.node_factory.new_identifier(alloc_str(&d.name)));
@@ -612,7 +632,7 @@ pub(crate) fn get_new_imports(
     }
 
     if let Some(namespace_like_import) = namespace_like_import {
-        let declaration = if namespace_like_import.kind == lsproto::ImportKind::CommonJS {
+        let declaration = if namespace_like_import.kind == lsproto::ImportKind::COMMON_JS {
             ct.node_factory.new_import_equals_declaration(
                 None, /*modifiers*/
                 should_use_type_only(namespace_like_import.add_as_type_only, preferences),
@@ -645,13 +665,13 @@ pub(crate) fn get_new_imports(
 }
 
 // fix.go:414
-pub(crate) fn get_new_requires(
+pub fn get_new_requires(
     change_tracker: &change::Tracker,
     module_specifier: &str,
     quote_preference: QuotePreference,
-    default_import: Option<&newImportBinding>,
-    named_imports: &[newImportBinding],
-    namespace_like_import: Option<&newImportBinding>,
+    default_import: Option<&NewImportBinding>,
+    named_imports: &[NewImportBinding],
+    namespace_like_import: Option<&NewImportBinding>,
     _compiler_options: &CompilerOptions,
 ) -> Vec<P<Node>> {
     let f = &change_tracker.node_factory;
@@ -742,7 +762,7 @@ fn create_const_equals_require_declaration(
 }
 
 // fix.go:503
-pub(crate) fn insert_imports(
+pub fn insert_imports(
     ct: &mut change::Tracker,
     source_file: P<SourceFile>,
     imports: &[P<Node>],
@@ -878,7 +898,7 @@ impl View {
             // For pure types in JS files, use JSDoc import type syntax
             return vec![Arc::new(Fix {
                 auto_import_fix: lsproto::AutoImportFix {
-                    kind: lsproto::AutoImportFixKind::JsdocTypeImport,
+                    kind: lsproto::AutoImportFixKind::JSDOC_TYPE_IMPORT,
                     module_specifier,
                     name: export.name().to_string(),
                     usage_position,
@@ -915,7 +935,7 @@ impl View {
 
         fixes.push(Arc::new(Fix {
             auto_import_fix: lsproto::AutoImportFix {
-                kind: lsproto::AutoImportFixKind::AddNew,
+                kind: lsproto::AutoImportFixKind::ADD_NEW,
                 import_kind,
                 module_specifier,
                 name,
@@ -941,16 +961,16 @@ fn get_add_as_type_only(
 ) -> lsproto::AddAsTypeOnly {
     if !is_valid_type_only_use_site {
         // Can't use a type-only import if the usage is an emitting position
-        return lsproto::AddAsTypeOnly::NotAllowed;
+        return lsproto::AddAsTypeOnly::NOT_ALLOWED;
     }
     if compiler_options.verbatim_module_syntax.is_true()
         && (export.is_type_only || !export.flags.intersects(ast::SymbolFlags::Value))
         || export.is_type_only && export.flags.intersects(ast::SymbolFlags::Value)
     {
         // A type-only import is required for this symbol if under verbatimModuleSyntax and it's purely a type
-        return lsproto::AddAsTypeOnly::Required;
+        return lsproto::AddAsTypeOnly::REQUIRED;
     }
-    lsproto::AddAsTypeOnly::Allowed
+    lsproto::AddAsTypeOnly::ALLOWED
 }
 
 impl View {
@@ -967,7 +987,7 @@ impl View {
             export,
             self.program,
             false, /*forceImportKeyword*/
-        ) != lsproto::ImportKind::Named
+        ) != lsproto::ImportKind::NAMED
         {
             return None;
         }
@@ -975,7 +995,7 @@ impl View {
         let existing_imports = self.get_existing_imports();
         let matching_declarations = existing_imports
             .get(&export.module_id)
-            .map_or(&[] as &[existingImport], std::vec::Vec::as_slice);
+            .map_or(&[] as &[ExistingImport], std::vec::Vec::as_slice);
         if let Some(result) = matching_declarations.iter().find_map(|existing_import| {
             let namespace_prefix = get_namespace_like_import_text(existing_import.node);
             if namespace_prefix.is_empty() || existing_import.module_specifier.is_empty() {
@@ -983,11 +1003,11 @@ impl View {
             }
             Some(Some(Fix {
                 auto_import_fix: lsproto::AutoImportFix {
-                    kind: lsproto::AutoImportFixKind::UseNamespace,
+                    kind: lsproto::AutoImportFixKind::USE_NAMESPACE,
                     name: export.name().to_string(),
                     module_specifier: existing_import.module_specifier.clone(),
-                    import_kind: lsproto::ImportKind::Namespace,
-                    add_as_type_only: lsproto::AddAsTypeOnly::Allowed,
+                    import_kind: lsproto::ImportKind::NAMESPACE,
+                    add_as_type_only: lsproto::AddAsTypeOnly::ALLOWED,
                     import_index: import_index_to_protocol(existing_import.index),
                     usage_position: Some(usage_position),
                     namespace_prefix,
@@ -1007,21 +1027,20 @@ impl View {
 fn get_namespace_like_import_text(declaration: P<Node>) -> String {
     match declaration.kind() {
         Kind::VariableDeclaration => {
-            if let Some(name) = declaration.name() {
-                if name.kind() == Kind::Identifier {
-                    return name.text().to_string();
-                }
+            if let Some(name) = declaration.name()
+                && name.kind() == Kind::Identifier
+            {
+                return name.text().to_string();
             }
             String::new()
         }
         Kind::ImportEqualsDeclaration => declaration.name().unwrap().text().to_string(),
         Kind::JSDocImportTag | Kind::ImportDeclaration => {
-            if let Some(import_clause) = declaration.import_clause() {
-                if let Some(nb) = import_clause.as_import_clause().named_bindings {
-                    if nb.kind() == Kind::NamespaceImport {
-                        return nb.name().unwrap().text().to_string();
-                    }
-                }
+            if let Some(import_clause) = declaration.import_clause()
+                && let Some(nb) = import_clause.as_import_clause().named_bindings
+                && nb.kind() == Kind::NamespaceImport
+            {
+                return nb.name().unwrap().text().to_string();
             }
             String::new()
         }
@@ -1039,7 +1058,7 @@ impl View {
         let existing_imports = self.get_existing_imports();
         let matching_declarations = existing_imports
             .get(&export.module_id)
-            .map_or(&[] as &[existingImport], std::vec::Vec::as_slice);
+            .map_or(&[] as &[ExistingImport], std::vec::Vec::as_slice);
         if matching_declarations.is_empty() {
             return None;
         }
@@ -1058,8 +1077,8 @@ impl View {
             self.program,
             false, /*forceImportKeyword*/
         );
-        if import_kind == lsproto::ImportKind::CommonJS
-            || import_kind == lsproto::ImportKind::Namespace
+        if import_kind == lsproto::ImportKind::COMMON_JS
+            || import_kind == lsproto::ImportKind::NAMESPACE
         {
             return None;
         }
@@ -1074,13 +1093,13 @@ impl View {
             }
 
             if existing_import.node.kind() == Kind::VariableDeclaration {
-                if (import_kind == lsproto::ImportKind::Named
-                    || import_kind == lsproto::ImportKind::Default)
+                if (import_kind == lsproto::ImportKind::NAMED
+                    || import_kind == lsproto::ImportKind::DEFAULT)
                     && existing_import.node.name().unwrap().kind() == Kind::ObjectBindingPattern
                 {
                     let fix = Fix {
                         auto_import_fix: lsproto::AutoImportFix {
-                            kind: lsproto::AutoImportFixKind::AddToExisting,
+                            kind: lsproto::AutoImportFixKind::ADD_TO_EXISTING,
                             name: export.name().to_string(),
                             import_kind,
                             import_index: import_index_to_protocol(existing_import.index),
@@ -1093,7 +1112,7 @@ impl View {
                     // Variable declarations are never type-only.
                     // Give preference to putting types in existing type-only imports and avoiding conversions
                     // of import statements to/from type-only.
-                    if add_as_type_only == lsproto::AddAsTypeOnly::NotAllowed {
+                    if add_as_type_only == lsproto::AddAsTypeOnly::NOT_ALLOWED {
                         return Some(fix);
                     }
                     if best.is_none() {
@@ -1112,26 +1131,29 @@ impl View {
                 continue;
             }
             let import_clause = import_clause_node.as_import_clause();
+            if import_clause.phase_modifier() == Kind::SourceKeyword {
+                continue;
+            }
 
             let named_bindings = import_clause.named_bindings;
             // A type-only import may not have both a default and named imports, so the only way a name can
             // be added to an existing type-only import is adding a named import to existing named bindings.
             if import_clause_node.is_type_only()
-                && !(import_kind == lsproto::ImportKind::Named && named_bindings.is_some())
+                && !(import_kind == lsproto::ImportKind::NAMED && named_bindings.is_some())
             {
                 continue;
             }
 
-            if import_kind == lsproto::ImportKind::Default
+            if import_kind == lsproto::ImportKind::DEFAULT
                 && (import_clause.name().is_some() ||
                 // Cannot add a default import as type-only if the import already has named bindings
-                add_as_type_only == lsproto::AddAsTypeOnly::Required && named_bindings.is_some())
+                add_as_type_only == lsproto::AddAsTypeOnly::REQUIRED && named_bindings.is_some())
             {
                 continue;
             }
 
             // Cannot add a named import to a declaration that has a namespace import
-            if import_kind == lsproto::ImportKind::Named
+            if import_kind == lsproto::ImportKind::NAMED
                 && named_bindings.is_some_and(|nb| nb.kind() == Kind::NamespaceImport)
             {
                 continue;
@@ -1139,7 +1161,7 @@ impl View {
 
             let fix = Fix {
                 auto_import_fix: lsproto::AutoImportFix {
-                    kind: lsproto::AutoImportFixKind::AddToExisting,
+                    kind: lsproto::AutoImportFixKind::ADD_TO_EXISTING,
                     name: export.name().to_string(),
                     import_kind,
                     import_index: import_index_to_protocol(existing_import.index),
@@ -1153,8 +1175,8 @@ impl View {
             let is_type_only = import_clause_node.is_type_only();
             // Give preference to putting types in existing type-only imports and avoiding conversions
             // of import statements to/from type-only.
-            if (add_as_type_only != lsproto::AddAsTypeOnly::NotAllowed && is_type_only)
-                || (add_as_type_only == lsproto::AddAsTypeOnly::NotAllowed && !is_type_only)
+            if (add_as_type_only != lsproto::AddAsTypeOnly::NOT_ALLOWED && is_type_only)
+                || (add_as_type_only == lsproto::AddAsTypeOnly::NOT_ALLOWED && !is_type_only)
             {
                 return Some(fix);
             }
@@ -1184,29 +1206,29 @@ fn get_import_kind(
     force_import_keyword: bool,
 ) -> lsproto::ImportKind {
     if program.options().verbatim_module_syntax.is_true()
-        && program.get_emit_module_format_of_file(importing_file) == ModuleKind::CommonJS
+        && program.get_emit_module_format_of_file(importing_file) == ModuleKind::COMMON_JS
     {
-        return lsproto::ImportKind::CommonJS;
+        return lsproto::ImportKind::COMMON_JS;
     }
     match export.syntax {
         ExportSyntax::DefaultModifier | ExportSyntax::DefaultDeclaration => {
-            lsproto::ImportKind::Default
+            lsproto::ImportKind::DEFAULT
         }
         ExportSyntax::Named
         | ExportSyntax::Modifier
         | ExportSyntax::Star
         | ExportSyntax::CommonJSExportsProperty => {
             if export.syntax == ExportSyntax::Named
-                && export.export_name == ast::InternalSymbolNameDefault
+                && export.export_name == ast::INTERNAL_SYMBOL_NAME_DEFAULT
             {
-                return lsproto::ImportKind::Default;
+                return lsproto::ImportKind::DEFAULT;
             }
-            lsproto::ImportKind::Named
+            lsproto::ImportKind::NAMED
         }
         ExportSyntax::Equals | ExportSyntax::CommonJSModuleExports | ExportSyntax::UMD => {
             // export.Syntax will be ExportSyntaxEquals for named exports/properties of an export='s target.
-            if export.export_name != ast::InternalSymbolNameExportEquals {
-                return lsproto::ImportKind::Named;
+            if export.export_name != ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS {
+                return lsproto::ImportKind::NAMED;
             }
             // !!! cache this?
             if let Some(result) = importing_file.statements.nodes().iter().find_map(|&statement| {
@@ -1216,7 +1238,7 @@ fn get_import_kind(
                         statement.as_import_equals_declaration().module_reference,
                     ))
                 {
-                    return Some(lsproto::ImportKind::CommonJS);
+                    return Some(lsproto::ImportKind::COMMON_JS);
                 }
 
                 None
@@ -1232,9 +1254,9 @@ fn get_import_kind(
                 || force_import_keyword
                 || !ast::is_source_file_js(importing_file)
             {
-                return lsproto::ImportKind::Default;
+                return lsproto::ImportKind::DEFAULT;
             }
-            lsproto::ImportKind::CommonJS
+            lsproto::ImportKind::COMMON_JS
         }
         ExportSyntax::None => panic!("unhandled export syntax kind: {}", export.syntax.string()),
     }
@@ -1242,7 +1264,7 @@ fn get_import_kind(
 
 // fix.go:838
 #[derive(Clone)]
-pub(crate) struct existingImport {
+pub struct ExistingImport {
     pub(crate) node: P<Node>,
     pub(crate) module_specifier: String,
     pub(crate) index: usize,
@@ -1250,9 +1272,9 @@ pub(crate) struct existingImport {
 
 impl View {
     // fix.go:844
-    fn get_existing_imports(&self) -> Rc<FxHashMap<ModuleID, Vec<existingImport>>> {
+    fn get_existing_imports(&self) -> Rc<FxHashMap<ModuleID, Vec<ExistingImport>>> {
         Rc::clone(self.existing_imports_cell().get_or_init(|| {
-            let mut result: FxHashMap<ModuleID, Vec<existingImport>> = FxHashMap::default();
+            let mut result: FxHashMap<ModuleID, Vec<ExistingImport>> = FxHashMap::default();
 
             for (i, &module_specifier) in self.importing_file.imports().iter().enumerate() {
                 let Some(node) = ast::try_get_import_from_module_specifier(module_specifier) else {
@@ -1264,34 +1286,28 @@ impl View {
                             module_specifier,
                             None, /*importAttributesType*/
                         )
-                    {
-                        if let Some((module_id, _)) =
+                        && let Some((module_id, _)) =
                             try_get_module_id_and_file_name_of_module_symbol(module_symbol)
-                        {
-                            result.entry(module_id).or_default().push(existingImport {
-                                node: node.parent().unwrap(),
-                                module_specifier: module_specifier.text().to_string(),
-                                index: i,
-                            });
-                        }
+                    {
+                        result.entry(module_id).or_default().push(ExistingImport {
+                            node: node.parent().unwrap(),
+                            module_specifier: module_specifier.text().to_string(),
+                            index: i,
+                        });
                     }
-                } else if node.kind() == Kind::ImportDeclaration
+                } else if (node.kind() == Kind::ImportDeclaration
                     || node.kind() == Kind::ImportEqualsDeclaration
-                    || node.kind() == Kind::JSDocImportTag
-                {
-                    if let Some(module_symbol) =
+                    || node.kind() == Kind::JSDocImportTag)
+                    && let Some(module_symbol) =
                         self.checker().get_symbol_at_location_exported(module_specifier)
-                    {
-                        if let Some((module_id, _)) =
-                            try_get_module_id_and_file_name_of_module_symbol(module_symbol)
-                        {
-                            result.entry(module_id).or_default().push(existingImport {
-                                node,
-                                module_specifier: module_specifier.text().to_string(),
-                                index: i,
-                            });
-                        }
-                    }
+                    && let Some((module_id, _)) =
+                        try_get_module_id_and_file_name_of_module_symbol(module_symbol)
+                {
+                    result.entry(module_id).or_default().push(ExistingImport {
+                        node,
+                        module_specifier: module_specifier.text().to_string(),
+                        index: i,
+                    });
                 }
             }
             Rc::new(result)
@@ -1307,7 +1323,7 @@ impl View {
 // fix.go:888
 // fileSyntaxKind represents the detected module syntax of a source file.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum fileSyntaxKind {
+enum FileSyntaxKind {
     Ambiguous,
     #[expect(
         clippy::upper_case_acronyms,
@@ -1326,14 +1342,14 @@ enum fileSyntaxKind {
 // When moduleDetection is "force", ExternalModuleIndicator may be set to the
 // source file node itself rather than a genuine syntax indicator, so we fall back
 // to inspecting the file's Imports() to find actual import/export declarations.
-fn detect_syntax(file: P<SourceFile>, options: &CompilerOptions) -> fileSyntaxKind {
+fn detect_syntax(file: P<SourceFile>, options: &CompilerOptions) -> FileSyntaxKind {
     let (has_esm, has_cjs) = detect_syntax_indicators(file, options);
     if has_cjs && !has_esm {
-        fileSyntaxKind::CJS
+        FileSyntaxKind::CJS
     } else if has_esm && !has_cjs {
-        fileSyntaxKind::ESM
+        FileSyntaxKind::ESM
     } else {
-        fileSyntaxKind::Ambiguous
+        FileSyntaxKind::Ambiguous
     }
 }
 
@@ -1352,10 +1368,10 @@ fn detect_syntax_indicators(file: P<SourceFile>, options: &CompilerOptions) -> (
     // Under moduleDetection "force", ExternalModuleIndicator is set to
     // file.AsNode() when there is no genuine ESM syntax, so only trust it
     // when it points to a real statement node.
-    if let Some(indicator) = file.external_module_indicator() {
-        if indicator != file.as_node() {
-            return (true, has_cjs);
-        }
+    if let Some(indicator) = file.external_module_indicator()
+        && indicator != file.as_node()
+    {
+        return (true, has_cjs);
     }
     // Fall back to scanning Imports() for actual import/export declarations
     // (not require() calls or dynamic imports).
@@ -1365,11 +1381,11 @@ fn detect_syntax_indicators(file: P<SourceFile>, options: &CompilerOptions) -> (
         }
         let parent = imp.parent()?;
         match parent.kind() {
-            Kind::ImportDeclaration | Kind::JSImportDeclaration | Kind::ExportDeclaration => {
-                return Some((true, has_cjs));
-            }
-            Kind::ExternalModuleReference => {
-                // import x = require("...") — this is ESM-ish syntax
+            Kind::ImportDeclaration
+            | Kind::JSImportDeclaration
+            | Kind::ExportDeclaration
+            | Kind::ExternalModuleReference => {
+                // import x = require("...") is also ESM-ish syntax
                 return Some((true, has_cjs));
             }
             _ => {}
@@ -1392,16 +1408,16 @@ impl View {
 
         // 2. If the current source file is unambiguously CJS or ESM, go with that
         match detect_syntax(self.importing_file, &self.program.options()) {
-            fileSyntaxKind::CJS => return true,
-            fileSyntaxKind::ESM => return false,
-            fileSyntaxKind::Ambiguous => {}
+            FileSyntaxKind::CJS => return true,
+            FileSyntaxKind::ESM => return false,
+            FileSyntaxKind::Ambiguous => {}
         }
 
         // 3. Use the implied node format to determine CJS vs ESM
         //    TODO: consider removing `impliedNodeFormatForEmit`
         match self.program.get_implied_node_format_for_emit(self.importing_file) {
-            ModuleKind::CommonJS => return true,
-            ModuleKind::ESNext => return false,
+            ModuleKind::COMMON_JS => return true,
+            ModuleKind::ES_NEXT => return false,
             _ => {}
         }
 
@@ -1419,9 +1435,9 @@ impl View {
                 return None;
             }
             match detect_syntax(other_file, &self.program.options()) {
-                fileSyntaxKind::CJS => return Some(true),
-                fileSyntaxKind::ESM => return Some(false),
-                fileSyntaxKind::Ambiguous => {}
+                FileSyntaxKind::CJS => return Some(true),
+                FileSyntaxKind::ESM => return Some(false),
+                FileSyntaxKind::Ambiguous => {}
             }
 
             None
@@ -1436,7 +1452,7 @@ impl View {
 
 // fix.go:996
 fn needs_type_only(add_as_type_only: lsproto::AddAsTypeOnly) -> bool {
-    add_as_type_only == lsproto::AddAsTypeOnly::Required
+    add_as_type_only == lsproto::AddAsTypeOnly::REQUIRED
 }
 
 // fix.go:1000
@@ -1445,7 +1461,7 @@ fn should_use_type_only(
     preferences: &UserPreferences,
 ) -> bool {
     needs_type_only(add_as_type_only)
-        || add_as_type_only != lsproto::AddAsTypeOnly::NotAllowed
+        || add_as_type_only != lsproto::AddAsTypeOnly::NOT_ALLOWED
             && preferences.prefer_type_only_auto_imports.is_true()
 }
 
@@ -1766,60 +1782,58 @@ fn promote_import_clause(
     // Handle verbatimModuleSyntax conversion
     // If convertExistingToTypeOnly is true, we need to add 'type' to other specifiers
     // in the same import declaration
-    if convert_existing_to_type_only.is_true() {
-        if let Some(named_imports) =
+    if convert_existing_to_type_only.is_true()
+        && let Some(named_imports) =
             import_clause.named_bindings.filter(|n| n.kind() == Kind::NamedImports)
-        {
-            let named_imports_data = named_imports.as_named_imports();
-            if named_imports_data.elements.nodes().len() > 1 {
-                // Check if the list is sorted and if we need to reorder
-                let (_, is_sorted) = lsutil::get_named_import_specifier_comparer_with_detection(
-                    import_clause_node.parent().unwrap(),
-                    Some(source_file),
-                    preferences,
-                );
+    {
+        let named_imports_data = named_imports.as_named_imports();
+        if named_imports_data.elements.nodes().len() > 1 {
+            // Check if the list is sorted and if we need to reorder
+            let (_, is_sorted) = lsutil::get_named_import_specifier_comparer_with_detection(
+                import_clause_node.parent().unwrap(),
+                Some(source_file),
+                preferences,
+            );
 
-                // If the alias declaration is an ImportSpecifier and the list is sorted,
-                // move it to index 0 (since it will be the only non-type-only import)
-                if !is_sorted.is_false() && // isSorted !== false
+            // If the alias declaration is an ImportSpecifier and the list is sorted,
+            // move it to index 0 (since it will be the only non-type-only import)
+            if !is_sorted.is_false() && // isSorted !== false
                     alias_declaration.is_some_and(|a| a.kind() == Kind::ImportSpecifier)
-                {
-                    let alias_declaration = alias_declaration.unwrap();
-                    // Find the index of the alias declaration
-                    let alias_index = named_imports_data
-                        .elements
-                        .nodes()
-                        .iter()
-                        .position(|&e| e == alias_declaration);
-                    // If not already at index 0, move it there
-                    if alias_index.is_some_and(|i| i > 0) {
-                        // Delete the specifier from its current position
-                        changes.delete(source_file, alias_declaration);
-                        // Insert it at index 0
-                        changes.insert_import_specifier_at_index(
-                            source_file,
-                            alias_declaration,
-                            named_imports,
-                            0,
-                        );
-                    }
+            {
+                let alias_declaration = alias_declaration.unwrap();
+                // Find the index of the alias declaration
+                let alias_index = named_imports_data
+                    .elements
+                    .nodes()
+                    .iter()
+                    .position(|&e| e == alias_declaration);
+                // If not already at index 0, move it there
+                if alias_index.is_some_and(|i| i > 0) {
+                    // Delete the specifier from its current position
+                    changes.delete(source_file, alias_declaration);
+                    // Insert it at index 0
+                    changes.insert_import_specifier_at_index(
+                        source_file,
+                        alias_declaration,
+                        named_imports,
+                        0,
+                    );
                 }
+            }
 
-                // Add 'type' keyword to all other import specifiers that aren't already type-only
-                for &element in named_imports_data.elements.nodes() {
-                    let spec = element.as_import_specifier();
-                    // Skip the specifier being promoted (if aliasDeclaration is an ImportSpecifier)
-                    if let Some(alias_declaration) = alias_declaration {
-                        if alias_declaration.kind() == Kind::ImportSpecifier
-                            && element == alias_declaration
-                        {
-                            continue;
-                        }
-                    }
-                    // Skip if already type-only
-                    if !spec.is_type_only {
-                        changes.insert_modifier_before(source_file, Kind::TypeKeyword, element);
-                    }
+            // Add 'type' keyword to all other import specifiers that aren't already type-only
+            for &element in named_imports_data.elements.nodes() {
+                let spec = element.as_import_specifier();
+                // Skip the specifier being promoted (if aliasDeclaration is an ImportSpecifier)
+                if let Some(alias_declaration) = alias_declaration
+                    && alias_declaration.kind() == Kind::ImportSpecifier
+                    && element == alias_declaration
+                {
+                    continue;
+                }
+                // Skip if already type-only
+                if !spec.is_type_only {
+                    changes.insert_modifier_before(source_file, Kind::TypeKeyword, element);
                 }
             }
         }
@@ -1850,13 +1864,13 @@ fn delete_type_keyword(changes: &mut change::Tracker, source_file: P<SourceFile>
 fn get_module_specifier_text(promoted_declaration: P<Node>) -> String {
     if promoted_declaration.kind() == Kind::ImportEqualsDeclaration {
         let import_equals_declaration = promoted_declaration.as_import_equals_declaration();
-        if ast::is_external_module_reference(import_equals_declaration.module_reference) {
-            if let Some(expr) = import_equals_declaration.module_reference.expression() {
-                if ast::is_string_literal_like(expr) {
-                    return expr.text().to_string();
-                }
-                return scanner::get_text_of_node(expr);
+        if ast::is_external_module_reference(import_equals_declaration.module_reference)
+            && let Some(expr) = import_equals_declaration.module_reference.expression()
+        {
+            if ast::is_string_literal_like(expr) {
+                return expr.text().to_string();
             }
+            return scanner::get_text_of_node(expr);
         }
         return scanner::get_text_of_node(import_equals_declaration.module_reference);
     }

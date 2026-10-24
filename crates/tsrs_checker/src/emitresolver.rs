@@ -10,13 +10,29 @@ use tsrs_ast::*;
 //   type EmitResolver (emitresolver.go:34)
 
 // emitresolver.go:45
-pub(crate) fn new_emit_resolver(_checker: &mut Checker) -> P<EmitResolver> {
+pub fn new_emit_resolver(checker: &Checker, emit_context: P<EmitContext>) -> P<EmitResolver> {
     // Go also wires `isValueAliasDeclaration` / `aliasMarkingVisitor` (method values of the `...Worker` methods, which
     // Rust calls directly) and `checkerMu` (dropped: the caller serializes checker access, see nodebuilder_types.rs).
-    P::new(EmitResolver::default())
+    P::new_in(
+        emit_context.factory.is_scratch(),
+        EmitResolver {
+            reference_resolver: std::cell::OnceCell::new(),
+            emit_context,
+            request_node_builder: std::cell::OnceCell::new(),
+            links: checker.emit_resolver_links,
+        },
+    )
 }
 
 impl EmitResolver {
+    pub fn emit_context(&self) -> P<EmitContext> {
+        self.emit_context
+    }
+
+    fn node_builder(&self, c: &Checker) -> P<NodeBuilder> {
+        *self.request_node_builder.get_or_init(|| new_node_builder(c, self.emit_context))
+    }
+
     // emitresolver.go:53
     #[expect(
         clippy::unused_self,
@@ -98,7 +114,7 @@ impl EmitResolver {
             return false;
         }
 
-        let links = self.declaration_links.get(node);
+        let links = self.links.declaration_links.get(node);
         if links.is_visible.get() == Tristate::Unknown {
             if self.determine_if_declaration_is_visible(c, node) {
                 links.is_visible.set(Tristate::True);
@@ -190,18 +206,8 @@ impl EmitResolver {
             | Kind::ParenthesizedType
             | Kind::NamedTupleMember => self.is_declaration_visible(c, node.parent()),
 
-            // Default binding, import specifier and namespace import is visible
-            // only on demand so by default it is not visible
-            Kind::ImportClause | Kind::NamespaceImport | Kind::ImportSpecifier => false,
-
-            // Type parameters are always visible
-            Kind::TypeParameter => true,
-            // Source file and namespace export are always visible
-            Kind::SourceFile | Kind::NamespaceExportDeclaration => true,
-
-            // Export assignments do not create name bindings outside the module
-            Kind::ExportAssignment => false,
-
+            // Type parameters, source files and namespace exports are always visible
+            Kind::TypeParameter | Kind::SourceFile | Kind::NamespaceExportDeclaration => true,
             // An `export {X}` (without a module specifier) is itself a visible re-export of
             // the named binding; it contributes to the symbol's external visibility.
             Kind::ExportSpecifier => {
@@ -212,16 +218,19 @@ impl EmitResolver {
                 false
             }
 
+            // Default bindings, import specifiers and namespace imports are visible
+            // only on demand, so by default they are not visible.
+            // Export assignments do not create name bindings outside the module.
             _ => false,
         }
     }
 
     // emitresolver.go:236
     pub fn precalculate_declaration_emit_visibility(&self, c: &mut Checker, file: P<SourceFile>) {
-        if self.declaration_file_links.get(file.as_node()).aliases_marked.get() {
+        if self.links.declaration_file_links.get(file.as_node()).aliases_marked.get() {
             return;
         }
-        self.declaration_file_links.get(file.as_node()).aliases_marked.set(true);
+        self.links.declaration_file_links.get(file.as_node()).aliases_marked.set(true);
         // TODO: Does this even *have* to be an upfront walk? If it's not possible for a
         // import a = a.b.c statement to chain into exposing a statement in a sibling scope,
         // it could at least be pushed into scope entry -  then it wouldn't need to be recursive.
@@ -230,22 +239,19 @@ impl EmitResolver {
 }
 
 // emitresolver.go:249
-pub(crate) fn is_common_js_module_exports(node: P<Node>) -> bool {
-    if ast::is_binary_expression(node) {
-        if let Some(parent) = node.parent() {
-            if ast::is_expression_statement(parent) {
-                if let Some(grand_parent) = parent.parent() {
-                    if ast::is_source_file(grand_parent)
-                        && grand_parent.as_source_file().common_js_module_indicator.get().is_some()
-                    {
-                        match ast::get_assignment_declaration_kind(node) {
-                            ast::JSDeclarationKind::ModuleExports
-                            | ast::JSDeclarationKind::ExportsProperty => return true,
-                            _ => {}
-                        }
-                    }
-                }
+pub fn is_common_js_module_exports(node: P<Node>) -> bool {
+    if ast::is_binary_expression(node)
+        && let Some(parent) = node.parent()
+        && ast::is_expression_statement(parent)
+        && let Some(grand_parent) = parent.parent()
+        && ast::is_source_file(grand_parent)
+        && grand_parent.as_source_file().common_js_module_indicator.get().is_some()
+    {
+        match ast::get_assignment_declaration_kind(node) {
+            ast::JSDeclarationKind::ModuleExports | ast::JSDeclarationKind::ExportsProperty => {
+                return true;
             }
+            _ => {}
         }
     }
     false
@@ -315,7 +321,7 @@ impl EmitResolver {
 
             let mut next_symbol: Option<P<Symbol>> = None;
             for &declaration in symbol.declarations() {
-                self.declaration_links.get(declaration).is_visible.set(Tristate::True);
+                self.links.declaration_links.get(declaration).is_visible.set(Tristate::True);
 
                 if ast::is_internal_module_import_equals_declaration(declaration) {
                     // Add the referenced top container visible
@@ -343,7 +349,7 @@ impl EmitResolver {
 }
 
 // emitresolver.go:311
-pub(crate) fn get_meaning_of_entity_name_reference(entity_name: P<Node>) -> SymbolFlags {
+pub fn get_meaning_of_entity_name_reference(entity_name: P<Node>) -> SymbolFlags {
     let parent = entity_name.parent().unwrap();
     // get symbol of the first identifier of the entityName
     if parent.kind() == Kind::TypeQuery
@@ -412,15 +418,14 @@ impl EmitResolver {
             false,
         );
 
-        if let Some(symbol) = symbol {
-            if symbol.flags().intersects(SymbolFlags::TypeParameter)
-                && meaning.intersects(SymbolFlags::Type)
-            {
-                return SymbolAccessibilityResult {
-                    accessibility: SymbolAccessibility::Accessible,
-                    ..Default::default()
-                };
-            }
+        if let Some(symbol) = symbol
+            && symbol.flags().intersects(SymbolFlags::TypeParameter)
+            && meaning.intersects(SymbolFlags::Type)
+        {
+            return SymbolAccessibilityResult {
+                accessibility: SymbolAccessibility::Accessible,
+                ..Default::default()
+            };
         }
 
         if symbol.is_none() && ast::is_this_identifier(first_identifier) {
@@ -464,7 +469,7 @@ impl EmitResolver {
 }
 
 // emitresolver.go:382
-pub(crate) fn noop_add_visible_alias(declaration: P<Node>, aliasing_statement: P<Node>) {
+pub fn noop_add_visible_alias(declaration: P<Node>, aliasing_statement: P<Node>) {
     let _ = (declaration, aliasing_statement);
 }
 
@@ -485,7 +490,11 @@ impl EmitResolver {
                 if should_compute_alias_to_make_visible {
                     let aliases_to_make_visible_set = &mut aliases_to_make_visible_set;
                     Box::new(move |declaration: P<Node>, aliasing_statement: P<Node>| {
-                        self.declaration_links.get(declaration).is_visible.set(Tristate::True);
+                        self.links
+                            .declaration_links
+                            .get(declaration)
+                            .is_visible
+                            .set(Tristate::True);
                         let set = aliases_to_make_visible_set.get_or_insert_with(Vec::new);
                         let id = ast::get_node_id(declaration);
                         match set.iter_mut().find(|(k, _)| *k == id) {
@@ -506,13 +515,12 @@ impl EmitResolver {
                     // Mark the unexported alias as visible if its parent is visible
                     // because these kind of aliases can be used to name types in declaration file
                     let any_import_syntax = get_any_import_syntax(declaration);
-                    if let Some(any_import_syntax) = any_import_syntax {
-                        if !ast::has_syntactic_modifier(any_import_syntax, ModifierFlags::Export) && // import clause without export
+                    if let Some(any_import_syntax) = any_import_syntax
+                        && !ast::has_syntactic_modifier(any_import_syntax, ModifierFlags::Export) && // import clause without export
                             self.is_declaration_visible(c, any_import_syntax.parent())
-                        {
-                            add_visible_alias(declaration, any_import_syntax);
-                            continue;
-                        }
+                    {
+                        add_visible_alias(declaration, any_import_syntax);
+                        continue;
                     }
                     if ast::is_variable_declaration(declaration) {
                         let variable_statement = declaration.parent().unwrap().parent().unwrap();
@@ -537,23 +545,19 @@ impl EmitResolver {
                         {
                             // exported import-like top-level JS require statement
                             let p2 = declaration.parent().and_then(|p| p.parent());
-                            if let Some(p2) = p2 {
-                                if ast::is_variable_declaration(p2) {
-                                    let p4 = p2.parent().unwrap().parent();
-                                    if let Some(p4) = p4 {
-                                        if ast::is_variable_statement(p4)
-                                            && !ast::has_syntactic_modifier(
-                                                p4,
-                                                ModifierFlags::Export,
-                                            )
-                                        {
-                                            // check if the thing containing the variable statement is visible (ie, the file)
-                                            let p5 = p4.parent();
-                                            if p5.is_some() && self.is_declaration_visible(c, p5) {
-                                                add_visible_alias(declaration, p4);
-                                                continue;
-                                            }
-                                        }
+                            if let Some(p2) = p2
+                                && ast::is_variable_declaration(p2)
+                            {
+                                let p4 = p2.parent().unwrap().parent();
+                                if let Some(p4) = p4
+                                    && ast::is_variable_statement(p4)
+                                    && !ast::has_syntactic_modifier(p4, ModifierFlags::Export)
+                                {
+                                    // check if the thing containing the variable statement is visible (ie, the file)
+                                    let p5 = p4.parent();
+                                    if p5.is_some() && self.is_declaration_visible(c, p5) {
+                                        add_visible_alias(declaration, p4);
+                                        continue;
                                     }
                                 }
                             }
@@ -666,15 +670,14 @@ impl EmitResolver {
         let exports = c.get_exports_of_module(file_symbol);
         for s in exports.values() {
             let merged = c.get_merged_symbol(s);
-            if merged != s {
-                if !merged.declarations().is_empty() {
-                    if merged.declarations().iter().any(|&d| {
-                        let decl_file = ast::get_source_file_of_node(d);
-                        decl_file == Some(import_target)
-                    }) {
-                        return true;
-                    }
-                }
+            if merged != s
+                && !merged.declarations().is_empty()
+                && merged.declarations().iter().any(|&d| {
+                    let decl_file = ast::get_source_file_of_node(d);
+                    decl_file == Some(import_target)
+                })
+            {
+                return true;
             }
         }
         false
@@ -938,7 +941,7 @@ impl EmitResolver {
 }
 
 // emitresolver.go:693
-pub(crate) fn is_const_enum_or_const_enum_only_module(s: P<Symbol>) -> bool {
+pub fn is_const_enum_or_const_enum_only_module(s: P<Symbol>) -> bool {
     is_const_enum_symbol(s) || s.flags().intersects(SymbolFlags::ConstEnumOnlyModule)
 }
 
@@ -953,22 +956,21 @@ impl EmitResolver {
             return true;
         }
 
-        if ast::is_alias_symbol_declaration(node) {
-            if let Some(symbol) = c.get_symbol_of_declaration(node) {
-                let alias_links = c.alias_symbol_links.get(symbol);
-                if alias_links.referenced.get() {
-                    return true;
-                }
-                let target = alias_links.alias_target.get();
-                if let Some(target) = target {
-                    if node.modifier_flags().intersects(ModifierFlags::Export)
-                        && c.get_symbol_flags(target).intersects(SymbolFlags::Value)
-                        && (c.compiler_options.should_preserve_const_enums()
-                            || !is_const_enum_or_const_enum_only_module(target))
-                    {
-                        return true;
-                    }
-                }
+        if ast::is_alias_symbol_declaration(node)
+            && let Some(symbol) = c.get_symbol_of_declaration(node)
+        {
+            let alias_links = c.alias_symbol_links.get(symbol);
+            if alias_links.referenced.get() {
+                return true;
+            }
+            let target = alias_links.alias_target.get();
+            if let Some(target) = target
+                && node.modifier_flags().intersects(ModifierFlags::Export)
+                && c.get_symbol_flags(target).intersects(SymbolFlags::Value)
+                && (c.compiler_options.should_preserve_const_enums()
+                    || !is_const_enum_or_const_enum_only_module(target))
+            {
+                return true;
             }
         }
         false
@@ -1051,16 +1053,16 @@ impl EmitResolver {
         let Some(symbol) = symbol else {
             return false;
         };
-        if let Some(value_declaration) = symbol.value_declaration() {
-            if let Some(container) = ast::get_source_file_of_node(value_declaration) {
-                let file_symbol = c.get_symbol_of_declaration(container.as_node());
-                // Ensures cjs export assignment is setup, since this symbol may point at, and merge with, the file itself.
-                // If we don't, the merge may not have yet occurred, and the flags check below will be missing flags that
-                // are added as a result of the merge.
-                // (Go's resolveExternalModuleSymbol returns a nil module symbol unchanged.)
-                if let Some(file_symbol) = file_symbol {
-                    c.resolve_external_module_symbol(file_symbol, false /*dontResolveAlias*/);
-                }
+        if let Some(value_declaration) = symbol.value_declaration()
+            && let Some(container) = ast::get_source_file_of_node(value_declaration)
+        {
+            let file_symbol = c.get_symbol_of_declaration(container.as_node());
+            // Ensures cjs export assignment is setup, since this symbol may point at, and merge with, the file itself.
+            // If we don't, the merge may not have yet occurred, and the flags check below will be missing flags that
+            // are added as a result of the merge.
+            // (Go's resolveExternalModuleSymbol returns a nil module symbol unchanged.)
+            if let Some(file_symbol) = file_symbol {
+                c.resolve_external_module_symbol(file_symbol, false /*dontResolveAlias*/);
             }
         }
         let resolved = c.resolve_alias(symbol);
@@ -1110,10 +1112,10 @@ impl EmitResolver {
         reason = "EmitResolver methods implement the instance resolver API used by declaration and JavaScript transforms."
     )]
     pub fn mark_linked_references_recursively(&self, c: &mut Checker, file: Option<P<SourceFile>>) {
-        if let Some(file) = file {
-            if !ast::is_parse_tree_node(file.as_node()) {
-                return;
-            }
+        if let Some(file) = file
+            && !ast::is_parse_tree_node(file.as_node())
+        {
+            return;
         }
 
         if let Some(file) = file {
@@ -1207,7 +1209,7 @@ impl EmitResolver {
         node: P<Node>,
         ref_: P<Node>,
     ) {
-        self.jsx_links.get(node).import_ref.set(Some(ref_));
+        self.links.jsx_links.get(node).import_ref.set(Some(ref_));
     }
 
     // emitresolver.go:875
@@ -1217,7 +1219,7 @@ impl EmitResolver {
         node: P<Node>,
     ) -> Option<P<Node>> {
         if !ast::is_parse_tree_node(node) {
-            return self.jsx_links.get(node).import_ref.get();
+            return self.links.jsx_links.get(node).import_ref.get();
         }
 
         let symbol = c.get_referenced_value_or_alias_symbol(node);
@@ -1318,25 +1320,21 @@ impl EmitResolver {
     // and likely reduces performance. There's probably some refactoring that could be done here to simplify this.
 
     // emitresolver.go:950
-    #[expect(
-        clippy::unused_self,
-        reason = "EmitResolver methods implement the instance resolver API used by declaration and JavaScript transforms."
-    )]
     pub fn create_return_type_of_signature_declaration(
         &self,
         c: &mut Checker,
-        emit_context: P<EmitContext>,
         signature_declaration: P<Node>,
         enclosing_declaration: Option<P<Node>>,
         flags: Flags,
         internal_flags: InternalFlags,
         tracker: &'static dyn SymbolTracker,
     ) -> Option<P<Node>> {
+        let emit_context = self.emit_context;
         let Some(original) = emit_context.parse_node(Some(signature_declaration)) else {
             return Some(emit_context.factory.new_keyword_type_node(Kind::AnyKeyword));
         };
 
-        let request_node_builder = new_node_builder(c, emit_context); // TODO: cache per-context
+        let request_node_builder = self.node_builder(c);
         request_node_builder.serialize_return_type_for_signature(
             c,
             original,
@@ -1348,23 +1346,19 @@ impl EmitResolver {
     }
 
     // emitresolver.go:962
-    #[expect(
-        clippy::unused_self,
-        reason = "EmitResolver methods implement the instance resolver API used by declaration and JavaScript transforms."
-    )]
     pub fn create_type_parameters_of_signature_declaration(
         &self,
         c: &mut Checker,
-        emit_context: P<EmitContext>,
         signature_declaration: P<Node>,
         enclosing_declaration: Option<P<Node>>,
         flags: Flags,
         internal_flags: InternalFlags,
         tracker: &'static dyn SymbolTracker,
     ) -> Option<Vec<P<Node>>> {
+        let emit_context = self.emit_context;
         let original = emit_context.parse_node(Some(signature_declaration))?;
 
-        let request_node_builder = new_node_builder(c, emit_context); // TODO: cache per-context
+        let request_node_builder = self.node_builder(c);
         let result = request_node_builder.serialize_type_parameters_for_signature(
             c,
             original,
@@ -1382,25 +1376,21 @@ impl EmitResolver {
     }
 
     // emitresolver.go:974
-    #[expect(
-        clippy::unused_self,
-        reason = "EmitResolver methods implement the instance resolver API used by declaration and JavaScript transforms."
-    )]
     pub fn create_type_of_declaration(
         &self,
         c: &mut Checker,
-        emit_context: P<EmitContext>,
         declaration: P<Node>,
         enclosing_declaration: Option<P<Node>>,
         flags: Flags,
         internal_flags: InternalFlags,
         tracker: &'static dyn SymbolTracker,
     ) -> Option<P<Node>> {
+        let emit_context = self.emit_context;
         if emit_context.parse_node(Some(declaration)).is_none() {
             return Some(emit_context.factory.new_keyword_type_node(Kind::AnyKeyword));
         }
 
-        let request_node_builder = new_node_builder(c, emit_context); // TODO: cache per-context
+        let request_node_builder = self.node_builder(c);
         // // Get type of the symbol if this is the valid symbol otherwise get type at location
         let symbol = c.get_symbol_of_declaration(declaration);
         request_node_builder.serialize_type_for_declaration(
@@ -1415,17 +1405,13 @@ impl EmitResolver {
     }
 
     // emitresolver.go:988
-    #[expect(
-        clippy::unused_self,
-        reason = "EmitResolver methods implement the instance resolver API used by declaration and JavaScript transforms."
-    )]
     pub fn create_literal_const_value(
         &self,
         c: &mut Checker,
-        emit_context: P<EmitContext>,
         node: P<Node>,
         tracker: &'static dyn SymbolTracker,
     ) -> Option<P<Node>> {
+        let emit_context = self.emit_context;
         let node = emit_context.parse_node(Some(node)).unwrap();
         let symbol = c.get_symbol_of_declaration(node).unwrap();
         // Go checks `t == nil` here ("TODO: How!? Maybe this should be a panic. All symbols should have a type."); the
@@ -1435,7 +1421,7 @@ impl EmitResolver {
         let f = &emit_context.factory;
         let mut enum_result: Option<P<Node>> = None;
         if t.flags().intersects(TypeFlags::EnumLike) {
-            let request_node_builder = new_node_builder(c, emit_context); // TODO: cache per-context
+            let request_node_builder = self.node_builder(c);
             enum_result = request_node_builder.symbol_to_expression(
                 c,
                 t.symbol().unwrap(),
@@ -1497,25 +1483,21 @@ impl EmitResolver {
     }
 
     // emitresolver.go:1049
-    #[expect(
-        clippy::unused_self,
-        reason = "EmitResolver methods implement the instance resolver API used by declaration and JavaScript transforms."
-    )]
     pub fn create_type_of_expression(
         &self,
         c: &mut Checker,
-        emit_context: P<EmitContext>,
         expression: P<Node>,
         enclosing_declaration: Option<P<Node>>,
         flags: Flags,
         internal_flags: InternalFlags,
         tracker: &'static dyn SymbolTracker,
     ) -> Option<P<Node>> {
+        let emit_context = self.emit_context;
         let Some(expression) = emit_context.parse_node(Some(expression)) else {
             return Some(emit_context.factory.new_keyword_type_node(Kind::AnyKeyword));
         };
 
-        let request_node_builder = new_node_builder(c, emit_context); // TODO: cache per-context
+        let request_node_builder = self.node_builder(c);
         request_node_builder.serialize_type_for_expression(
             c,
             expression,
@@ -1530,13 +1512,13 @@ impl EmitResolver {
     pub fn create_late_bound_index_signatures(
         &self,
         c: &mut Checker,
-        emit_context: P<EmitContext>,
         container: P<Node>,
         enclosing_declaration: Option<P<Node>>,
         flags: Flags,
         internal_flags: InternalFlags,
         tracker: &'static dyn SymbolTracker,
     ) -> Vec<P<Node>> {
+        let emit_context = self.emit_context;
         let container = emit_context.parse_node(Some(container)).unwrap();
 
         let sym = container.symbol().unwrap();
@@ -1551,7 +1533,7 @@ impl EmitResolver {
                 c.get_index_infos_of_index_symbol(instance_index_symbol, &sibling_symbols);
         }
 
-        let request_node_builder = new_node_builder(c, emit_context); // TODO: cache per-context
+        let request_node_builder = self.node_builder(c);
         let f = &emit_context.factory;
 
         let mut result: Vec<P<Node>> = Vec::new();
@@ -1653,18 +1635,18 @@ impl EmitResolver {
                     internal_flags,
                     Some(tracker),
                 );
-                if let Some(n) = node {
-                    if is_static {
-                        let mut mod_nodes = vec![f.new_modifier(Kind::StaticKeyword)];
-                        mod_nodes.extend_from_slice(n.modifier_nodes());
-                        let mods = f.new_modifier_list(mod_nodes);
-                        node = Some(f.update_index_signature_declaration(
-                            n,
-                            Some(mods),
-                            n.parameter_list(),
-                            n.type_node(),
-                        ));
-                    }
+                if let Some(n) = node
+                    && is_static
+                {
+                    let mut mod_nodes = vec![f.new_modifier(Kind::StaticKeyword)];
+                    mod_nodes.extend_from_slice(n.modifier_nodes());
+                    let mods = f.new_modifier_list(mod_nodes);
+                    node = Some(f.update_index_signature_declaration(
+                        n,
+                        Some(mods),
+                        n.parameter_list(),
+                        n.type_node(),
+                    ));
                 }
                 if let Some(node) = node {
                     result.push(node);
@@ -1727,22 +1709,22 @@ impl EmitResolver {
                 location,
             );
 
-            if let Some(root_value_symbol) = root_value_symbol {
-                if !root_value_symbol.declarations().is_empty() {
-                    is_type_only = root_value_symbol
-                        .declarations()
-                        .iter()
-                        .all(|&d| ast::is_type_only_import_or_export_declaration(d));
-                }
+            if let Some(root_value_symbol) = root_value_symbol
+                && !root_value_symbol.declarations().is_empty()
+            {
+                is_type_only = root_value_symbol
+                    .declarations()
+                    .iter()
+                    .all(|&d| ast::is_type_only_import_or_export_declaration(d));
             }
         }
         let value_symbol =
             c.resolve_entity_name(type_name, SymbolFlags::Value, true, true, location);
         let mut resolved_value_symbol = value_symbol;
-        if let Some(value_symbol) = value_symbol {
-            if value_symbol.flags().intersects(SymbolFlags::Alias) {
-                resolved_value_symbol = Some(c.resolve_alias(value_symbol));
-            }
+        if let Some(value_symbol) = value_symbol
+            && value_symbol.flags().intersects(SymbolFlags::Alias)
+        {
+            resolved_value_symbol = Some(c.resolve_alias(value_symbol));
         }
 
         is_type_only = is_type_only
@@ -1753,10 +1735,10 @@ impl EmitResolver {
         // Resolve the symbol as a type so that we can provide a more useful hint for the type serializer.
         let type_symbol = c.resolve_entity_name(type_name, SymbolFlags::Type, true, true, location);
         let mut resolved_type_symbol = type_symbol;
-        if let Some(type_symbol) = type_symbol {
-            if type_symbol.flags().intersects(SymbolFlags::Alias) {
-                resolved_type_symbol = Some(c.resolve_alias(type_symbol));
-            }
+        if let Some(type_symbol) = type_symbol
+            && type_symbol.flags().intersects(SymbolFlags::Alias)
+        {
+            resolved_type_symbol = Some(c.resolve_alias(type_symbol));
         }
         // In case the value symbol can't be resolved (e.g. because of missing declarations), use type symbol for reachability check.
         is_type_only = is_type_only
@@ -1764,22 +1746,22 @@ impl EmitResolver {
                 c.get_type_only_alias_declaration_ex(s, SymbolFlags::Type).is_some()
             });
 
-        if let Some(resolved_value_symbol) = resolved_value_symbol {
-            if Some(resolved_value_symbol) == resolved_type_symbol {
-                let global_promise_symbol = c.get_global_promise_constructor_symbol();
-                if global_promise_symbol.is_some()
-                    && Some(resolved_value_symbol) == global_promise_symbol
-                {
-                    return TypeReferenceSerializationKind::Promise;
-                }
+        if let Some(resolved_value_symbol) = resolved_value_symbol
+            && Some(resolved_value_symbol) == resolved_type_symbol
+        {
+            let global_promise_symbol = c.get_global_promise_constructor_symbol();
+            if global_promise_symbol.is_some()
+                && Some(resolved_value_symbol) == global_promise_symbol
+            {
+                return TypeReferenceSerializationKind::Promise;
+            }
 
-                let constructor_type = c.get_type_of_symbol(resolved_value_symbol);
-                if c.is_constructor_type(constructor_type) {
-                    if is_type_only {
-                        return TypeReferenceSerializationKind::TypeWithCallSignature;
-                    }
-                    return TypeReferenceSerializationKind::TypeWithConstructSignatureAndValue;
+            let constructor_type = c.get_type_of_symbol(resolved_value_symbol);
+            if c.is_constructor_type(constructor_type) {
+                if is_type_only {
+                    return TypeReferenceSerializationKind::TypeWithCallSignature;
                 }
+                return TypeReferenceSerializationKind::TypeWithConstructSignatureAndValue;
             }
         }
 
@@ -1850,23 +1832,19 @@ impl EmitResolver {
     }
 
     // emitresolver.go:1272
-    #[expect(
-        clippy::unused_self,
-        reason = "EmitResolver methods implement the instance resolver API used by declaration and JavaScript transforms."
-    )]
     pub fn try_js_type_node_to_type_node(
         &self,
         c: &mut Checker,
-        emit_context: P<EmitContext>,
         type_node: P<Node>,
         enclosing_declaration: Option<P<Node>>,
         flags: Flags,
         internal_flags: InternalFlags,
         tracker: &'static dyn SymbolTracker,
     ) -> Option<P<Node>> {
+        let emit_context = self.emit_context;
         let type_node = emit_context.parse_node(Some(type_node)).unwrap();
 
-        let request_node_builder = new_node_builder(c, emit_context); // TODO: cache per-context
+        let request_node_builder = self.node_builder(c);
         request_node_builder.try_js_type_node_to_type_node(
             c,
             type_node,

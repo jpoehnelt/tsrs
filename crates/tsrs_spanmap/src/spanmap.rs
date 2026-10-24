@@ -27,14 +27,14 @@ impl Kind {
     // KindVerbatim segments are length-preserving: the virtual and original spans have the same
     // length and interior positions map 1:1 (OriginalPos = pos - VirtualStart + OriginalStart). A virtual span
     // fully within a verbatim segment maps to an exact original span.
-    pub const Verbatim: Kind = Kind(0);
+    pub const VERBATIM: Kind = Kind(0);
     // KindAtom segments map a virtual span to an original span as a whole; interior positions are not
     // interpolatable (the lengths may differ), so positions within clamp to the segment's endpoints.
     // Used for renamed identifiers or short expressions.
-    pub const Atom: Kind = Kind(1);
+    pub const ATOM: Kind = Kind(1);
     // KindAlias has atom geometry, but additionally asserts that the virtual and original texts are
     // names for the same logical entity. Diagnostic presentation may substitute the original name.
-    pub const Alias: Kind = Kind(2);
+    pub const ALIAS: Kind = Kind(2);
 }
 
 bitflags::bitflags! {
@@ -69,11 +69,12 @@ bitflags::bitflags! {
 }
 
 impl Feature {
+    #[expect(non_upper_case_globals, reason = "Keep the upstream bitflags constant name.")]
     pub const None: Feature = Feature::empty();
 }
 
 // spanmap.go:68
-pub(crate) const FEATURE_MASK: Feature = Feature::All;
+pub const FEATURE_MASK: Feature = Feature::All;
 
 // Fidelity describes how faithfully a mapped span reflects the original.
 // spanmap.go:71
@@ -262,14 +263,14 @@ impl SpanMap {
                     original_pos: s.original_end,
                 });
             }
-            if s.kind != Kind::Verbatim && s.kind != Kind::Atom && s.kind != Kind::Alias {
+            if s.kind != Kind::VERBATIM && s.kind != Kind::ATOM && s.kind != Kind::ALIAS {
                 return Some(MappingError {
                     kind: MappingErrorKind::Kind,
                     virtual_pos: s.virtual_start,
                     original_pos: s.original_start,
                 });
             }
-            if s.kind == Kind::Verbatim {
+            if s.kind == Kind::VERBATIM {
                 // Go compares the byte ranges, which need not fall on character boundaries.
                 if s.virtual_end - s.virtual_start != s.original_end - s.original_start
                     || virtual_.as_bytes()[s.virtual_start as usize..s.virtual_end as usize]
@@ -345,7 +346,7 @@ impl SpanMap {
         if start_idx == end_idx && start_in == end_in {
             if start_in {
                 let seg = &self.segments[start_idx.expect("an inside lookup has an index")];
-                if seg.kind == Kind::Verbatim {
+                if seg.kind == Kind::VERBATIM {
                     let orig_start = clamp(
                         seg.original_start + (virtual_start - seg.virtual_start),
                         seg.original_start,
@@ -452,7 +453,7 @@ impl SpanMap {
             return (self.insertion_point(idx), Fidelity::None);
         }
         let seg = &self.segments[idx.expect("an inside lookup has an index")];
-        if seg.kind == Kind::Verbatim {
+        if seg.kind == Kind::VERBATIM {
             return (
                 clamp(
                     seg.original_start + (pos - seg.virtual_start),
@@ -487,13 +488,13 @@ impl SpanMap {
         let Some(index) = index.filter(|_| inside) else {
             return (mapped, false);
         };
-        if self.segments[index].kind != Kind::Verbatim {
+        if self.segments[index].kind != Kind::VERBATIM {
             return (mapped, false);
         }
         if index > 0 {
             let previous = self.segments[index - 1];
             if previous.virtual_end == pos
-                && (previous.kind != Kind::Verbatim
+                && (previous.kind != Kind::VERBATIM
                     || previous.original_end != self.segments[index].original_start)
             {
                 return (mapped, false);
@@ -557,7 +558,7 @@ impl SpanMap {
             return None;
         }
         let segment = self.segments[index.expect("an inside lookup has an index")];
-        (segment.kind == Kind::Alias
+        (segment.kind == Kind::ALIAS
             && start == segment.virtual_start
             && end == segment.virtual_end)
             .then_some(segment)
@@ -580,12 +581,11 @@ impl SpanMap {
             return (Some(idx), true);
         }
         let prev = idx.checked_sub(1);
-        if let Some(prev) = prev {
-            if pos < self.segments[prev].virtual_end
-                || prev + 1 == self.segments.len() && pos == self.segments[prev].virtual_end
-            {
-                return (Some(prev), true);
-            }
+        if let Some(prev) = prev
+            && (pos < self.segments[prev].virtual_end
+                || prev + 1 == self.segments.len() && pos == self.segments[prev].virtual_end)
+        {
+            return (Some(prev), true);
         }
         (prev, false)
     }
@@ -605,7 +605,7 @@ impl SpanMap {
             return self.insertion_point(idx);
         }
         let seg = &self.segments[idx.expect("an inside lookup has an index")];
-        if seg.kind == Kind::Verbatim {
+        if seg.kind == Kind::VERBATIM {
             return clamp(
                 seg.original_start + (pos - seg.virtual_start),
                 seg.original_start,
@@ -623,7 +623,7 @@ impl SpanMap {
             return self.insertion_point(idx);
         }
         let seg = &self.segments[idx.expect("an inside lookup has an index")];
-        if seg.kind == Kind::Verbatim {
+        if seg.kind == Kind::VERBATIM {
             return clamp(
                 seg.original_start + (pos - seg.virtual_start),
                 seg.original_start,
@@ -650,7 +650,7 @@ impl SpanMap {
                     continue;
                 }
                 let mut mapped = MappedPosition { position: 0, fidelity: Fidelity::Atom };
-                if segment.kind == Kind::Verbatim {
+                if segment.kind == Kind::VERBATIM {
                     mapped.position = clamp(
                         segment.virtual_start + (pos - segment.original_start),
                         segment.virtual_start,
@@ -803,7 +803,7 @@ impl SpanMap {
             if start >= end {
                 return None;
             }
-            if segment.kind == Kind::Verbatim {
+            if segment.kind == Kind::VERBATIM {
                 Some(MappedSpan {
                     span: new_text_range(
                         segment.virtual_start + (start - segment.original_start),
@@ -846,17 +846,13 @@ pub fn original_to_virtual_intersecting_spans(
 //                 ^             ^
 //               result        result
 // spanmap.go:585
-pub(crate) fn original_start_projections(
-    segments: &[Segment],
-    start: u32,
-    feature: Feature,
-) -> Vec<u32> {
+pub fn original_start_projections(segments: &[Segment], start: u32, feature: Feature) -> Vec<u32> {
     let mut results = Vec::with_capacity(segments.len());
     results.extend(segments.iter().filter_map(|&segment| {
         if !supports_feature(segment, feature) {
             return None;
         }
-        if segment.kind == Kind::Verbatim {
+        if segment.kind == Kind::VERBATIM {
             Some(clamp(
                 segment.virtual_start + (start - segment.original_start),
                 segment.virtual_start,
@@ -883,17 +879,13 @@ pub(crate) fn original_start_projections(
 //                        ^             ^
 //                      result        result
 // spanmap.go:613
-pub(crate) fn original_end_projections(
-    segments: &[Segment],
-    end: u32,
-    feature: Feature,
-) -> Vec<u32> {
+pub fn original_end_projections(segments: &[Segment], end: u32, feature: Feature) -> Vec<u32> {
     let mut results = Vec::with_capacity(segments.len());
     results.extend(segments.iter().filter_map(|&segment| {
         if !supports_feature(segment, feature) {
             return None;
         }
-        if segment.kind == Kind::Verbatim {
+        if segment.kind == Kind::VERBATIM {
             Some(clamp(
                 segment.virtual_start + (end - segment.original_start),
                 segment.virtual_start,
@@ -908,7 +900,7 @@ pub(crate) fn original_end_projections(
 
 // originalToVirtualSpansInSegments maps a range fully contained by each segment.
 // spanmap.go:629
-pub(crate) fn original_to_virtual_spans_in_segments(
+pub fn original_to_virtual_spans_in_segments(
     segments: &[Segment],
     start: u32,
     end: u32,
@@ -919,7 +911,7 @@ pub(crate) fn original_to_virtual_spans_in_segments(
         if !supports_feature(segment, feature) {
             return None;
         }
-        if segment.kind == Kind::Verbatim {
+        if segment.kind == Kind::VERBATIM {
             let virtual_start = clamp(
                 segment.virtual_start + (start - segment.original_start),
                 segment.virtual_start,
@@ -946,7 +938,7 @@ pub(crate) fn original_to_virtual_spans_in_segments(
 
 // sameOriginalRange reports whether two segments belong to the same duplicate group.
 // spanmap.go:647
-pub(crate) fn same_original_range(left: Segment, right: Segment) -> bool {
+pub fn same_original_range(left: Segment, right: Segment) -> bool {
     left.original_start == right.original_start && left.original_end == right.original_end
 }
 
@@ -955,7 +947,7 @@ pub(crate) fn same_original_range(left: Segment, right: Segment) -> bool {
 // discard a whole subtree when none of its segments can reach the queried position.
 // spanmap.go:654
 #[derive(Debug)]
-pub(crate) struct OriginalIndex {
+pub struct OriginalIndex {
     segments: Vec<Segment>,
     leaf_count: usize,
     max_ends: Vec<u32>,
@@ -1066,7 +1058,7 @@ impl OriginalIndex {
 }
 
 // spanmap.go:725 (Go keeps a subslice of the collected segments; this owns a copy.)
-pub(crate) struct SegmentGroupAtOriginalPosition {
+pub struct SegmentGroupAtOriginalPosition {
     segments: Vec<Segment>,
     at_end: bool,
 }
@@ -1113,13 +1105,13 @@ impl OriginalIndex {
 
 // supportsFeature reports whether segment participates in feature.
 // spanmap.go:764
-pub(crate) fn supports_feature(segment: Segment, feature: Feature) -> bool {
+pub fn supports_feature(segment: Segment, feature: Feature) -> bool {
     segment.features.intersects(feature)
 }
 
 // clamp confines v to the inclusive interval [lo, hi].
 // spanmap.go:769 (not `Ord::clamp`, which panics when lo > hi.)
-pub(crate) fn clamp(v: u32, lo: u32, hi: u32) -> u32 {
+pub fn clamp(v: u32, lo: u32, hi: u32) -> u32 {
     lo.max(v.min(hi))
 }
 

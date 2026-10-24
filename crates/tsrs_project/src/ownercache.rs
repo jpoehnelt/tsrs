@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 use rustc_hash::FxHashSet;
 use tsrs_core::collections::SyncMap;
 
-struct ownerCacheEntry<V> {
-    mu: Mutex<ownerCacheEntryState<V>>,
+struct OwnerCacheEntry<V> {
+    mu: Mutex<OwnerCacheEntryState<V>>,
 }
 
-struct ownerCacheEntryState<V> {
+struct OwnerCacheEntryState<V> {
     value: Option<V>,
     owners: FxHashSet<u64>,
 }
@@ -19,24 +19,31 @@ struct ownerCacheEntryState<V> {
 // be Acquired multiple times during config parsing while only appearing once in
 // the ParsedCommandLine's list of extended files. When updating this code, check
 // if the same changes should be made to RefCountCache as well.
-pub struct OwnerCache<K: Hash + Eq, V, LoadArgs> {
-    entries: SyncMap<K, Arc<ownerCacheEntry<V>>>,
+// The loader arguments as a family over the lifetime of what they borrow: the extended config loaders borrow the
+// parse host and cache for one `load_and_acquire` call, so the cache stores `for<'a>` loaders instead of fixing one
+// argument lifetime (issue #646).
+pub trait LoadArgs {
+    type Args<'a>;
+}
 
-    is_expired: Option<Box<dyn Fn(&K, &V, &LoadArgs) -> bool + Send + Sync>>,
-    parse: Box<dyn Fn(&K, &LoadArgs) -> V + Send + Sync>,
+pub struct OwnerCache<K: Hash + Eq, V, A: LoadArgs> {
+    entries: SyncMap<K, Arc<OwnerCacheEntry<V>>>,
+
+    is_expired: Option<Box<dyn for<'a> Fn(&K, &V, &A::Args<'a>) -> bool + Send + Sync>>,
+    parse: Box<dyn for<'a> Fn(&K, &A::Args<'a>) -> V + Send + Sync>,
 }
 
 // ownercache.go:28
-pub fn new_owner_cache<K: Hash + Eq, V, LoadArgs>(
-    parse: impl Fn(&K, &LoadArgs) -> V + Send + Sync + 'static,
-    is_expired: Option<Box<dyn Fn(&K, &V, &LoadArgs) -> bool + Send + Sync>>,
-) -> OwnerCache<K, V, LoadArgs> {
+pub fn new_owner_cache<K: Hash + Eq, V, A: LoadArgs>(
+    parse: impl for<'a> Fn(&K, &A::Args<'a>) -> V + Send + Sync + 'static,
+    is_expired: Option<Box<dyn for<'a> Fn(&K, &V, &A::Args<'a>) -> bool + Send + Sync>>,
+) -> OwnerCache<K, V, A> {
     OwnerCache { entries: SyncMap::default(), is_expired, parse: Box::new(parse) }
 }
 
-impl<K: Hash + Eq + Clone, V: Clone, LoadArgs> OwnerCache<K, V, LoadArgs> {
+impl<K: Hash + Eq + Clone, V: Clone, A: LoadArgs> OwnerCache<K, V, A> {
     // ownercache.go:38
-    pub fn load_and_acquire(&self, identity: &K, owner: u64, load_args: &LoadArgs) -> V {
+    pub fn load_and_acquire(&self, identity: &K, owner: u64, load_args: &A::Args<'_>) -> V {
         self.load_or_store_locked_entry(identity, |entry, loaded| {
             if !loaded
                 || self.is_expired.as_ref().is_some_and(|is_expired| {
@@ -96,11 +103,11 @@ impl<K: Hash + Eq + Clone, V: Clone, LoadArgs> OwnerCache<K, V, LoadArgs> {
     fn load_or_store_locked_entry<R>(
         &self,
         key: &K,
-        f: impl FnOnce(&mut ownerCacheEntryState<V>, bool) -> R,
+        f: impl FnOnce(&mut OwnerCacheEntryState<V>, bool) -> R,
     ) -> R {
         loop {
-            let entry = Arc::new(ownerCacheEntry {
-                mu: Mutex::new(ownerCacheEntryState { value: None, owners: FxHashSet::default() }),
+            let entry = Arc::new(OwnerCacheEntry {
+                mu: Mutex::new(OwnerCacheEntryState { value: None, owners: FxHashSet::default() }),
             });
             let mut guard = entry.mu.lock().unwrap();
             let (existing, loaded) = self.entries.load_or_store(key.clone(), Arc::clone(&entry));

@@ -18,12 +18,12 @@ use super::util::{
 };
 use crate::lsutil;
 
-pub(crate) type ToPathFunc = Arc<dyn Fn(&str) -> Path + Send + Sync>;
+pub type ToPathFunc = Arc<dyn Fn(&str) -> Path + Send + Sync>;
 
 // extract.go:16
-pub(crate) struct symbolExtractor<'a> {
+pub struct SymbolExtractor<'a> {
     package_name: String,
-    stats: Arc<extractorStats>,
+    stats: Arc<ExtractorStats>,
 
     local_name_resolver: NameResolver<()>,
     checker: &'a mut Checker,
@@ -35,21 +35,21 @@ pub(crate) struct symbolExtractor<'a> {
 }
 
 // extract.go:29
-pub(crate) struct exportExtractor<'a> {
-    pub(crate) symbol_extractor: symbolExtractor<'a>,
-    module_resolver: &'a DefaultResolver,
+pub struct ExportExtractor<'a> {
+    pub(crate) symbol_extractor: SymbolExtractor<'a>,
+    module_resolver: &'a DefaultResolver<'a>,
 }
 
 // extract.go:34
 #[derive(Default)]
-pub(crate) struct extractorStats {
+pub struct ExtractorStats {
     pub(crate) exports: AtomicUsize,
     pub(crate) used_checker: AtomicUsize,
 }
 
-impl exportExtractor<'_> {
+impl ExportExtractor<'_> {
     // extract.go:39
-    pub(crate) fn stats(&self) -> Arc<extractorStats> {
+    pub(crate) fn stats(&self) -> Arc<ExtractorStats> {
         Arc::clone(&self.symbol_extractor.stats)
     }
 }
@@ -58,50 +58,50 @@ impl exportExtractor<'_> {
 // Go keeps the checker pointer in the lease; here the extractor owns the checker borrow and the lease records
 // whether it was handed out.
 #[derive(Default)]
-pub(crate) struct checkerLease {
+pub struct CheckerLease {
     used: bool,
 }
 
 // extract.go:58
-pub(crate) fn new_symbol_extractor<'a>(
+pub fn new_symbol_extractor<'a>(
     package_name: &str,
     checker: &'a mut Checker,
     to_path: Option<ToPathFunc>,
     realpath: Option<PathFunc>,
-) -> symbolExtractor<'a> {
-    symbolExtractor {
+) -> SymbolExtractor<'a> {
+    SymbolExtractor {
         package_name: package_name.to_string(),
         checker,
         local_name_resolver: NameResolver::new(tsrs_core::empty_compiler_options(), None),
-        stats: Arc::new(extractorStats::default()),
+        stats: Arc::new(ExtractorStats::default()),
         to_path,
         realpath,
     }
 }
 
 // extract.go:71
-pub(crate) fn new_export_extractor<'a>(
+pub fn new_export_extractor<'a>(
     package_name: &str,
     checker: &'a mut Checker,
-    module_resolver: &'a DefaultResolver,
+    module_resolver: &'a DefaultResolver<'a>,
     to_path: ToPathFunc,
     realpath: Option<PathFunc>,
-) -> exportExtractor<'a> {
-    exportExtractor {
+) -> ExportExtractor<'a> {
+    ExportExtractor {
         symbol_extractor: new_symbol_extractor(package_name, checker, Some(to_path), realpath),
         module_resolver,
     }
 }
 
-impl symbolExtractor<'_> {
+impl SymbolExtractor<'_> {
     // extract.go:50 (checkerLease.GetChecker)
-    fn get_checker(&mut self, lease: &mut checkerLease) -> &mut Checker {
+    fn get_checker(&mut self, lease: &mut CheckerLease) -> &mut Checker {
         lease.used = true;
         self.checker
     }
 
     // extract.go:55 (checkerLease.TryChecker)
-    fn try_checker(&mut self, lease: &checkerLease) -> Option<&mut Checker> {
+    fn try_checker(&mut self, lease: &CheckerLease) -> Option<&mut Checker> {
         if lease.used {
             return Some(self.checker);
         }
@@ -113,9 +113,9 @@ impl symbolExtractor<'_> {
     fn get_module_id(&self, file: P<SourceFile>) -> ModuleID {
         if let (Some(realpath), Some(to_path)) = (&self.realpath, &self.to_path) {
             let realpath = realpath(file.file_name());
-            return ModuleID(to_path(&realpath).to_string());
+            return ModuleID::File(to_path(&realpath).to_string());
         }
-        ModuleID(file.path().to_string())
+        ModuleID::File(file.path().to_string())
     }
 
     // extract.go:89
@@ -124,18 +124,18 @@ impl symbolExtractor<'_> {
     fn get_module_id_for_symbol(&self, symbol: P<Symbol>) -> Option<ModuleID> {
         let (module_id, file_name) = try_get_module_id_and_file_name_of_module_symbol(symbol)?;
         // If fileName is set, this is a source file that may need realpath normalization
-        if !file_name.is_empty() && self.realpath.is_some() {
-            if let Some(decl) = ast::get_non_augmentation_declaration(symbol) {
-                if decl.kind() == Kind::SourceFile {
-                    return Some(self.get_module_id(decl.as_source_file_p()));
-                }
-            }
+        if !file_name.is_empty()
+            && self.realpath.is_some()
+            && let Some(decl) = ast::get_non_augmentation_declaration(symbol)
+            && decl.kind() == Kind::SourceFile
+        {
+            return Some(self.get_module_id(decl.as_source_file_p()));
         }
         Some(module_id)
     }
 }
 
-impl exportExtractor<'_> {
+impl ExportExtractor<'_> {
     // extract.go:105
     pub(crate) fn extract_from_file(&mut self, file: P<SourceFile>) -> Vec<Arc<Export>> {
         if file.symbol().is_some() {
@@ -164,7 +164,7 @@ impl exportExtractor<'_> {
                     self.extract_from_module_declaration(
                         statement,
                         file,
-                        &ModuleID(statement.name().unwrap().text().to_string()),
+                        &ModuleID::Ambient(statement.name().unwrap().text().to_string()),
                         "",
                         &mut exports,
                     );
@@ -216,32 +216,34 @@ impl exportExtractor<'_> {
         }
         for &decl in &module_augmentations {
             let name = decl.name().unwrap().as_string_literal().text();
-            let mut module_id = ModuleID(name.to_string());
+            let mut module_id = ModuleID::Ambient(name.to_string());
             let mut module_file_name = String::new();
+            let mut unresolved_module_specifier = String::new();
             if tspath::is_external_module_name_relative(name) {
                 let resolved = self
                     .module_resolver
-                    .resolve_module_name(name, file.file_name(), ModuleKind::CommonJS, None)
+                    .resolve_module_name(name, file.file_name(), ModuleKind::COMMON_JS, None)
                     .unwrap()
                     .0;
                 if resolved.is_resolved() {
                     module_file_name = resolved.resolved_file_name.to_string();
-                    module_id = ModuleID(
+                    module_id = ModuleID::File(
                         (self.symbol_extractor.to_path.as_ref().unwrap())(&module_file_name)
                             .to_string(),
                     );
                 } else {
-                    // :shrug:
                     module_file_name = tspath::resolve_path(
                         &tspath::get_directory_path(file.file_name()),
                         &[name],
                     );
-                    module_id = ModuleID(
+                    module_id = ModuleID::File(
                         (self.symbol_extractor.to_path.as_ref().unwrap())(&module_file_name)
                             .to_string(),
                     );
+                    unresolved_module_specifier = name.to_string();
                 }
             }
+            let export_start = exports.len();
             self.extract_from_module_declaration(
                 decl,
                 file,
@@ -249,6 +251,11 @@ impl exportExtractor<'_> {
                 &module_file_name,
                 &mut exports,
             );
+            for export in &mut exports[export_start..] {
+                Arc::make_mut(export)
+                    .unresolved_module_specifier
+                    .clone_from(&unresolved_module_specifier);
+            }
         }
         exports
     }
@@ -282,7 +289,7 @@ fn is_non_pattern_ambient_module_declaration(file: P<SourceFile>, decl: P<Node>)
     !(file.pattern_ambient_modules().iter().any(|module| Some(module.symbol) == decl.symbol()))
 }
 
-impl symbolExtractor<'_> {
+impl SymbolExtractor<'_> {
     // extract.go:185
     pub(crate) fn extract_from_symbol(
         &mut self,
@@ -297,15 +304,15 @@ impl symbolExtractor<'_> {
             return;
         }
 
-        if name == ast::InternalSymbolNameExportStar {
-            let mut checker_lease = checkerLease::default();
+        if name == ast::INTERNAL_SYMBOL_NAME_EXPORT_STAR {
+            let mut checker_lease = CheckerLease::default();
             let parent = symbol.parent().unwrap();
             let mut all_exports = self.checker.get_exports_of_module_exported(parent);
             // allExports includes named exports from the file that will be processed separately;
             // we want to add only the ones that come from the star
             if let Some(parent_exports) = parent.exports() {
                 for (name, named_export) in parent_exports.entries() {
-                    if name != ast::InternalSymbolNameExportStar {
+                    if name != ast::INTERNAL_SYMBOL_NAME_EXPORT_STAR {
                         let idx = all_exports.iter().position(|&s| s == named_export);
                         if idx.is_some() || should_ignore_symbol(named_export) {
                             // Go's `slices.Delete(allExports, -1, 0)` (an ignored symbol that is not in the list) panics.
@@ -334,17 +341,16 @@ impl symbolExtractor<'_> {
                         // Go's GetMergedSymbol(nil) returns nil (the lease is still marked used).
                         self.get_checker(&mut checker_lease);
                     }
-                    if let Some(parent) = parent {
-                        if parent.is_external_module() {
-                            if let Some(target_module_id) = self.get_module_id_for_symbol(parent) {
-                                export.target = ExportID {
-                                    export_name: reexported_symbol.name().to_string(),
-                                    module_id: target_module_id,
-                                };
-                            }
-                        }
+                    if let Some(parent) = parent
+                        && parent.is_external_module()
+                        && let Some(target_module_id) = self.get_module_id_for_symbol(parent)
+                    {
+                        export.target = ExportID {
+                            export_name: reexported_symbol.name().to_string(),
+                            module_id: target_module_id,
+                        };
                     }
-                    export.through = ast::InternalSymbolNameExportStar.to_string();
+                    export.through = ast::INTERNAL_SYMBOL_NAME_EXPORT_STAR.to_string();
                     Some(Arc::new(export))
                 } else {
                     None
@@ -354,7 +360,7 @@ impl symbolExtractor<'_> {
         }
 
         let syntax = get_syntax(symbol);
-        let mut checker_lease = checkerLease::default();
+        let mut checker_lease = CheckerLease::default();
         let (export, target) = self.create_export(
             symbol,
             module_id,
@@ -370,32 +376,33 @@ impl symbolExtractor<'_> {
         exports.push(Arc::new(export));
 
         if let Some(target) = target {
-            if syntax == ExportSyntax::Equals && target.flags().intersects(SymbolFlags::Namespace) {
-                if let Some(target_exports) = target.exports() {
-                    exports.reserve(target_exports.len());
-                    exports.extend(target_exports.entries().into_iter().filter_map(
-                        |(inner_name, named_export)| {
-                            if inner_name != ast::InternalSymbolNameExportStar {
-                                let (export, _) = self.create_export(
-                                    named_export,
-                                    module_id,
-                                    module_file_name,
-                                    syntax,
-                                    file,
-                                    &mut checker_lease,
-                                );
-                                if let Some(mut export) = export {
-                                    export.through = name.to_string();
-                                    Some(Arc::new(export))
-                                } else {
-                                    None
-                                }
+            if syntax == ExportSyntax::Equals
+                && target.flags().intersects(SymbolFlags::Namespace)
+                && let Some(target_exports) = target.exports()
+            {
+                exports.reserve(target_exports.len());
+                exports.extend(target_exports.entries().into_iter().filter_map(
+                    |(inner_name, named_export)| {
+                        if inner_name == ast::INTERNAL_SYMBOL_NAME_EXPORT_STAR {
+                            None
+                        } else {
+                            let (export, _) = self.create_export(
+                                named_export,
+                                module_id,
+                                module_file_name,
+                                syntax,
+                                file,
+                                &mut checker_lease,
+                            );
+                            if let Some(mut export) = export {
+                                export.through = name.to_string();
+                                Some(Arc::new(export))
                             } else {
                                 None
                             }
-                        },
-                    ));
-                }
+                        }
+                    },
+                ));
             }
         } else if syntax == ExportSyntax::CommonJSModuleExports {
             let expression = symbol.declarations()[0].as_binary_expression().right();
@@ -450,7 +457,7 @@ impl symbolExtractor<'_> {
         module_file_name: &str,
         syntax: ExportSyntax,
         file: P<SourceFile>,
-        checker_lease: &mut checkerLease,
+        checker_lease: &mut CheckerLease,
     ) -> (Option<Export>, Option<P<Symbol>>) {
         if should_ignore_symbol(symbol) {
             return (None, None);
@@ -470,7 +477,7 @@ impl symbolExtractor<'_> {
         };
 
         if syntax == ExportSyntax::UMD {
-            export.export_id.export_name = ast::InternalSymbolNameExportEquals.to_string();
+            export.export_id.export_name = ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS.to_string();
             export.local_name = symbol.name().to_string();
         }
 
@@ -481,14 +488,12 @@ impl symbolExtractor<'_> {
                 let mut decl: Option<P<Node>> = None;
                 if !ts.declarations().is_empty() {
                     decl = Some(ts.declarations()[0]);
-                } else if ts.check_flags().intersects(CheckFlags::Mapped) {
-                    if let Some(mapped_decl) =
+                } else if ts.check_flags().intersects(CheckFlags::Mapped)
+                    && let Some(mapped_decl) =
                         self.get_checker(checker_lease).get_mapped_type_symbol_of_property(ts)
-                    {
-                        if !mapped_decl.declarations().is_empty() {
-                            decl = Some(mapped_decl.declarations()[0]);
-                        }
-                    }
+                    && !mapped_decl.declarations().is_empty()
+                {
+                    decl = Some(mapped_decl.declarations()[0]);
                 }
                 if decl.is_none() {
                     // !!! consider GetImmediateAliasedSymbol to go as far as we can
@@ -515,13 +520,12 @@ impl symbolExtractor<'_> {
                 export.script_element_kind_modifiers =
                     lsutil::get_symbol_modifiers(self.try_checker(checker_lease), Some(ts));
                 let mut target_module_id =
-                    ModuleID(ast::get_source_file_of_node(decl).unwrap().path().to_string());
-                if let Some(parent) = parent {
-                    if parent.is_external_module() {
-                        if let Some(id) = self.get_module_id_for_symbol(parent) {
-                            target_module_id = id;
-                        }
-                    }
+                    ModuleID::File(ast::get_source_file_of_node(decl).unwrap().path().to_string());
+                if let Some(parent) = parent
+                    && parent.is_external_module()
+                    && let Some(id) = self.get_module_id_for_symbol(parent)
+                {
+                    target_module_id = id;
                 }
                 export.target =
                     ExportID { export_name: ts.name().to_string(), module_id: target_module_id };
@@ -536,8 +540,8 @@ impl symbolExtractor<'_> {
                 lsutil::get_symbol_modifiers(self.try_checker(checker_lease), Some(symbol));
         }
 
-        if symbol.name() == ast::InternalSymbolNameDefault
-            || symbol.name() == ast::InternalSymbolNameExportEquals
+        if symbol.name() == ast::INTERNAL_SYMBOL_NAME_DEFAULT
+            || symbol.name() == ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS
         {
             let mut named_symbol = symbol;
             if let Some(s) = binder::get_local_symbol_for_export_default(symbol) {
@@ -547,14 +551,14 @@ impl symbolExtractor<'_> {
             if is_unusable_name(&export.local_name) {
                 export.local_name = export.target.export_name.clone();
             }
-            if is_unusable_name(&export.local_name) {
-                if let Some(ts) = target_symbol {
-                    named_symbol = ts;
-                    if let Some(s) = binder::get_local_symbol_for_export_default(ts) {
-                        named_symbol = s;
-                    }
-                    export.local_name = get_default_like_export_name_from_declaration(named_symbol);
+            if is_unusable_name(&export.local_name)
+                && let Some(ts) = target_symbol
+            {
+                named_symbol = ts;
+                if let Some(s) = binder::get_local_symbol_for_export_default(ts) {
+                    named_symbol = s;
                 }
+                export.local_name = get_default_like_export_name_from_declaration(named_symbol);
             }
             if is_unusable_name(&export.local_name) {
                 // Last resort: derive identifier from the file name. Use FileName() (original
@@ -584,7 +588,7 @@ impl symbolExtractor<'_> {
         &mut self,
         symbol: P<Symbol>,
         syntax: ExportSyntax,
-        checker_lease: &mut checkerLease,
+        checker_lease: &mut CheckerLease,
     ) -> Option<P<Symbol>> {
         if !ast::is_non_local_alias(symbol, SymbolFlags::None) {
             return Some(symbol);
@@ -614,7 +618,7 @@ impl symbolExtractor<'_> {
             }
             // !!! check if module.exports = foo is marked as an alias
             ExportSyntax::Equals => {
-                if symbol.name() == ast::InternalSymbolNameExportEquals {
+                if symbol.name() == ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS {
                     default_declaration = true;
                 }
             }
@@ -640,10 +644,10 @@ impl symbolExtractor<'_> {
                 false,
                 false,
             );
-            if let Some(local) = local {
-                if !ast::is_non_local_alias(local, SymbolFlags::None) {
-                    return Some(local);
-                }
+            if let Some(local) = local
+                && !ast::is_non_local_alias(local, SymbolFlags::None)
+            {
+                return Some(local);
             }
         }
 
@@ -705,9 +709,9 @@ fn get_syntax(symbol: P<Symbol>) -> ExportSyntax {
 fn is_unusable_name(name: &str) -> bool {
     name.is_empty()
         || name == "_default"
-        || name == ast::InternalSymbolNameExportStar
-        || name == ast::InternalSymbolNameDefault
-        || name == ast::InternalSymbolNameExportEquals
+        || name == ast::INTERNAL_SYMBOL_NAME_EXPORT_STAR
+        || name == ast::INTERNAL_SYMBOL_NAME_DEFAULT
+        || name == ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS
 }
 
 // extract.go:460
@@ -721,17 +725,17 @@ fn file_name_for_default_export_name(
     module_file_name: &str,
     module_id: &ModuleID,
 ) -> String {
-    if let Some(ts) = target_symbol {
-        if !ts.declarations().is_empty() {
-            let fn_ =
-                ast::get_source_file_of_node(ts.declarations()[0]).unwrap().file_name().to_string();
-            if !fn_.is_empty() {
-                return fn_;
-            }
+    if let Some(ts) = target_symbol
+        && !ts.declarations().is_empty()
+    {
+        let fn_ =
+            ast::get_source_file_of_node(ts.declarations()[0]).unwrap().file_name().to_string();
+        if !fn_.is_empty() {
+            return fn_;
         }
     }
     if !module_file_name.is_empty() {
         return module_file_name.to_string();
     }
-    module_id.0.clone()
+    module_id.as_str().to_string()
 }

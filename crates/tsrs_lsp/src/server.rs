@@ -9,10 +9,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use tsrs_api::adapter::{ClientConnAdapter, SessionHandler};
+use tsrs_api_transport as api_transport;
 use tsrs_core::CompilerOptions;
 use tsrs_core::P;
-use tsrs_core::collections::{OrderedMap, Set};
+use tsrs_core::collections::Set;
 use tsrs_core::context::{self, CancelCauseFunc, CancelFunc, Context, ContextError, Locale};
+use tsrs_core::json::JsonMap;
 use tsrs_core::tspath::{self, Path};
 use tsrs_ls::{LanguageService, lsutil};
 use tsrs_lsproto as lsproto;
@@ -24,11 +27,11 @@ use tsrs_project as project;
 use tsrs_project::logging;
 use tsrs_vfs::FS;
 
-use crate::dynamic_queue::{dynamicQueue, new_dynamic_queue, wait_until};
-use crate::logger::{is_valid_log_verbosity, logger, new_logger};
+use crate::dynamic_queue::{DynamicQueue, new_dynamic_queue, wait_until};
+use crate::logger::{LoggerImpl, is_valid_log_verbosity, new_logger};
 use crate::lsconsts;
 use crate::lspwatcher;
-use crate::progress::{new_project_loading_progress, projectLoadingProgress};
+use crate::progress::{ProjectLoadingProgress, new_project_loading_progress};
 use crate::stack_sanitizer::sanitize_stack_trace;
 use crate::workerpool;
 
@@ -43,13 +46,13 @@ pub struct ServerOptions {
     pub default_library_path: String,
     pub typings_location: String,
     pub parse_cache: Option<Arc<project::ParseCache>>,
-    pub npm_install: Option<npmInstallFunc>,
+    pub npm_install: Option<NpmInstallFunc>,
     // Spawn (content mappers) is not ported: content mappers are out of scope (docs/LSP.md).
     pub progress_delay: Duration, // delay before showing progress UI; 0 means no delay
     pub set_parent_process_id: Option<Box<dyn Fn(i32) + Send + Sync>>,
 }
 
-pub type npmInstallFunc = Arc<dyn Fn(&str, &[String]) -> Result<Vec<u8>, String> + Send + Sync>;
+pub type NpmInstallFunc = Arc<dyn Fn(&str, &[String]) -> Result<Vec<u8>, String> + Send + Sync>;
 
 // server.go:60
 pub fn new_server(opts: ServerOptions) -> Arc<Server> {
@@ -92,6 +95,7 @@ pub fn new_server(opts: ServerOptions) -> Arc<Server> {
         project_progress: OnceLock::new(),
         start_watchdog: opts.set_parent_process_id,
         flake_logging: OnceLock::new(),
+        api_sessions: Mutex::new(FxHashMap::default()),
     })
 }
 
@@ -107,7 +111,7 @@ fn file_rename_filters() -> Vec<lsproto::FileOperationFilter> {
 }
 
 // server.go:102 (Go's req field is never read)
-struct pendingClientRequest {
+struct PendingClientRequest {
     cancel: CancelFunc,
 }
 
@@ -122,12 +126,12 @@ pub trait Writer: Send {
 }
 
 // server.go:115
-struct lspReader<R: Read> {
+struct LspReader<R: Read> {
     r: lsproto::BaseReader<R>,
 }
 
 // server.go:119
-struct lspWriter<W: Write> {
+struct LspWriter<W: Write> {
     w: lsproto::BaseWriter<W>,
 }
 
@@ -137,11 +141,11 @@ const MESSAGE_MARSHAL_ERROR: ErrorTag = ErrorTag::Sentinel("messageMarshalError"
 fn message_marshal_error(err: &str) -> Error {
     Error {
         message: format!("failed to marshal message: {err}"),
-        tags: vec![MESSAGE_MARSHAL_ERROR, ErrorTag::Code(ErrorCode::InternalError)],
+        tags: vec![MESSAGE_MARSHAL_ERROR, ErrorTag::Code(ErrorCode::INTERNAL_ERROR)],
     }
 }
 
-impl<R: Read + Send> Reader for lspReader<R> {
+impl<R: Read + Send> Reader for LspReader<R> {
     // server.go:133
     fn read(&mut self) -> (Option<Message>, Option<Error>) {
         let data = match self.r.read() {
@@ -153,10 +157,10 @@ impl<R: Read + Send> Reader for lspReader<R> {
             Ok(req) => (Some(req), None),
             Err(err) => {
                 let err = Error::from(err);
-                if err.is_code(ErrorCode::InvalidParams) {
-                    return (None, Some(Error::wrap_code(ErrorCode::InvalidParams, err)));
+                if err.is_code(ErrorCode::INVALID_PARAMS) {
+                    return (None, Some(Error::wrap_code(ErrorCode::INVALID_PARAMS, err)));
                 }
-                (None, Some(Error::wrap_code(ErrorCode::InvalidRequest, err)))
+                (None, Some(Error::wrap_code(ErrorCode::INVALID_REQUEST, err)))
             }
         }
     }
@@ -164,7 +168,7 @@ impl<R: Read + Send> Reader for lspReader<R> {
 
 // server.go:150
 pub fn to_reader(r: impl Read + Send + 'static) -> Box<dyn Reader> {
-    Box::new(lspReader { r: lsproto::new_base_reader(r) })
+    Box::new(LspReader { r: lsproto::new_base_reader(r) })
 }
 
 // encoding/json/v2's maximum nesting depth (jsontext: "exceeded max depth").
@@ -192,7 +196,7 @@ fn exceeds_max_depth(v: &lsproto::Value) -> bool {
     false
 }
 
-impl<W: Write + Send> Writer for lspWriter<W> {
+impl<W: Write + Send> Writer for LspWriter<W> {
     // server.go:154
     fn write(&mut self, msg: &Message) -> Result<(), Error> {
         let value = msg.to_json();
@@ -206,7 +210,7 @@ impl<W: Write + Send> Writer for lspWriter<W> {
 
 // server.go:162
 pub fn to_writer(w: impl Write + Send + 'static) -> Box<dyn Writer> {
-    Box::new(lspWriter { w: lsproto::new_base_writer(w) })
+    Box::new(LspWriter { w: lsproto::new_base_writer(w) })
 }
 
 // server.go:171 (Go's watcherID field is never used)
@@ -217,13 +221,13 @@ pub struct Server {
 
     stderr: Mutex<Box<dyn Write + Send>>,
 
-    pub(crate) logger: Arc<logger>,
+    pub(crate) logger: Arc<LoggerImpl>,
     pub(crate) init_started: AtomicBool,
     client_seq: AtomicU64,
-    request_queue: dynamicQueue<Arc<RequestMessage>>,
-    pub(crate) outgoing_queue: dynamicQueue<Message>,
-    pending_client_requests: Mutex<FxHashMap<ID, pendingClientRequest>>,
-    pending_server_requests: Mutex<FxHashMap<ID, responseChan>>,
+    request_queue: DynamicQueue<Arc<RequestMessage>>,
+    pub(crate) outgoing_queue: DynamicQueue<Message>,
+    pending_client_requests: Mutex<FxHashMap<ID, PendingClientRequest>>,
+    pending_server_requests: Mutex<FxHashMap<ID, ResponseChan>>,
 
     cwd: String,
     fs: Option<Arc<dyn FS>>,
@@ -270,31 +274,93 @@ pub struct Server {
     // parseCache can be passed in so separate tests can share ASTs
     parse_cache: Option<Arc<project::ParseCache>>,
 
-    npm_install: Option<npmInstallFunc>,
+    npm_install: Option<NpmInstallFunc>,
 
     progress_delay: Duration,
-    project_progress: OnceLock<Arc<projectLoadingProgress>>,
+    project_progress: OnceLock<Arc<ProjectLoadingProgress>>,
 
     start_watchdog: Option<Box<dyn Fn(i32) + Send + Sync>>,
 
     flake_logging: OnceLock<lsproto::DiagnosticFlakeLogLevel>,
+
+    // apiSessions holds active API sessions keyed by their ID
+    pub(crate) api_sessions: Mutex<FxHashMap<String, Arc<ApiSessionState>>>,
+}
+
+// server.go:256
+pub struct ApiSessionState {
+    session: Arc<tsrs_api::Session>,
+    // Go keeps the transport; a thread blocked in accept is woken through its path (`wake_api_transport`).
+    transport_path: std::path::PathBuf,
+    cancel: CancelFunc,
+    done: Context,
+
+    mu: Mutex<ApiSessionConnection>,
+}
+
+#[derive(Default)]
+struct ApiSessionConnection {
+    // Closes the accepted connection (Go `connection.Close()`).
+    connection: Option<Arc<dyn Fn() + Send + Sync>>,
+    stopped: bool,
+}
+
+impl ApiSessionState {
+    // server.go:267
+    fn attach_connection(&self, connection: Arc<dyn Fn() + Send + Sync>) -> bool {
+        let mut inner = self.mu.lock().unwrap();
+        if inner.stopped {
+            connection();
+            return false;
+        }
+        inner.connection = Some(connection);
+        true
+    }
+
+    // server.go:278
+    fn stop(&self) {
+        {
+            let mut inner = self.mu.lock().unwrap();
+            if !inner.stopped {
+                inner.stopped = true;
+                self.cancel.call();
+                wake_api_transport(&self.transport_path);
+                if let Some(connection) = &inner.connection {
+                    connection();
+                }
+            }
+        }
+        self.done.wait();
+    }
+}
+
+// Go's stop closes the transport, which fails a pending Accept. Closing a listener does not wake a thread
+// blocked in accept, so connect to it instead; `attach_connection` then rejects that connection. After the
+// accept the listener is gone and the connection attempt fails, which is fine.
+fn wake_api_transport(path: &std::path::Path) {
+    #[cfg(unix)]
+    let _ = std::os::unix::net::UnixStream::connect(path);
+    #[cfg(windows)]
+    let _ = std::fs::OpenOptions::new().read(true).write(true).open(path);
+    #[cfg(not(any(unix, windows)))]
+    let _ = path;
 }
 
 // Go's `chan *lsproto.ResponseMessage` with buffer 1 in pendingServerRequests.
 #[derive(Clone)]
-struct responseChan {
-    inner: Arc<(Mutex<responseChanState>, Condvar)>,
+struct ResponseChan {
+    inner: Arc<(Mutex<ResponseChanState>, Condvar)>,
 }
 
 #[derive(Default)]
-struct responseChanState {
+struct ResponseChanState {
     value: Option<ResponseMessage>,
     closed: bool,
 }
 
-impl responseChan {
-    fn new() -> responseChan {
-        responseChan { inner: Arc::new((Mutex::new(responseChanState::default()), Condvar::new())) }
+impl ResponseChan {
+    fn new() -> ResponseChan {
+        ResponseChan { inner: Arc::new((Mutex::new(ResponseChanState::default()), Condvar::new())) }
     }
 
     fn send(&self, resp: ResponseMessage) {
@@ -332,7 +398,7 @@ impl responseChan {
 static DEFAULT_CLIENT_CAPABILITIES: LazyLock<Arc<lsproto::ResolvedClientCapabilities>> =
     LazyLock::new(|| Arc::new(lsproto::ResolvedClientCapabilities::default()));
 
-pub(crate) type asyncWork = Box<dyn FnOnce() -> Result<(), Error> + Send>;
+pub type AsyncWorkImpl = Box<dyn FnOnce() -> Result<(), Error> + Send>;
 
 impl Server {
     // The server's lifecycle context (Go `s.backgroundCtx`, set by Run).
@@ -384,7 +450,7 @@ impl Server {
         let _ = self.session.set(session);
     }
 
-    pub(crate) fn logger_arc(&self) -> Arc<logger> {
+    pub(crate) fn logger_arc(&self) -> Arc<LoggerImpl> {
         Arc::clone(&self.logger)
     }
 
@@ -455,7 +521,7 @@ impl Server {
                 lsproto::UnregistrationParams {
                     unregisterations: vec![lsproto::Unregistration {
                         id: id.to_string(),
-                        method: Method::WorkspaceDidChangeWatchedFiles.0.to_string(),
+                        method: Method::WORKSPACE_DID_CHANGE_WATCHED_FILES.0.to_string(),
                     }],
                 },
             );
@@ -574,101 +640,101 @@ impl Server {
             let mut unregistrations = vec![
                 unregistration(
                     CONTENT_MAPPER_DID_OPEN_REGISTRATION_ID,
-                    Method::TextDocumentDidOpen,
+                    Method::TEXT_DOCUMENT_DID_OPEN,
                 ),
                 unregistration(
                     CONTENT_MAPPER_DID_CHANGE_REGISTRATION_ID,
-                    Method::TextDocumentDidChange,
+                    Method::TEXT_DOCUMENT_DID_CHANGE,
                 ),
                 unregistration(
                     CONTENT_MAPPER_DID_CLOSE_REGISTRATION_ID,
-                    Method::TextDocumentDidClose,
+                    Method::TEXT_DOCUMENT_DID_CLOSE,
                 ),
                 unregistration(
                     CONTENT_MAPPER_DIAGNOSTIC_REGISTRATION_ID,
-                    Method::TextDocumentDiagnostic,
+                    Method::TEXT_DOCUMENT_DIAGNOSTIC,
                 ),
-                unregistration(CONTENT_MAPPER_HOVER_REGISTRATION_ID, Method::TextDocumentHover),
+                unregistration(CONTENT_MAPPER_HOVER_REGISTRATION_ID, Method::TEXT_DOCUMENT_HOVER),
                 unregistration(
                     CONTENT_MAPPER_SIGNATURE_HELP_REGISTRATION_ID,
-                    Method::TextDocumentSignatureHelp,
+                    Method::TEXT_DOCUMENT_SIGNATURE_HELP,
                 ),
                 unregistration(
                     CONTENT_MAPPER_DEFINITION_REGISTRATION_ID,
-                    Method::TextDocumentDefinition,
+                    Method::TEXT_DOCUMENT_DEFINITION,
                 ),
                 unregistration(
                     CONTENT_MAPPER_TYPE_DEFINITION_REGISTRATION_ID,
-                    Method::TextDocumentTypeDefinition,
+                    Method::TEXT_DOCUMENT_TYPE_DEFINITION,
                 ),
                 unregistration(
                     CONTENT_MAPPER_IMPLEMENTATION_REGISTRATION_ID,
-                    Method::TextDocumentImplementation,
+                    Method::TEXT_DOCUMENT_IMPLEMENTATION,
                 ),
                 unregistration(
                     CONTENT_MAPPER_REFERENCES_REGISTRATION_ID,
-                    Method::TextDocumentReferences,
+                    Method::TEXT_DOCUMENT_REFERENCES,
                 ),
                 unregistration(
                     CONTENT_MAPPER_DOCUMENT_HIGHLIGHT_REGISTRATION_ID,
-                    Method::TextDocumentDocumentHighlight,
+                    Method::TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT,
                 ),
                 unregistration(
                     CONTENT_MAPPER_COMPLETION_REGISTRATION_ID,
-                    Method::TextDocumentCompletion,
+                    Method::TEXT_DOCUMENT_COMPLETION,
                 ),
-                unregistration(CONTENT_MAPPER_RENAME_REGISTRATION_ID, Method::TextDocumentRename),
+                unregistration(CONTENT_MAPPER_RENAME_REGISTRATION_ID, Method::TEXT_DOCUMENT_RENAME),
                 unregistration(
                     CONTENT_MAPPER_SEMANTIC_TOKENS_REGISTRATION_ID,
-                    Method::TextDocumentSemanticTokens,
+                    Method::TEXT_DOCUMENT_SEMANTIC_TOKENS,
                 ),
                 unregistration(
                     CONTENT_MAPPER_DOCUMENT_SYMBOL_REGISTRATION_ID,
-                    Method::TextDocumentDocumentSymbol,
+                    Method::TEXT_DOCUMENT_DOCUMENT_SYMBOL,
                 ),
                 unregistration(
                     CONTENT_MAPPER_FOLDING_RANGE_REGISTRATION_ID,
-                    Method::TextDocumentFoldingRange,
+                    Method::TEXT_DOCUMENT_FOLDING_RANGE,
                 ),
                 unregistration(
                     CONTENT_MAPPER_SELECTION_RANGE_REGISTRATION_ID,
-                    Method::TextDocumentSelectionRange,
+                    Method::TEXT_DOCUMENT_SELECTION_RANGE,
                 ),
                 unregistration(
                     CONTENT_MAPPER_INLAY_HINT_REGISTRATION_ID,
-                    Method::TextDocumentInlayHint,
+                    Method::TEXT_DOCUMENT_INLAY_HINT,
                 ),
                 unregistration(
                     CONTENT_MAPPER_CODE_LENS_REGISTRATION_ID,
-                    Method::TextDocumentCodeLens,
+                    Method::TEXT_DOCUMENT_CODE_LENS,
                 ),
                 unregistration(
                     CONTENT_MAPPER_CODE_ACTION_REGISTRATION_ID,
-                    Method::TextDocumentCodeAction,
+                    Method::TEXT_DOCUMENT_CODE_ACTION,
                 ),
                 unregistration(
                     CONTENT_MAPPER_FORMATTING_REGISTRATION_ID,
-                    Method::TextDocumentFormatting,
+                    Method::TEXT_DOCUMENT_FORMATTING,
                 ),
                 unregistration(
                     CONTENT_MAPPER_RANGE_FORMATTING_REGISTRATION_ID,
-                    Method::TextDocumentRangeFormatting,
+                    Method::TEXT_DOCUMENT_RANGE_FORMATTING,
                 ),
                 unregistration(
                     CONTENT_MAPPER_ON_TYPE_FORMATTING_REGISTRATION_ID,
-                    Method::TextDocumentOnTypeFormatting,
+                    Method::TEXT_DOCUMENT_ON_TYPE_FORMATTING,
                 ),
                 unregistration(
                     CONTENT_MAPPER_LINKED_EDITING_REGISTRATION_ID,
-                    Method::TextDocumentLinkedEditingRange,
+                    Method::TEXT_DOCUMENT_LINKED_EDITING_RANGE,
                 ),
                 unregistration(
                     CONTENT_MAPPER_CALL_HIERARCHY_REGISTRATION_ID,
-                    Method::TextDocumentPrepareCallHierarchy,
+                    Method::TEXT_DOCUMENT_PREPARE_CALL_HIERARCHY,
                 ),
                 unregistration(
                     CONTENT_MAPPER_WILL_RENAME_FILES_REGISTRATION_ID,
-                    Method::WorkspaceWillRenameFiles,
+                    Method::WORKSPACE_WILL_RENAME_FILES,
                 ),
             ];
             unregistrations
@@ -734,7 +800,7 @@ impl Server {
                     text_document_did_change: Some(
                         lsproto::TextDocumentChangeRegistrationOptions {
                             document_selector: selector.clone(),
-                            sync_kind: lsproto::TextDocumentSyncKind::Incremental,
+                            sync_kind: lsproto::TextDocumentSyncKind::INCREMENTAL,
                         },
                     ),
                     ..Default::default()
@@ -1189,7 +1255,7 @@ impl Server {
                     go_sprint_value(user_prefs)
                 ));
                 if let lsproto::Value::Object(config) = user_prefs {
-                    let mut items = OrderedMap::default();
+                    let mut items = JsonMap::new();
                     items.insert("js/ts".to_string(), lsproto::Value::Object(config.clone()));
                     return Ok(lsutil::parse_user_preferences(&items));
                 }
@@ -1223,7 +1289,7 @@ impl Server {
             Ok(configs) => configs,
             Err(err) => return Err(Error::wrap("configure request failed: ", err)),
         };
-        let mut config_map: OrderedMap<String, lsproto::Value> = OrderedMap::default();
+        let mut config_map = JsonMap::new();
         config_map.extend(configs.into_iter().enumerate().filter_map(|(i, config)| match i {
             0 => Some(("js/ts".to_string(), config)),
             1 => Some(("typescript".to_string(), config)),
@@ -1245,7 +1311,7 @@ impl Server {
 
     // server.go:859
     pub fn run(self: &Arc<Self>, ctx: &Context) -> Result<(), Error> {
-        let (g, ctx) = errGroup::with_context(ctx);
+        let (g, ctx) = ErrGroup::with_context(ctx);
         let _ = self.background_ctx.set(ctx.clone());
         {
             let s = Arc::clone(self);
@@ -1271,10 +1337,11 @@ impl Server {
             });
         }
 
-        if let Some(err) = g.wait() {
-            if !err.is_eof() && ctx.err().is_some() {
-                return Err(err);
-            }
+        if let Some(err) = g.wait()
+            && !err.is_eof()
+            && ctx.err().is_some()
+        {
+            return Err(err);
         }
         Ok(())
     }
@@ -1290,14 +1357,14 @@ impl Server {
             }
             let (msg, err) = reader.read();
             if let Some(err) = err {
-                if err.is_code(ErrorCode::InvalidRequest) || err.is_code(ErrorCode::InvalidParams) {
+                if err.is_code(ErrorCode::INVALID_REQUEST) || err.is_code(ErrorCode::INVALID_PARAMS)
+                {
                     let mut id = None;
-                    if err.is_code(ErrorCode::InvalidParams) {
-                        if let Some(msg) = &msg {
-                            if msg.kind == MessageKind::Request {
-                                id.clone_from(&msg.as_request().id);
-                            }
-                        }
+                    if err.is_code(ErrorCode::INVALID_PARAMS)
+                        && let Some(msg) = &msg
+                        && msg.kind == MessageKind::Request
+                    {
+                        id.clone_from(&msg.as_request().id);
                     }
                     self.send_error(id.as_ref(), err)?;
                     continue;
@@ -1308,7 +1375,7 @@ impl Server {
 
             if self.initialize_params.get().is_none() && msg.kind == MessageKind::Request {
                 let req = msg.into_request();
-                if req.method == Method::Initialize {
+                if req.method == Method::INITIALIZE {
                     let params = match req.unmarshal_params::<lsproto::InitializeParams>() {
                         Ok(params) => params,
                         Err(err) => {
@@ -1319,7 +1386,7 @@ impl Server {
                     let resp = self.handle_initialize(ctx, params, &req)?;
                     self.send_result(req.id.as_ref(), &resp)?;
                 } else {
-                    self.send_error(req.id.as_ref(), ErrorCode::ServerNotInitialized.into())?;
+                    self.send_error(req.id.as_ref(), ErrorCode::SERVER_NOT_INITIALIZED.into())?;
                 }
                 continue;
             }
@@ -1334,7 +1401,7 @@ impl Server {
                 }
             } else {
                 let req = msg.into_request();
-                if req.method == Method::CancelRequest {
+                if req.method == Method::CANCEL_REQUEST {
                     if let Ok(params) = req.unmarshal_params::<lsproto::CancelParams>() {
                         self.cancel_request(&params.id);
                     }
@@ -1357,7 +1424,7 @@ impl Server {
     // server.go:968
     fn dispatch_loop(self: &Arc<Self>, ctx: &Context) -> Result<(), Error> {
         let (ctx, lsp_exit) = ctx.with_cancel_cause();
-        let _exit_on_return = deferCall(Some({
+        let _exit_on_return = DeferCall(Some({
             let lsp_exit = lsp_exit.clone();
             move || lsp_exit.call(None)
         }));
@@ -1377,7 +1444,7 @@ impl Server {
                 self.pending_client_requests
                     .lock()
                     .unwrap()
-                    .insert(id.clone(), pendingClientRequest { cancel: cancel_func });
+                    .insert(id.clone(), PendingClientRequest { cancel: cancel_func });
             }
 
             let lease = project::enter_checker_data_lease(&request_ctx);
@@ -1413,7 +1480,7 @@ impl Server {
     // server.go:990 (dispatchLoop's handleError closure)
     fn handle_error(&self, id: Option<&ID>, err: Error, lsp_exit: &CancelCauseFunc) {
         if err.is(ErrorTag::ContextCanceled) {
-            if let Err(err) = self.send_error(id, ErrorCode::RequestCancelled.into()) {
+            if let Err(err) = self.send_error(id, ErrorCode::REQUEST_CANCELLED.into()) {
                 lsp_exit.call(Some(err.message));
             }
         } else if err.is_eof() {
@@ -1471,10 +1538,10 @@ impl Server {
         ));
         let req = info.new_request_message(Some(id.clone()), params);
 
-        let response_chan = responseChan::new();
+        let response_chan = ResponseChan::new();
         self.pending_server_requests.lock().unwrap().insert(id.clone(), response_chan.clone());
 
-        let _remove = deferCall(Some(|| {
+        let _remove = DeferCall(Some(|| {
             let mut pending = self.pending_server_requests.lock().unwrap();
             if let Some(resp_chan) = pending.remove(&id) {
                 resp_chan.close();
@@ -1529,11 +1596,11 @@ impl Server {
     pub(crate) fn send_error(&self, id: Option<&ID>, err: Error) -> Result<(), Error> {
         // Do not send error response for notifications,
         // except for parse errors which may occur before determining if the message is a request or notification.
-        if id.is_none() && !err.is_code(ErrorCode::InvalidRequest) {
+        if id.is_none() && !err.is_code(ErrorCode::INVALID_REQUEST) {
             self.logger.errorf(format_args!("error handling notification: {err}"));
             return Ok(());
         }
-        let code = err.as_error_code().unwrap_or(ErrorCode::InternalError);
+        let code = err.as_error_code().unwrap_or(ErrorCode::INTERNAL_ERROR);
         // TODO(jakebailey): error data
         self.send_response(ResponseMessage {
             id: id.cloned(),
@@ -1569,7 +1636,7 @@ impl Server {
         self: &Arc<Self>,
         ctx: &Context,
         req: &Arc<RequestMessage>,
-    ) -> Result<Option<asyncWork>, Error> {
+    ) -> Result<Option<AsyncWorkImpl>, Error> {
         let ctx = lsproto::with_client_capabilities(ctx, self.client_capabilities_arc());
 
         if let Some(handler) = handlers().0.get(&req.method) {
@@ -1652,7 +1719,7 @@ impl Server {
         }
         self.logger.warn(&format!("unknown method '{}'", req.method));
         if req.id.is_some() {
-            self.send_error(req.id.as_ref(), ErrorCode::InvalidRequest.into())?;
+            self.send_error(req.id.as_ref(), ErrorCode::INVALID_REQUEST.into())?;
             return Ok(None);
         }
         Ok(None)
@@ -1668,7 +1735,7 @@ impl Server {
         let (default_project, default_ls, all_projects) =
             self.session().get_language_service_and_projects_for_file(ctx, uri)?;
         let orchestrator: Arc<dyn tsrs_ls::CrossProjectOrchestrator> =
-            Arc::new(crossProjectOrchestrator {
+            Arc::new(CrossProjectOrchestratorImpl {
                 server: Arc::clone(self),
                 default_project: Arc::<project::Project>::clone(default_project.arc()),
                 all_projects,
@@ -1700,7 +1767,7 @@ impl Server {
             let _ = self.send_error(
                 req.id.as_ref(),
                 Error::wrap_code(
-                    ErrorCode::InternalError,
+                    ErrorCode::INTERNAL_ERROR,
                     Error::new(format!("panic handling request {}: {}", req.method, r)),
                 ),
             );
@@ -1714,7 +1781,7 @@ impl Server {
                 lsproto::TelemetryEvent {
                     request_failure_telemetry_event: Some(lsproto::RequestFailureTelemetryEvent {
                         properties: lsproto::RequestFailureTelemetryProperties {
-                            error_code: ErrorCode::InternalError.string(),
+                            error_code: ErrorCode::INTERNAL_ERROR.string(),
                             request_method: req.method.0.replace('/', "."),
                             stack: sanitize_stack_trace(stack),
                         },
@@ -1734,7 +1801,7 @@ impl Server {
         _req: &RequestMessage,
     ) -> Result<lsproto::InitializeResponse, Error> {
         if self.initialize_params.get().is_some() {
-            return Err(ErrorCode::InvalidRequest.into());
+            return Err(ErrorCode::INVALID_REQUEST.into());
         }
 
         self.init_started.store(true, Ordering::SeqCst);
@@ -1752,10 +1819,10 @@ impl Server {
         };
         let _ = self.initialization_options.set(initialization_options);
         let initialization_options = self.initialization_options();
-        if let Some(v) = initialization_options.log_verbosity {
-            if is_valid_log_verbosity(v) {
-                self.logger.set_verbosity(v);
-            }
+        if let Some(v) = initialization_options.log_verbosity
+            && is_valid_log_verbosity(v)
+        {
+            self.logger.set_verbosity(v);
         }
         if let Some(level) = initialization_options.track_flaky_diagnostics {
             let _ = self.flake_logging.set(level);
@@ -1788,10 +1855,10 @@ impl Server {
         }
         *self.init_locale.lock().unwrap() = self.get_locale();
 
-        if let Some(start_watchdog) = &self.start_watchdog {
-            if let Some(process_id) = params.process_id.integer {
-                start_watchdog(process_id);
-            }
+        if let Some(start_watchdog) = &self.start_watchdog
+            && let Some(process_id) = params.process_id.integer
+        {
+            start_watchdog(process_id);
         }
 
         let response = lsproto::InitializeResult {
@@ -1801,7 +1868,7 @@ impl Server {
                 text_document_sync: Some(lsproto::TextDocumentSyncOptionsOrKind {
                     options: Some(lsproto::TextDocumentSyncOptions {
                         open_close: Some(true),
-                        change: Some(lsproto::TextDocumentSyncKind::Incremental),
+                        change: Some(lsproto::TextDocumentSyncKind::INCREMENTAL),
                         save: Some(lsproto::BooleanOrSaveOptions { boolean: Some(true), ..Default::default() }),
                         ..Default::default()
                     }),
@@ -1944,10 +2011,10 @@ impl Server {
             let background_ctx = self.background_ctx();
             let on_changes: lspwatcher::OnChanges =
                 Arc::new(move |changes: Vec<lsproto::FileEvent>| {
-                    if let Some(s) = s.upgrade() {
-                        if let Some(session) = s.session.get() {
-                            session.did_change_watched_files(&background_ctx, &changes);
-                        }
+                    if let Some(s) = s.upgrade()
+                        && let Some(session) = s.session.get()
+                    {
+                        session.did_change_watched_files(&background_ctx, &changes);
                     }
                 });
             let logger: Arc<dyn logging::Logger> = self.logger_arc();
@@ -2078,6 +2145,7 @@ impl Server {
         if let Some(builtin_watcher) = self.builtin_watcher.get() {
             builtin_watcher.close();
         }
+        self.close_api_sessions();
         self.session().close();
         Ok(lsproto::Null)
     }
@@ -2220,7 +2288,7 @@ impl Server {
     ) -> Result<(), Error> {
         if !is_valid_log_verbosity(params.verbosity) {
             return Err(Error::wrap_code(
-                ErrorCode::InvalidParams,
+                ErrorCode::INVALID_PARAMS,
                 Error::new(format!("invalid log verbosity {}", params.verbosity.0)),
             ));
         }
@@ -2236,7 +2304,7 @@ impl Server {
         params: &lsproto::DocumentDiagnosticParams,
     ) -> Result<lsproto::DocumentDiagnosticResponse, Error> {
         let ctx = context::with_checker_lifetime(ctx, context::CheckerLifetime::Diagnostics);
-        if self.flake_logging() == lsproto::DiagnosticFlakeLogLevel::Off {
+        if self.flake_logging() == lsproto::DiagnosticFlakeLogLevel::OFF {
             return language_service.provide_diagnostics(&ctx, &params.text_document.uri);
         }
         let direct = language_service.provide_diagnostics(&ctx, &params.text_document.uri)?;
@@ -2276,7 +2344,7 @@ impl Server {
                 lsproto::TelemetryEvent {
                     request_failure_telemetry_event: Some(lsproto::RequestFailureTelemetryEvent {
                         properties: lsproto::RequestFailureTelemetryProperties {
-                            error_code: ErrorCode::InternalError.string(),
+                            error_code: ErrorCode::INTERNAL_ERROR.string(),
                             request_method: "textDocument.diagnostic.flakeLog".to_string(),
                             stack: sanitized_diff,
                         },
@@ -2288,7 +2356,7 @@ impl Server {
         }
 
         assert!(
-            self.flake_logging() != lsproto::DiagnosticFlakeLogLevel::Panic,
+            self.flake_logging() != lsproto::DiagnosticFlakeLogLevel::PANIC,
             "flaky diagnostic(s) logged:\n{diff}"
         );
         Ok(direct)
@@ -2676,17 +2744,8 @@ impl Server {
         let Some(data) = params.data.clone() else {
             return Err(Error::new("completion item data is nil"));
         };
-        // tsrs-only: Go turns any file name into a URI and panics on one that is not a rooted path ("", a URI).
-        if !tspath::is_rooted_disk_path(&data.file_name) && !data.file_name.starts_with("^/") {
-            return Err(Error::wrap_code(
-                ErrorCode::InvalidParams,
-                Error::new(format!("completion item data has no file name: {:?}", data.file_name)),
-            ));
-        }
-        let language_service = self.session().get_language_service(
-            ctx,
-            &tsrs_ls::lsconv::file_name_to_document_uri(&data.file_name),
-        )?;
+        let uri = completion_item_file_name_to_document_uri(&data.file_name)?;
+        let language_service = self.session().get_language_service(ctx, &uri)?;
         // `defer s.recover(reqMsg)`: Go answers the recovered panic with an internal error and then sends the nil
         // result; here the handler returns an error instead of a second (null) result.
         match recover_scope(|| language_service.resolve_completion_item(ctx, params, Some(&data))) {
@@ -2778,7 +2837,7 @@ impl Server {
             };
         if let Some(text_document) = params.text_document.as_ref()
             && self.session().config().workspace_symbols_scope
-                == lsutil::WorkspaceSymbolsScope::CurrentProject
+                == lsutil::WorkspaceSymbolsScope::CURRENT_PROJECT
         {
             let uri = text_document.uri.clone();
             self.session().with_snapshot_for_document(ctx, &uri, |snapshot| {
@@ -2920,7 +2979,7 @@ impl Server {
         // tsrs-only: Go unwraps the data, which a client's lens may not have, and panics.
         let Some(data) = &code_lens.data else {
             return Err(Error::wrap_code(
-                ErrorCode::InvalidParams,
+                ErrorCode::INVALID_PARAMS,
                 Error::new("code lens data is nil"),
             ));
         };
@@ -2938,7 +2997,7 @@ impl Server {
             // or the file itself could have been removed from the session entirely.
             // Note this won't bail out on every change, but will prevent crashing
             // based on non-existent files and line maps from shortened files.
-            return Err(ErrorCode::ContentModified.into());
+            return Err(ErrorCode::CONTENT_MODIFIED.into());
         };
         // Go: `defer s.recover(reqMsg)`. After a recovered panic Go returns a nil *CodeLens; the Rust response type
         // is not nullable, so the (already answered) request gets an empty code lens.
@@ -3029,18 +3088,148 @@ impl Server {
         ls.provide_semantic_tokens_range(ctx, &params.text_document.uri, params.range)
     }
 
-    // server.go:2280 (the `api` package is out of scope)
-    #[expect(
-        clippy::unused_self,
-        reason = "Registered LSP handlers share a Server receiver so the dispatcher can call them uniformly."
-    )]
+    // server.go:2334
     fn handle_initialize_api_session(
         self: &Arc<Self>,
         _ctx: &Context,
-        _params: &lsproto::InitializeAPISessionParams,
+        params: &lsproto::InitializeAPISessionParams,
         _req: &RequestMessage,
     ) -> Result<lsproto::CustomInitializeAPISessionResponse, Error> {
-        Err(not_yet_ported(Method::CustomInitializeAPISession))
+        let mut api_sessions = self.api_sessions.lock().unwrap();
+
+        let api_session = tsrs_api::Session::new_lsp_session(Arc::clone(self.session()), false);
+
+        let transport = match &params.pipe {
+            Some(pipe) if !pipe.is_empty() => {
+                api_transport::PipeListener::bind(std::path::Path::new(pipe))
+            }
+            _ => api_transport::PipeListener::bind_private(&Self::generate_api_pipe_name()),
+        }
+        .map_err(|err| Error::new(format!("failed to create API transport: {err}")))?;
+
+        let (api_ctx, api_cancel) = self.background_ctx().with_cancel();
+        let (done, close_done) = Context::background().with_cancel();
+        let state = Arc::new(ApiSessionState {
+            session: Arc::clone(&api_session),
+            transport_path: transport.path().to_path_buf(),
+            cancel: api_cancel,
+            done,
+            mu: Mutex::new(ApiSessionConnection::default()),
+        });
+        let pipe = transport.path().to_string_lossy().into_owned();
+
+        // Start accepting connections in the background. (A goroutine cannot fail to start; a thread can, and the
+        // request then fails before the session is registered.)
+        let s = Arc::clone(self);
+        let thread_state = Arc::clone(&state);
+        std::thread::Builder::new()
+            .name(format!("{} connection", api_session.id()))
+            .spawn(move || s.run_api_session(&thread_state, transport, &api_ctx, &close_done))
+            .map_err(|err| Error::new(format!("failed to start API session: {err}")))?;
+
+        api_sessions.insert(api_session.id().to_string(), state);
+
+        Ok(lsproto::InitializeAPISessionResult { session_id: api_session.id().to_string(), pipe })
+    }
+
+    // server.go:2365 (the goroutine started by handleInitializeAPISession)
+    fn run_api_session(
+        &self,
+        state: &ApiSessionState,
+        transport: api_transport::PipeListener,
+        api_ctx: &Context,
+        close_done: &CancelFunc,
+    ) {
+        let api_session = &state.session;
+        let _done = DeferCall(Some(|| close_done.call()));
+        let _api_cancel = DeferCall(Some(|| state.cancel.call()));
+        let _close = DeferCall(Some(|| {
+            api_session.close();
+            self.remove_api_session(api_session.id());
+        }));
+
+        let accepted = transport.accept();
+        drop(transport);
+        let mut rwc = match accepted {
+            Ok(rwc) => rwc,
+            Err(accept_err) => {
+                self.logger.errorf(format_args!(
+                    "API session {}: failed to accept connection: {accept_err}",
+                    api_session.id()
+                ));
+                return;
+            }
+        };
+        let connection: Arc<dyn Fn() + Send + Sync> = match rwc.closer.take() {
+            Some(closer) => Arc::from(closer),
+            None => Arc::new(|| {}),
+        };
+        if !state.attach_connection(Arc::clone(&connection)) {
+            return;
+        }
+        rwc.closer = Some(Box::new({
+            let connection = Arc::clone(&connection);
+            move || connection()
+        }));
+        let _close_rwc = DeferCall(Some(|| connection()));
+
+        // The connection runs until apiCtx is canceled: by stop, or when the server's background context is.
+        let options = api_transport::ServeOptions::new(true /*async*/);
+        let shutdown = options.shutdown.clone();
+        let stop_shutdown = api_ctx.after_func(move || shutdown.cancel());
+        let _stop_shutdown = DeferCall(Some(|| {
+            stop_shutdown.stop();
+        }));
+
+        // Run the connection with panic recovery. On a panic the connection, and with it the socket, is dropped
+        // during the unwind (Go cancels the context and closes rwc).
+        let result = recover_scope(|| {
+            let conn = api_transport::Connection::new(
+                rwc,
+                Arc::new(SessionHandler(Arc::clone(api_session))),
+                options,
+                None,
+            );
+            api_session.set_connection(Arc::new(ClientConnAdapter(conn.caller())));
+            conn.run()
+        });
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(api_err)) => {
+                self.logger.errorf(format_args!("API session {}: {api_err}", api_session.id()));
+            }
+            Err((r, stack)) => {
+                self.logger.errorf(format_args!(
+                    "API session {}: panic: {}\n{}",
+                    api_session.id(),
+                    panic_value_string(&r),
+                    stack
+                ));
+            }
+        }
+    }
+
+    // server.go:2409
+    fn generate_api_pipe_name() -> String {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        // A fresh `RandomState` is randomly seeded: its empty hash stands in for Go's `rand.Uint64()`.
+        let rnd =
+            std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), ());
+        format!("tsgo-api-{now:x}-{rnd:x}")
+    }
+
+    // server.go:2415
+    fn remove_api_session(&self, id: &str) {
+        self.api_sessions.lock().unwrap().remove(id);
+    }
+
+    // server.go:2421
+    pub(crate) fn close_api_sessions(&self) {
+        let api_sessions: Vec<Arc<ApiSessionState>> =
+            self.api_sessions.lock().unwrap().drain().map(|(_, state)| state).collect();
+        for state in api_sessions {
+            state.stop();
+        }
     }
 
     // server.go:2363
@@ -3067,7 +3256,7 @@ impl Server {
         _params: lsproto::NoParams,
         _req: &RequestMessage,
     ) -> Result<lsproto::RunGCResponse, Error> {
-        Err(not_yet_ported(Method::CustomRunGC))
+        Err(not_yet_ported(Method::CUSTOM_RUN_GC))
     }
 
     // server.go:2400
@@ -3081,7 +3270,7 @@ impl Server {
         _params: &lsproto::ProfileParams,
         _req: &RequestMessage,
     ) -> Result<lsproto::SaveHeapProfileResponse, Error> {
-        Err(not_yet_ported(Method::CustomSaveHeapProfile))
+        Err(not_yet_ported(Method::CUSTOM_SAVE_HEAP_PROFILE))
     }
 
     // server.go:2409
@@ -3095,7 +3284,7 @@ impl Server {
         _params: &lsproto::ProfileParams,
         _req: &RequestMessage,
     ) -> Result<lsproto::SaveAllocProfileResponse, Error> {
-        Err(not_yet_ported(Method::CustomSaveAllocProfile))
+        Err(not_yet_ported(Method::CUSTOM_SAVE_ALLOC_PROFILE))
     }
 
     // server.go:2418
@@ -3109,7 +3298,7 @@ impl Server {
         _params: &lsproto::ProfileParams,
         _req: &RequestMessage,
     ) -> Result<lsproto::StartCPUProfileResponse, Error> {
-        Err(not_yet_ported(Method::CustomStartCPUProfile))
+        Err(not_yet_ported(Method::CUSTOM_START_CPU_PROFILE))
     }
 
     // server.go:2427
@@ -3123,7 +3312,7 @@ impl Server {
         _params: lsproto::NoParams,
         _req: &RequestMessage,
     ) -> Result<lsproto::StopCPUProfileResponse, Error> {
-        Err(not_yet_ported(Method::CustomStopCPUProfile))
+        Err(not_yet_ported(Method::CUSTOM_STOP_CPU_PROFILE))
     }
 
     // server.go:2436
@@ -3144,19 +3333,171 @@ impl Server {
         Ok(lsproto::ProjectInfoResult { config_file_path })
     }
 
-    // server.go:2451 (content mappers are out of scope)
-    #[expect(
-        clippy::unused_self,
-        reason = "Registered LSP handlers share a Server receiver so the dispatcher can call them uniformly."
-    )]
+    // server.go:2524
     fn handle_set_content_mapper_contributions(
         self: &Arc<Self>,
-        _ctx: &Context,
-        _params: &lsproto::SetContentMapperContributionsParams,
+        ctx: &Context,
+        params: &lsproto::SetContentMapperContributionsParams,
         _req: &RequestMessage,
     ) -> Result<lsproto::CustomSetContentMapperContributionsResponse, Error> {
-        Err(not_yet_ported(Method::CustomSetContentMapperContributions))
+        let contributions = parse_content_mapper_contributions(&params.contributions)?;
+        let documents = params.open_documents.iter().map(|document| document.uri.clone()).collect();
+        self.session().set_content_mapper_contributions(ctx, contributions, documents);
+        Ok(lsproto::Null)
     }
+}
+
+// server.go:2534
+pub fn parse_content_mapper_contributions(
+    values: &[Option<lsproto::ContentMapperContribution>],
+) -> Result<project::ContentMapperContributions, Error> {
+    let quote =
+        |s: &str| tsrs_core::gocompat::quote(s.as_bytes(), tsrs_core::gocompat::QuoteStyle::Go);
+    let mut result = project::ContentMapperContributions::default();
+    let mut claimed_extensions: Set<String> = Set::new();
+    for (index, value) in values.iter().enumerate() {
+        let Some(value) = value.as_ref().filter(|value| !value.contributor_id.is_empty()) else {
+            return Err(Error::new(
+                "content mapper contribution requires a contributorId".to_string(),
+            ));
+        };
+        let identity = format!("{}[{index}]", value.contributor_id);
+        let mut valid_extensions = Vec::with_capacity(value.extensions.len());
+        for extension in &value.extensions {
+            if !is_valid_contributed_content_mapper_extension(extension) {
+                return Err(Error::new(format!(
+                    "content mapper contribution {} has invalid extension {}",
+                    quote(&identity),
+                    quote(extension)
+                )));
+            }
+            valid_extensions.push(extension.clone());
+        }
+        let Some(inferred_project) = &value.inferred_project_contribution else {
+            continue;
+        };
+        let manifest = &inferred_project.manifest;
+        if manifest.name.is_empty() || manifest.exec.is_empty() {
+            return Err(Error::new(format!(
+                "content mapper contribution {} requires a manifest name and exec",
+                quote(&identity)
+            )));
+        }
+        for option in manifest.compiler_options.iter().flatten() {
+            if tsrs_tsoptions::COMMAND_LINE_COMPILER_OPTIONS_MAP.get(option).is_none() {
+                return Err(Error::new(format!(
+                    "content mapper contribution {} requests unknown compiler option {}",
+                    quote(&identity),
+                    quote(option)
+                )));
+            }
+        }
+        for (source, output) in manifest.output_extensions.iter().flatten() {
+            if !tsrs_tsoptions::is_valid_extension(source)
+                || !tsrs_tsoptions::is_valid_extension(output)
+            {
+                return Err(Error::new(format!(
+                    "content mapper contribution {} has invalid output extension mapping from {} to {}",
+                    quote(&identity),
+                    quote(source),
+                    quote(output)
+                )));
+            }
+        }
+        for extension in &valid_extensions {
+            if !claimed_extensions
+                .add_if_absent(tsrs_core::stringutil::go_strings_to_lower(extension))
+            {
+                return Err(Error::new(format!(
+                    "content mapper contributions both claim extension {}",
+                    quote(extension)
+                )));
+            }
+            result.extensions.push(extension.clone());
+        }
+        let options = match &inferred_project.options {
+            Some(options) => {
+                let mut members: tsrs_core::json::JsonMap = options
+                    .iter()
+                    .map(|(name, value)| (name.clone(), go_map_json_value(value)))
+                    .collect();
+                members.sort_keys();
+                tsrs_core::json::marshal(&lsproto::Value::Object(members)).map_err(|_| {
+                    Error::new(format!(
+                        "content mapper contribution {} has invalid options",
+                        quote(&identity)
+                    ))
+                })?
+            }
+            None => "{}".to_string(),
+        };
+        // Go clones the manifest's map, so an absent `outputExtensions` stays nil in both places.
+        let output_extensions: FxHashMap<String, String> = manifest
+            .output_extensions
+            .iter()
+            .flatten()
+            .map(|(source, output)| (source.clone(), output.clone()))
+            .collect();
+        let output_extensions_present = manifest.output_extensions.is_some();
+        let mut mapper = tsrs_tsoptions::Mapper {
+            definition: tsrs_tsoptions::Definition {
+                package: identity.clone(),
+                extensions: valid_extensions,
+                output_extensions: output_extensions.clone(),
+                output_extensions_present,
+                options,
+            },
+            manifest: tsrs_tsoptions::Manifest {
+                name: manifest.name.clone(),
+                version: manifest.version.clone().unwrap_or_default(),
+                exec: manifest.exec.clone(),
+                compiler_options: manifest.compiler_options.clone().unwrap_or_default(),
+                dynamic_config: manifest.dynamic_config.unwrap_or_default(),
+                default_output_extensions: output_extensions,
+                default_output_extensions_present: output_extensions_present,
+            },
+            package_directory: String::new(),
+            contribution_id: identity.clone(),
+        };
+        if let Some(cwd) = &manifest.cwd {
+            if !tspath::path_is_absolute(cwd) {
+                return Err(Error::new(format!(
+                    "content mapper contribution {} has non-absolute cwd",
+                    quote(&identity)
+                )));
+            }
+            mapper.package_directory = tspath::rooted_directory_path_from_absolute(cwd);
+        }
+        result.mappers.push(mapper);
+    }
+    result.extensions.sort();
+    Ok(result)
+}
+
+// Go decodes the options as `map[string]any` and json.Marshal writes every map's keys sorted.
+fn go_map_json_value(value: &lsproto::Value) -> lsproto::Value {
+    match value {
+        lsproto::Value::Object(members) => {
+            let mut members: tsrs_core::json::JsonMap = members
+                .iter()
+                .map(|(name, value)| (name.to_string(), go_map_json_value(value)))
+                .collect();
+            members.sort_keys();
+            lsproto::Value::Object(members)
+        }
+        lsproto::Value::Array(items) => {
+            lsproto::Value::Array(items.iter().map(go_map_json_value).collect())
+        }
+        value => value.clone(),
+    }
+}
+
+// server.go:2604
+fn is_valid_contributed_content_mapper_extension(extension: &str) -> bool {
+    if !tsrs_tsoptions::is_valid_extension(extension) {
+        return false;
+    }
+    !tsrs_tsoptions::has_reserved_source_extension(extension)
 }
 
 // server.go:323
@@ -3190,22 +3531,22 @@ const CONTENT_MAPPER_WILL_RENAME_FILES_REGISTRATION_ID: &str = "content-mapper-w
 // server.go:352
 fn supported_code_action_kinds() -> Vec<lsproto::CodeActionKind> {
     vec![
-        lsproto::CodeActionKind::QuickFix,
-        lsproto::CodeActionKind::SourceOrganizeImportsTs,
-        lsproto::CodeActionKind::SourceRemoveUnusedImportsTs,
-        lsproto::CodeActionKind::SourceSortImportsTs,
-        lsproto::CodeActionKind::SourceFixAllTs,
+        lsproto::CodeActionKind::QUICK_FIX,
+        lsproto::CodeActionKind::SOURCE_ORGANIZE_IMPORTS_TS,
+        lsproto::CodeActionKind::SOURCE_REMOVE_UNUSED_IMPORTS_TS,
+        lsproto::CodeActionKind::SOURCE_SORT_IMPORTS_TS,
+        lsproto::CodeActionKind::SOURCE_FIX_ALL_TS,
     ]
 }
 
 // server.go:1103: `userFacingRequestFailedError` (a string error type that unwraps to ErrorCodeRequestFailed).
-pub(crate) const USER_FACING_REQUEST_FAILED_ERROR: ErrorTag =
+pub const USER_FACING_REQUEST_FAILED_ERROR: ErrorTag =
     ErrorTag::Sentinel("userFacingRequestFailedError");
 
-pub(crate) fn user_facing_request_failed_error(message: impl Into<String>) -> Error {
+pub fn user_facing_request_failed_error(message: impl Into<String>) -> Error {
     Error {
         message: message.into(),
-        tags: vec![USER_FACING_REQUEST_FAILED_ERROR, ErrorTag::Code(ErrorCode::RequestFailed)],
+        tags: vec![USER_FACING_REQUEST_FAILED_ERROR, ErrorTag::Code(ErrorCode::REQUEST_FAILED)],
     }
 }
 
@@ -3219,7 +3560,7 @@ fn content_mapper_fallback_response(method: Method, err: &Error) -> Option<lspro
         return None;
     }
     match method {
-        Method::TextDocumentDiagnostic => Some(
+        Method::TEXT_DOCUMENT_DIAGNOSTIC => Some(
             lsproto::DocumentDiagnosticResponse {
                 full_document_diagnostic_report: Some(
                     lsproto::RelatedFullDocumentDiagnosticReport {
@@ -3231,15 +3572,15 @@ fn content_mapper_fallback_response(method: Method, err: &Error) -> Option<lspro
             }
             .to_json(),
         ),
-        Method::TextDocumentHover
-        | Method::TextDocumentSignatureHelp
-        | Method::TextDocumentDefinition
-        | Method::TextDocumentTypeDefinition
-        | Method::TextDocumentImplementation
-        | Method::TextDocumentReferences
-        | Method::TextDocumentDocumentHighlight
-        | Method::TextDocumentCompletion
-        | Method::TextDocumentRename => Some(lsproto::Null.to_json()),
+        Method::TEXT_DOCUMENT_HOVER
+        | Method::TEXT_DOCUMENT_SIGNATURE_HELP
+        | Method::TEXT_DOCUMENT_DEFINITION
+        | Method::TEXT_DOCUMENT_TYPE_DEFINITION
+        | Method::TEXT_DOCUMENT_IMPLEMENTATION
+        | Method::TEXT_DOCUMENT_REFERENCES
+        | Method::TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT
+        | Method::TEXT_DOCUMENT_COMPLETION
+        | Method::TEXT_DOCUMENT_RENAME => Some(lsproto::Null.to_json()),
         _ => None,
     }
 }
@@ -3248,19 +3589,19 @@ fn content_mapper_fallback_response(method: Method, err: &Error) -> Option<lspro
 // handlerMap maps LSP method to a handler function. The handler function executes any work that must be done synchronously
 // before other requests/notifications can be processed, and returns any additional work as a function to be executed
 // asynchronously after the synchronous work is complete.
-pub(crate) type handlerFunc = Box<
-    dyn Fn(&Arc<Server>, &Context, &Arc<RequestMessage>) -> Result<Option<asyncWork>, Error>
+pub type HandlerFunc = Box<
+    dyn Fn(&Arc<Server>, &Context, &Arc<RequestMessage>) -> Result<Option<AsyncWorkImpl>, Error>
         + Send
         + Sync,
 >;
 
-pub(crate) struct handlerMap(FxHashMap<Method, handlerFunc>);
+pub struct HandlerMap(FxHashMap<Method, HandlerFunc>);
 
 // server.go:1229
-fn handlers() -> &'static handlerMap {
-    static HANDLERS: OnceLock<handlerMap> = OnceLock::new();
+fn handlers() -> &'static HandlerMap {
+    static HANDLERS: OnceLock<HandlerMap> = OnceLock::new();
     HANDLERS.get_or_init(|| {
-        let mut handlers = handlerMap(FxHashMap::default());
+        let mut handlers = HandlerMap(FxHashMap::default());
 
         handlers.register_request_handler(lsproto::INITIALIZE_INFO, Server::handle_initialize);
         handlers
@@ -3484,7 +3825,7 @@ fn handlers() -> &'static handlerMap {
     })
 }
 
-impl handlerMap {
+impl HandlerMap {
     // server.go:1300
     fn register_notification_handler<Req: Json + Default + 'static>(
         &mut self,
@@ -3494,8 +3835,8 @@ impl handlerMap {
         self.0.insert(
             info.method,
             Box::new(move |s, ctx, req| {
-                if s.session.get().is_none() && req.method != Method::Initialized {
-                    return Err(ErrorCode::ServerNotInitialized.into());
+                if s.session.get().is_none() && req.method != Method::INITIALIZED {
+                    return Err(ErrorCode::SERVER_NOT_INITIALIZED.into());
                 }
 
                 let params = req.unmarshal_params::<Req>()?;
@@ -3517,8 +3858,8 @@ impl handlerMap {
         self.0.insert(
             info.method,
             Box::new(move |s, ctx, req| {
-                if s.session.get().is_none() && req.method != Method::Initialize {
-                    return Err(ErrorCode::ServerNotInitialized.into());
+                if s.session.get().is_none() && req.method != Method::INITIALIZE {
+                    return Err(ErrorCode::SERVER_NOT_INITIALIZED.into());
                 }
 
                 let params = req.unmarshal_params::<Req>()?;
@@ -3546,7 +3887,7 @@ impl handlerMap {
             Box::new(move |s, ctx, req| {
                 // tsrs-only: Go has no session check here and panics on a request before `initialized`.
                 if s.session.get().is_none() {
-                    return Err(ErrorCode::ServerNotInitialized.into());
+                    return Err(ErrorCode::SERVER_NOT_INITIALIZED.into());
                 }
                 let params = req.unmarshal_params::<Req>()?;
                 check_uri(params.text_document_uri())?;
@@ -3583,7 +3924,7 @@ impl handlerMap {
             Box::new(move |s, ctx, req| {
                 // tsrs-only: Go has no session check here and panics on a request before `initialized`.
                 if s.session.get().is_none() {
-                    return Err(ErrorCode::ServerNotInitialized.into());
+                    return Err(ErrorCode::SERVER_NOT_INITIALIZED.into());
                 }
                 let params = req.unmarshal_params::<Req>()?;
                 check_uri(params.text_document_uri())?;
@@ -3635,7 +3976,7 @@ impl handlerMap {
             Box::new(move |s, ctx, req| {
                 // tsrs-only: Go has no session check here and panics on a request before `initialized`.
                 if s.session.get().is_none() {
-                    return Err(ErrorCode::ServerNotInitialized.into());
+                    return Err(ErrorCode::SERVER_NOT_INITIALIZED.into());
                 }
                 let params = req.unmarshal_params::<Req>()?;
                 check_uri(params.text_document_uri())?;
@@ -3664,7 +4005,7 @@ impl handlerMap {
 // tsrs-only: a URI from the client that `file_name` cannot turn into a file name (`DocumentUri::check`) is an
 // invalid-params error. Go panics on it, which ends the session.
 fn check_uri(uri: &lsproto::DocumentUri) -> Result<(), Error> {
-    uri.check().map_err(|err| Error::wrap_code(ErrorCode::InvalidParams, Error::new(err)))
+    uri.check().map_err(|err| Error::wrap_code(ErrorCode::INVALID_PARAMS, Error::new(err)))
 }
 
 // tsrs-only: the file name of a workspace URI, or "" (not absolute: the server's own directory is used) when it has
@@ -3673,14 +4014,33 @@ fn file_name_or_empty(uri: &lsproto::DocumentUri) -> String {
     if uri.check().is_ok() { uri.file_name() } else { String::new() }
 }
 
+pub fn completion_item_file_name_to_document_uri(
+    file_name: &str,
+) -> Result<lsproto::DocumentUri, Error> {
+    if !tspath::path_is_absolute(file_name) {
+        return Err(Error::new("completion item data fileName must be absolute"));
+    }
+    if tspath::is_dynamic_file_name(file_name) {
+        return lsproto::DocumentUri::try_dynamic_file_name_to_document_uri(file_name).ok_or_else(
+            || Error::new("completion item data fileName must be a valid dynamic path"),
+        );
+    }
+    let uri = tsrs_ls::lsconv::file_name_to_document_uri(file_name);
+    // A URL-shaped name has an absolute path root, but converting it as a disk file name can
+    // produce an invalid file URI. Keep a malformed completion payload from ending the session.
+    uri.check()
+        .map_err(|err| Error::new(format!("completion item data fileName is invalid: {err}")))?;
+    Ok(uri)
+}
+
 // server.go:1431 (Go's req field is never read)
-struct crossProjectOrchestrator {
+struct CrossProjectOrchestratorImpl {
     server: Arc<Server>,
     default_project: Arc<dyn tsrs_ls::Project>,
     all_projects: Vec<Arc<dyn tsrs_ls::Project>>,
 }
 
-impl tsrs_ls::CrossProjectOrchestrator for crossProjectOrchestrator {
+impl tsrs_ls::CrossProjectOrchestrator for CrossProjectOrchestratorImpl {
     // server.go:1440
     fn get_default_project(&self) -> Arc<dyn tsrs_ls::Project> {
         Arc::clone(&self.default_project)
@@ -3741,8 +4101,8 @@ impl tsrs_ls::CrossProjectOrchestrator for crossProjectOrchestrator {
 
 // The handlers of out-of-scope features (content mappers, API sessions attached to the server, runGC and the profiling
 // commands) answer with this error.
-pub(crate) fn not_yet_ported(method: Method) -> Error {
-    Error::wrap_code(ErrorCode::MethodNotFound, Error::new(format!("{method} is not ported yet")))
+pub fn not_yet_ported(method: Method) -> Error {
+    Error::wrap_code(ErrorCode::METHOD_NOT_FOUND, Error::new(format!("{method} is not ported yet")))
 }
 
 // server.go:1896
@@ -3852,22 +4212,22 @@ impl project::NpmExecutor for Server {
 // Go's errgroup.WithContext: the first member that returns an error cancels the group's context; Wait returns
 // that error after every member has returned.
 #[derive(Clone)]
-struct errGroup {
-    inner: Arc<errGroupInner>,
+struct ErrGroup {
+    inner: Arc<ErrGroupInner>,
 }
 
-struct errGroupInner {
+struct ErrGroupInner {
     first: Mutex<Option<Error>>,
     cancel: CancelFunc,
     handles: Mutex<Vec<JoinHandle<()>>>,
 }
 
-impl errGroup {
-    fn with_context(ctx: &Context) -> (errGroup, Context) {
+impl ErrGroup {
+    fn with_context(ctx: &Context) -> (ErrGroup, Context) {
         let (ctx, cancel) = ctx.with_cancel();
         (
-            errGroup {
-                inner: Arc::new(errGroupInner {
+            ErrGroup {
+                inner: Arc::new(ErrGroupInner {
                     first: Mutex::new(None),
                     cancel,
                     handles: Mutex::new(Vec::new()),
@@ -3916,9 +4276,9 @@ fn spawn_server_thread(name: &str, f: impl FnOnce() + Send + 'static) -> JoinHan
 }
 
 // A scope guard for Go's `defer f()`.
-struct deferCall<F: FnOnce()>(Option<F>);
+struct DeferCall<F: FnOnce()>(Option<F>);
 
-impl<F: FnOnce()> Drop for deferCall<F> {
+impl<F: FnOnce()> Drop for DeferCall<F> {
     fn drop(&mut self) {
         if let Some(f) = self.0.take() {
             f();
@@ -3992,8 +4352,8 @@ fn go_sprint_value(v: &lsproto::Value) -> String {
             format!("[{}]", items.iter().map(go_sprint_value).collect::<Vec<_>>().join(" "))
         }
         lsproto::Value::Object(members) => {
-            let mut keys: Vec<&String> = members.keys().collect();
-            keys.sort();
+            let mut keys: Vec<&str> = members.keys().collect();
+            keys.sort_unstable();
             format!(
                 "map[{}]",
                 keys.iter()
@@ -4042,11 +4402,7 @@ fn go_type_name(v: &lsproto::Value) -> &'static str {
 }
 
 // Go `time.Duration.String()`.
-pub(crate) fn go_duration_string(d: Duration) -> String {
-    let nanos = d.as_nanos() as u64;
-    if nanos == 0 {
-        return "0s".to_string();
-    }
+pub fn go_duration_string(d: Duration) -> String {
     fn frac(v: u64, prec: u32) -> String {
         let pow = 10u64.pow(prec);
         let int = v / pow;
@@ -4060,6 +4416,11 @@ pub(crate) fn go_duration_string(d: Duration) -> String {
             digits -= 1;
         }
         format!("{}.{:0width$}", int, f, width = digits as usize)
+    }
+
+    let nanos = d.as_nanos() as u64;
+    if nanos == 0 {
+        return "0s".to_string();
     }
     if nanos < 1_000 {
         return format!("{nanos}ns");

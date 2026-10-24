@@ -11,7 +11,7 @@ mod stack_sanitizer;
 mod workerpool;
 
 pub use server::{
-    Reader, Server, ServerOptions, Writer, new_server, npmInstallFunc, to_reader, to_writer,
+    NpmInstallFunc, Reader, Server, ServerOptions, Writer, new_server, to_reader, to_writer,
 };
 
 #[cfg(test)]
@@ -20,6 +20,10 @@ mod dynamic_queue_test;
 mod lspwatcher_test;
 #[cfg(test)]
 mod progress_test;
+#[cfg(all(test, unix))]
+mod server_apisession_test;
+#[cfg(test)]
+mod server_contentmapper_internal_test;
 #[cfg(test)]
 mod server_flakydiagnostics_test;
 #[cfg(test)]

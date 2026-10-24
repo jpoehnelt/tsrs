@@ -1,17 +1,16 @@
 // Small helpers for building/reading the Go wire JSON shapes with `tsrs_core::json::Value`.
 
-use tsrs_core::collections::OrderedMap;
-use tsrs_core::json::Value;
+use tsrs_core::json::{JsonMap, Value};
 
 use crate::handler::{ApiError, ApiResult};
 
 /// Ordered JSON object builder (Go struct field order matters for byte-identical output).
 #[derive(Default)]
-pub struct Obj(OrderedMap<String, Value>);
+pub struct Obj(JsonMap);
 
 impl Obj {
     pub fn new() -> Obj {
-        Obj(OrderedMap::default())
+        Obj(JsonMap::new())
     }
     #[must_use]
     pub fn set(mut self, key: &str, value: Value) -> Obj {
@@ -64,7 +63,7 @@ pub struct Params<'a>(pub &'a Value);
 static NULL: Value = Value::Null;
 
 impl<'a> Params<'a> {
-    pub fn object(self) -> ApiResult<&'a OrderedMap<String, Value>> {
+    pub fn object(self) -> ApiResult<&'a JsonMap> {
         match self.0 {
             Value::Object(o) => Ok(o),
             _ => Err(ApiError::invalid_request("params must be an object")),
@@ -93,10 +92,10 @@ impl<'a> Params<'a> {
     /// own exact literal is used (f64 would turn e.g. 9007199254740993 into another ID); values outside the
     /// tree (copies) use the parsed value.
     pub fn u64(self, key: &str) -> ApiResult<u64> {
-        if let Value::Number(_) = self.get(key) {
-            if let Some(n) = crate::predecode::exact_u64(self.0, key) {
-                return Ok(n);
-            }
+        if let Value::Number(_) = self.get(key)
+            && let Some(n) = crate::predecode::exact_u64(self.0, key)
+        {
+            return Ok(n);
         }
         as_u64(self.get(key), key)
     }
@@ -163,16 +162,23 @@ pub enum DocumentIdentifier {
 impl DocumentIdentifier {
     pub fn parse(v: &Value, key: &str) -> ApiResult<DocumentIdentifier> {
         match v {
-            Value::String(s) => Ok(DocumentIdentifier::FileName(s.clone())),
+            Value::String(s) if !s.is_empty() => Ok(DocumentIdentifier::FileName(s.clone())),
+            Value::String(_) => {
+                Err(ApiError::invalid_request("DocumentIdentifier: file name must not be empty"))
+            }
             // proto.go `DocumentIdentifier.UnmarshalJSONFrom`: an explicit null is an error (an absent field is the
             // zero value; see `Params::document`).
             Value::Null => Err(ApiError::invalid_request(
                 "DocumentIdentifier: expected string or object, got null",
             )),
             Value::Object(o) => match o.get("uri") {
-                Some(Value::String(u)) => Ok(DocumentIdentifier::Uri(u.clone())),
-                // Go reads `{}` (no uri) as an empty file name.
-                _ => Ok(DocumentIdentifier::FileName(String::new())),
+                Some(Value::String(u)) if !u.is_empty() => Ok(DocumentIdentifier::Uri(u.clone())),
+                Some(_) => Err(ApiError::invalid_request(
+                    "DocumentIdentifier: uri must be a non-empty string",
+                )),
+                None => {
+                    Err(ApiError::invalid_request("DocumentIdentifier: object must contain uri"))
+                }
             },
             _ => Err(ApiError::invalid_request(format!(
                 "DocumentIdentifier: expected string or object for {key}"

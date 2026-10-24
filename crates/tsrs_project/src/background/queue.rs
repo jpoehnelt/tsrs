@@ -8,7 +8,7 @@ const WORKER_STACK_SIZE: usize = 512 << 20;
 // Debounced tasks (snapshot updates, diagnostics refreshes) sleep on their worker, so keep a few spare.
 const WORKER_COUNT: usize = 6;
 
-type task = Box<dyn FnOnce() + Send>;
+type Task = Box<dyn FnOnce() + Send>;
 
 // Queue manages background tasks execution
 //
@@ -16,17 +16,17 @@ type task = Box<dyn FnOnce() + Send>;
 // model"), so tasks run on a fixed set of worker threads shared by all queues instead, started on first use;
 // `Wait` waits for this queue's tasks like Go's WaitGroup (tasks enqueued by running tasks included).
 pub struct Queue {
-    pending: Arc<pendingCount>,
+    pending: Arc<PendingCount>,
     closed: RwLock<bool>,
 }
 
-struct pendingCount {
+struct PendingCount {
     count: Mutex<usize>,
     zero: Condvar,
 }
 
-struct workerPool {
-    tasks: Mutex<VecDeque<task>>,
+struct WorkerPool {
+    tasks: Mutex<VecDeque<Task>>,
     available: Condvar,
 }
 
@@ -34,10 +34,10 @@ struct workerPool {
     clippy::infinite_loop,
     reason = "background worker threads serve the process-wide queue until process exit"
 )]
-fn worker_pool() -> &'static workerPool {
-    static POOL: OnceLock<&'static workerPool> = OnceLock::new();
+fn worker_pool() -> &'static WorkerPool {
+    static POOL: OnceLock<&'static WorkerPool> = OnceLock::new();
     POOL.get_or_init(|| {
-        let pool: &'static workerPool = Box::leak(Box::new(workerPool {
+        let pool: &'static WorkerPool = Box::leak(Box::new(WorkerPool {
             tasks: Mutex::new(VecDeque::new()),
             available: Condvar::new(),
         }));
@@ -78,7 +78,7 @@ pub fn go(f: impl FnOnce() + Send + 'static) {
 // NewQueue creates a new background queue for managing background tasks execution.
 pub fn new_queue() -> Queue {
     Queue {
-        pending: Arc::new(pendingCount { count: Mutex::new(0), zero: Condvar::new() }),
+        pending: Arc::new(PendingCount { count: Mutex::new(0), zero: Condvar::new() }),
         closed: RwLock::new(false),
     }
 }
@@ -86,7 +86,8 @@ pub fn new_queue() -> Queue {
 impl Queue {
     // queue.go:20
     pub fn enqueue(&self, ctx: &Context, f: impl FnOnce(&Context) + Send + 'static) {
-        if *self.closed.read().unwrap() {
+        let closed = self.closed.read().unwrap();
+        if *closed {
             return;
         }
 
@@ -96,10 +97,11 @@ impl Queue {
         }
 
         *self.pending.count.lock().unwrap() += 1;
+        drop(closed);
         let pending = Arc::clone(&self.pending);
         let ctx = ctx.clone();
-        let task: task = Box::new(move || {
-            let done = scopeDone(pending);
+        let task: Task = Box::new(move || {
+            let done = ScopeDone(pending);
             // Check context again before executing
             if ctx.err().is_some() {
                 return;
@@ -128,13 +130,14 @@ impl Queue {
     // queue.go:48
     pub fn close(&self) {
         *self.closed.write().unwrap() = true;
+        self.wait();
     }
 }
 
 // Go's `defer wg.Done()` (also on panic).
-struct scopeDone(Arc<pendingCount>);
+struct ScopeDone(Arc<PendingCount>);
 
-impl Drop for scopeDone {
+impl Drop for ScopeDone {
     fn drop(&mut self) {
         let mut count = self.0.count.lock().unwrap();
         *count -= 1;

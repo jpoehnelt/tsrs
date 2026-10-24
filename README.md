@@ -29,23 +29,31 @@ Try checking and emitting code in the [browser playground](https://tsrs-playgrou
 
 ## Conformance
 
-`tsrs` currently targets the main branch of [microsoft/TypeScript](https://github.com/microsoft/typescript).
-We aim to release a stable version against TypeScript 7.1 with 100% conformance. In our testing on existing projects,
-we have yet to find a correctness bug in `tsrs`.
-
-There are known order issues: the pinned Go compiler can produce different diagnostics and traces depending on
-parallel parse, resolution, and check order, while `tsrs` canonicalizes some checker history by default. For the
-closest comparison, use `--checkerAssignment go --noLazyMembers`; tsgo parser and resolver races can still vary
-between runs.
-
-`--init` and `--showConfig` are not supported. See [compatibility and evidence](https://github.com/oxc-project/tsrs/blob/main/docs/COMPATIBILITY.md)
+We aim to release a stable version against TypeScript 7.1 with 100% conformance.
+See [compatibility and evidence](https://github.com/oxc-project/tsrs/blob/main/docs/COMPATIBILITY.md)
 for supported features and known gaps.
+
+### Checker determinism
+
+Deterministic checking means the same code and compiler options produce the same errors and exit status on every run,
+regardless of thread scheduling. Known checker-order issues can make errors appear or disappear between runs;
+see [#725](https://github.com/oxc-project/tsrs/issues/725).
+
+To use Go-compatible checker assignment:
+
+```sh
+pnpm exec tsrs --noEmit --checkerAssignment go
+```
+
+This does not guarantee deterministic results for every program.
+See [comparison options](https://github.com/oxc-project/tsrs/blob/main/docs/USAGE.md#performance-options)
+for closer comparisons with tsgo.
 
 <a href="https://github.com/oxc-project/tsrs/blob/main/bench/RESULTS.md">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/oxc-project/tsrs/main/bench/large-projects-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/oxc-project/tsrs/main/bench/large-projects.svg">
-    <img alt="tsrs vs the TypeScript nightly: times faster against times less peak memory on seven projects at 1, 2, 4 and 8 parallel checker threads" src="https://raw.githubusercontent.com/oxc-project/tsrs/main/bench/large-projects.svg">
+    <img alt="tsrs vs the TypeScript nightly: relative type-checking speed and peak memory by project" src="https://raw.githubusercontent.com/oxc-project/tsrs/main/bench/large-projects.svg">
   </picture>
 </a>
 
@@ -58,7 +66,7 @@ targeting `wasm32-wasip1` (WASI Preview 1).
 
 - [CLI usage and memory tuning](https://github.com/oxc-project/tsrs/blob/main/docs/USAGE.md)
 - [Editor setup](https://github.com/oxc-project/tsrs/blob/main/docs/LSP.md#editor-setup)
-- [Node API (unstable)](https://github.com/oxc-project/tsrs/blob/main/docs/NODE_API.md)
+- [Node API](https://github.com/oxc-project/tsrs/blob/main/docs/NODE_API.md)
 - [WebAssembly for Node and browsers](https://github.com/oxc-project/tsrs/blob/main/npm/tsrs-wasm/README.md)
 - [Benchmarks and methodology](https://github.com/oxc-project/tsrs/blob/main/bench/README.md)
 - [Release notes](https://github.com/oxc-project/tsrs/blob/main/docs/STATUS.md)

@@ -56,13 +56,6 @@ impl Checker {
 
 impl Inference<'_> {
     fn refs(&mut self, name: P<Node>) -> Vec<P<Node>> {
-        let Some(symbol) = self.c.get_symbol_at_location_exported(name) else {
-            return Vec::new();
-        };
-        if let Some(references) = self.references.get(&symbol) {
-            return references.clone();
-        }
-        let mut matches = Vec::new();
         fn visit(
             c: &mut Checker,
             node: P<Node>,
@@ -81,6 +74,13 @@ impl Inference<'_> {
                 false
             });
         }
+        let Some(symbol) = self.c.get_symbol_at_location_exported(name) else {
+            return Vec::new();
+        };
+        if let Some(references) = self.references.get(&symbol) {
+            return references.clone();
+        }
+        let mut matches = Vec::new();
         let parameter_scope = name
             .parent()
             .filter(|node| node.kind() == Kind::Parameter)
@@ -480,7 +480,9 @@ impl Inference<'_> {
         }
         let mut candidates: Vec<_> =
             usage.candidates.iter().map(|&t| self.c.get_base_type_of_literal_type(t)).collect();
-        if !usage.calls.is_empty() {
+        if usage.calls.is_empty() {
+            types.extend(candidates);
+        } else {
             candidates.insert(0, self.structural(usage));
             types.push(self.c.get_union_type_ex(
                 &candidates,
@@ -488,8 +490,6 @@ impl Inference<'_> {
                 AliasArg::None,
                 None,
             ));
-        } else {
-            types.extend(candidates);
         }
         types.extend(self.named(usage));
         types

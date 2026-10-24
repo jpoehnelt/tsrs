@@ -10,38 +10,32 @@ use crate::*;
 //   const declarationEmitInternalNodeBuilderFlags (transform.go:223)
 
 // transform.go:53
-pub(crate) fn get_this_property_assignment_key(
+pub fn get_this_property_assignment_key(
     name: Option<P<Node>>,
     node: P<Node>,
     is_static: bool,
-) -> thisPropertyAssignmentKey {
+) -> ThisPropertyAssignmentKey {
     // Go dereferences `name` here (IsPrivateIdentifier(nil) panics).
     let is_private = ast::is_private_identifier(name.unwrap());
-    if let Some(name) = name {
-        if !ast::is_dynamic_name(name) {
-            if let Some(name_text) = ast::try_get_text_of_property_name(name) {
-                return thisPropertyAssignmentKey {
-                    name: name_text,
-                    node: None,
-                    is_static,
-                    is_private,
-                };
-            }
-        }
+    if let Some(name) = name
+        && !ast::is_dynamic_name(name)
+        && let Some(name_text) = ast::try_get_text_of_property_name(name)
+    {
+        return ThisPropertyAssignmentKey { name: name_text, node: None, is_static, is_private };
     }
-    thisPropertyAssignmentKey { name: String::new(), node: Some(node), is_static, is_private }
+    ThisPropertyAssignmentKey { name: String::new(), node: Some(node), is_static, is_private }
 }
 
 // transform.go:103
 // TODO: Convert to transformers.TransformerFactory signature to allow more automatic composition with other transforms
 pub fn new_declaration_transformer(
     host: &'static dyn DeclarationEmitHost,
-    context: Option<P<EmitContext>>,
+    resolver: Resolver,
     compiler_options: P<CompilerOptions>,
     declaration_file_path: &str,
     declaration_map_path: &str,
 ) -> P<DeclarationTransformer> {
-    let resolver = host.get_emit_resolver();
+    let context = Some(resolver.r.emit_context());
     let state = P::new(SymbolTrackerSharedState {
         late_marked_statements: RefCell::new(Vec::new()),
         diagnostics: RefCell::new(Vec::new()),
@@ -106,7 +100,7 @@ pub fn new_declaration_transformer(
                     if ast::is_binary_expression(error_target) {
                         error_target = error_target.as_binary_expression().left;
                     }
-                    tx.state.add_diagnostic(create_diagnostic_for_node(error_target, &diagnostics::Assigning_properties_to_functions_without_declaring_them_is_not_supported_with_isolatedDeclarations_Add_an_explicit_declaration_for_the_properties_assigned_to_this_function, &[]));
+                    tx.state.add_diagnostic(create_diagnostic_for_node(error_target, &diagnostics::ASSIGNING_PROPERTIES_TO_FUNCTIONS_WITHOUT_DECLARING_THEM_IS_NOT_SUPPORTED_WITH_ISOLATED_DECLARATIONS_ADD_AN_EXPLICIT_DECLARATION_FOR_THE_PROPERTIES_ASSIGNED_TO_THIS_FUNCTION, &[]));
                 }
             }
         },
@@ -166,10 +160,10 @@ impl DeclarationTransformer {
             let params = parse_tree_node.parent().unwrap().parameters();
             let param_idx = params.iter().position(|p| *p == parse_tree_node);
             let mut previous_sibling: Option<P<Node>> = None;
-            if let Some(param_idx) = param_idx {
-                if param_idx > 0 {
-                    previous_sibling = Some(params[param_idx - 1]);
-                }
+            if let Some(param_idx) = param_idx
+                && param_idx > 0
+            {
+                previous_sibling = Some(params[param_idx - 1]);
             }
 
             let text = source_file.text();
@@ -239,10 +233,7 @@ impl DeclarationTransformer {
 }
 
 // transform.go:210
-pub(crate) fn has_internal_annotation(
-    comment_range: CommentRange,
-    source_file: P<SourceFile>,
-) -> bool {
+pub fn has_internal_annotation(comment_range: CommentRange, source_file: P<SourceFile>) -> bool {
     let comment = &source_file.text()[comment_range.pos() as usize..comment_range.end() as usize];
     comment.contains("@internal")
 }
@@ -295,9 +286,7 @@ impl DeclarationTransformer {
 }
 
 // transform.go:276
-pub(crate) fn throw_diagnostic(
-    result: &SymbolAccessibilityResult,
-) -> P<SymbolAccessibilityDiagnostic> {
+pub fn throw_diagnostic(result: &SymbolAccessibilityResult) -> P<SymbolAccessibilityDiagnostic> {
     let _ = result;
     panic!("Diagnostic emitted without context")
 }
@@ -355,7 +344,7 @@ impl DeclarationTransformer {
 }
 
 // transform.go:316
-pub(crate) fn node_or_syntax_list_children(node: P<Node>) -> Vec<P<Node>> {
+pub fn node_or_syntax_list_children(node: P<Node>) -> Vec<P<Node>> {
     if ast::is_syntax_list(node) {
         return node.as_syntax_list().children.to_vec();
     }
@@ -363,7 +352,7 @@ pub(crate) fn node_or_syntax_list_children(node: P<Node>) -> Vec<P<Node>> {
 }
 
 // transform.go:323
-pub(crate) fn flatten_syntax_lists(nodes: &[P<Node>]) -> Vec<P<Node>> {
+pub fn flatten_syntax_lists(nodes: &[P<Node>]) -> Vec<P<Node>> {
     nodes.iter().flat_map(|n| node_or_syntax_list_children(*n)).collect()
 }
 
@@ -401,12 +390,12 @@ impl DeclarationTransformer {
                 let export_equals = node
                     .symbol()
                     .and_then(|s| s.exports())
-                    .and_then(|e| e.lookup(InternalSymbolNameExportEquals));
+                    .and_then(|e| e.lookup(INTERNAL_SYMBOL_NAME_EXPORT_EQUALS));
                 if let Some(export_equals) = export_equals {
                     let declarations = export_equals.declarations().to_vec();
                     if declarations.len() > 1 {
                         for &node in &declarations {
-                            self.state.add_diagnostic(create_diagnostic_for_node(node, &diagnostics::Multiple_module_exports_assignments_cannot_be_serialized_for_declaration_emit, &[]));
+                            self.state.add_diagnostic(create_diagnostic_for_node(node, &diagnostics::MULTIPLE_MODULE_EXPORTS_ASSIGNMENTS_CANNOT_BE_SERIALIZED_FOR_DECLARATION_EMIT, &[]));
                         }
                     }
                 }
@@ -448,7 +437,7 @@ impl DeclarationTransformer {
 }
 
 // transform.go:382
-pub(crate) fn create_empty_exports(factory: &NodeFactory) -> P<Node> {
+pub fn create_empty_exports(factory: &NodeFactory) -> P<Node> {
     factory.new_export_declaration(
         None, /*isTypeOnly*/
         false,
@@ -688,7 +677,7 @@ impl DeclarationTransformer {
                         if ast::is_class_declaration(input.parent().unwrap())
                             || ast::is_object_literal_expression(input.parent().unwrap())
                         {
-                            self.state.add_diagnostic(create_diagnostic_for_node(input, &diagnostics::Computed_property_names_on_class_or_object_literals_cannot_be_inferred_with_isolatedDeclarations, &[]));
+                            self.state.add_diagnostic(create_diagnostic_for_node(input, &diagnostics::COMPUTED_PROPERTY_NAMES_ON_CLASS_OR_OBJECT_LITERALS_CANNOT_BE_INFERRED_WITH_ISOLATED_DECLARATIONS, &[]));
                             return None;
                         } else if (ast::is_interface_declaration(input.parent().unwrap())
                             || ast::is_type_literal_node(input.parent().unwrap()))
@@ -697,7 +686,7 @@ impl DeclarationTransformer {
                             )
                         {
                             // Type declarations just need to double-check that the input computed name is an entity name expression
-                            self.state.add_diagnostic(create_diagnostic_for_node(input, &diagnostics::Computed_properties_must_be_number_or_string_literals_variables_or_dotted_expressions_with_isolatedDeclarations, &[]));
+                            self.state.add_diagnostic(create_diagnostic_for_node(input, &diagnostics::COMPUTED_PROPERTIES_MUST_BE_NUMBER_OR_STRING_LITERALS_VARIABLES_OR_DOTTED_EXPRESSIONS_WITH_ISOLATED_DECLARATIONS, &[]));
                             return None;
                         }
                     }
@@ -766,17 +755,16 @@ impl DeclarationTransformer {
             Kind::QualifiedName => {
                 let right = input.as_qualified_name().right;
                 if right.kind() == Kind::PrivateIdentifier {
-                    self.state.add_diagnostic(create_diagnostic_for_node(input, &diagnostics::Declaration_emit_elides_private_members_but_0_refers_to_a_private_member_Write_an_explicit_type_here, &[&right.text()]));
+                    self.state.add_diagnostic(create_diagnostic_for_node(input, &diagnostics::DECLARATION_EMIT_ELIDES_PRIVATE_MEMBERS_BUT_0_REFERS_TO_A_PRIVATE_MEMBER_WRITE_AN_EXPLICIT_TYPE_HERE, &[&right.text()]));
                 }
                 self.visitor().visit_each_child(Some(input))
             }
             Kind::TupleType => {
                 let result = self.visitor().visit_each_child(Some(input));
-                if let Some(result) = result {
-                    if transformers::is_original_node_single_line(self.emit_context(), Some(input))
-                    {
-                        self.emit_context().add_emit_flags(result, printer::EmitFlags::SingleLine);
-                    }
+                if let Some(result) = result
+                    && transformers::is_original_node_single_line(self.emit_context(), Some(input))
+                {
+                    self.emit_context().add_emit_flags(result, printer::EmitFlags::SingleLine);
                 }
                 result
             }
@@ -961,7 +949,7 @@ impl DeclarationTransformer {
     // transform.go:827
     pub(crate) fn transform_type_parameter_declaration(&self, input: P<Node>) -> Option<P<Node>> {
         let type_parameter = input.as_type_parameter_declaration();
-        if is_private_method_type_parameter(self.host, input)
+        if is_private_method_type_parameter(self.resolver, input)
             && (type_parameter.default_type.is_some() || type_parameter.constraint.is_some())
         {
             return Some(self.factory().update_type_parameter_declaration(
@@ -1001,7 +989,7 @@ impl DeclarationTransformer {
 }
 
 // transform.go:859
-pub(crate) fn has_any_binding_initializers(binding_pattern: P<Node>) -> bool {
+pub fn has_any_binding_initializers(binding_pattern: P<Node>) -> bool {
     if binding_pattern.as_binding_pattern().elements.nodes().iter().any(|&elem| {
         if !ast::is_binding_element(elem) {
             return false;
@@ -1010,10 +998,11 @@ pub(crate) fn has_any_binding_initializers(binding_pattern: P<Node>) -> bool {
         if e.initializer().is_some() {
             return true;
         }
-        if let Some(name) = e.name {
-            if ast::is_binding_pattern(name) && has_any_binding_initializers(name) {
-                return true;
-            }
+        if let Some(name) = e.name
+            && ast::is_binding_pattern(name)
+            && has_any_binding_initializers(name)
+        {
+            return true;
         }
 
         false
@@ -1201,7 +1190,7 @@ impl DeclarationTransformer {
             None, // accessors shouldn't have type params
             Some(self.update_accessor_param_list(
                 input,
-                self.host.get_effective_declaration_flags(
+                self.resolver.get_effective_declaration_flags(
                     self.emit_context().parse_node(Some(input)).unwrap(),
                     ModifierFlags::Private,
                 ) != ModifierFlags::None,
@@ -1224,7 +1213,7 @@ impl DeclarationTransformer {
             None, // accessors shouldn't have type params
             Some(self.update_accessor_param_list(
                 input,
-                self.host.get_effective_declaration_flags(
+                self.resolver.get_effective_declaration_flags(
                     self.emit_context().parse_node(Some(input)).unwrap(),
                     ModifierFlags::Private,
                 ) != ModifierFlags::None,
@@ -1242,10 +1231,8 @@ impl DeclarationTransformer {
         is_private: bool,
     ) -> P<NodeList> {
         let mut new_params: Vec<P<Node>> = Vec::new();
-        if !is_private {
-            if let Some(this_param) = ast::get_this_parameter(input) {
-                new_params.push(self.ensure_parameter(this_param));
-            }
+        if !is_private && let Some(this_param) = ast::get_this_parameter(input) {
+            new_params.push(self.ensure_parameter(this_param));
         }
         if ast::is_set_accessor_declaration(input) {
             let mut value_param: Option<P<Node>> = None;
@@ -1334,7 +1321,7 @@ impl DeclarationTransformer {
 
     // transform.go:1122
     pub(crate) fn transform_method_signature_declaration(&self, input: P<Node>) -> Option<P<Node>> {
-        if self.host.get_effective_declaration_flags(
+        if self.resolver.get_effective_declaration_flags(
             self.emit_context().parse_node(Some(input)).unwrap(),
             ModifierFlags::Private,
         ) != ModifierFlags::None
@@ -1357,7 +1344,7 @@ impl DeclarationTransformer {
 
     // transform.go:1140
     pub(crate) fn transform_method_declaration(&self, input: P<Node>) -> Option<P<Node>> {
-        if self.host.get_effective_declaration_flags(
+        if self.resolver.get_effective_declaration_flags(
             self.emit_context().parse_node(Some(input)).unwrap(),
             ModifierFlags::Private,
         ) != ModifierFlags::None
@@ -1523,7 +1510,7 @@ impl DeclarationTransformer {
             Rc::new(move |_: &SymbolAccessibilityResult| {
                 Some(P::new(SymbolAccessibilityDiagnostic {
                     diagnostic_message:
-                        &diagnostics::Default_export_of_the_module_has_or_is_using_private_name_0,
+                        &diagnostics::DEFAULT_EXPORT_OF_THE_MODULE_HAS_OR_IS_USING_PRIVATE_NAME_0,
                     error_node: Some(input),
                     type_name: None,
                 }))
@@ -1583,7 +1570,6 @@ impl DeclarationTransformer {
         let mut initializer: Option<P<Node>> = None;
         if ast::is_primitive_literal_value(unwrap_parenthesized_expression(expression), true) {
             initializer = self.resolver.create_literal_const_value(
-                self.emit_context(),
                 self.emit_context().parse_node(Some(assignment)).unwrap(),
                 self.tracker.get(),
             );

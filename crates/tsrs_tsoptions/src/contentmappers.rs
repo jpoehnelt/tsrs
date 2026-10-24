@@ -5,6 +5,7 @@
 // A mapper is declared in tsconfig (Definition), its implementation is described by fields in its npm
 // package's package.json (Manifest), and the two are combined once the package is resolved (Mapper).
 
+use rustc_hash::FxHashMap;
 use tsrs_ast::{Diagnostic, new_compiler_diagnostic};
 use tsrs_core::collections::{OrderedMap, new_ordered_map_with_size_hint};
 use tsrs_core::json;
@@ -23,6 +24,9 @@ use crate::tsconfigparsing::{ParseConfigHost, ResolverHost};
 pub struct Definition {
     pub package: String,
     pub extensions: Vec<String>,
+    pub output_extensions: FxHashMap<String, String>,
+    // Go distinguishes a nil map from an explicitly empty map in Mapper.Equals.
+    pub output_extensions_present: bool,
     // json.Value: the raw JSON text, empty when absent.
     pub options: String,
 }
@@ -38,6 +42,8 @@ pub struct Manifest {
     pub exec: Vec<String>,
     pub compiler_options: Vec<String>,
     pub dynamic_config: bool,
+    pub default_output_extensions: FxHashMap<String, String>,
+    pub default_output_extensions_present: bool,
 }
 
 // Mapper is a resolved content mapper: its tsconfig Definition combined with the Manifest resolved from
@@ -54,12 +60,30 @@ pub struct Mapper {
 }
 
 // contentmapper.go:58
-pub(crate) const SUPPORTED_VIRTUAL_EXTENSIONS: [&str; 9] =
+pub const SUPPORTED_VIRTUAL_EXTENSIONS: [&str; 9] =
     [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".json"];
 
 // contentmapper.go:62
 pub fn is_supported_virtual_extension(extension: &str) -> bool {
     SUPPORTED_VIRTUAL_EXTENSIONS.contains(&extension)
+}
+
+pub fn is_valid_extension(extension: &str) -> bool {
+    extension.len() > 1
+        && extension.starts_with('.')
+        && !extension.contains('/')
+        && !extension.contains('\\')
+}
+
+pub fn has_reserved_source_extension(extension: &str) -> bool {
+    tspath::ALL_SUPPORTED_EXTENSIONS_WITH_JSON.iter().flat_map(|group| group.iter().copied()).any(
+        |native| {
+            extension.len() >= native.len()
+                && extension
+                    .get(extension.len() - native.len()..)
+                    .is_some_and(|suffix| tsrs_core::stringutil::equal_fold(suffix, native))
+        },
+    )
 }
 
 impl Mapper {
@@ -96,12 +120,8 @@ impl Mapper {
         format!("{}@{}", self.manifest.name, self.manifest.version)
     }
 
-    // TransformIdentity returns a fingerprint of everything besides a file's content that determines the
-    // output of transforming it with this mapper under the given options: the mapper's identity and the
-    // values of the compiler options it declared it depends on. Folding it into a cache key means a change to
-    // the mapper version or a relevant compiler option invalidates cached results. It is a pure function of
-    // the mapper and options — the declared options come from the manifest, so it never starts the mapper
-    // process.
+    // TransformIdentity fingerprints the mapper's identity, declared compiler options, and runtime output
+    // contract so both transformed-file caches and incremental emit are invalidated when these change.
     // contentmapper.go:104 (Go `xxh3.Uint128`: `Hi` is the high 64 bits, so `Bytes()` is `to_be_bytes()`.)
     pub fn transform_identity(&self, options: Option<&CompilerOptions>) -> u128 {
         // Go discards the error, which marshaling these option types never returns.
@@ -117,15 +137,38 @@ impl Mapper {
             options_json.push_str(raw);
         }
         options_json.push('}');
+        let mut output_extensions_json = String::new();
+        if !self.definition.output_extensions.is_empty() {
+            let mut entries: Vec<_> = self.definition.output_extensions.iter().collect();
+            entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+            output_extensions_json.push('{');
+            for (i, (source, target)) in entries.into_iter().enumerate() {
+                if i > 0 {
+                    output_extensions_json.push(',');
+                }
+                json::write_compact_string(&mut output_extensions_json, source);
+                output_extensions_json.push(':');
+                json::write_compact_string(&mut output_extensions_json, target);
+            }
+            output_extensions_json.push('}');
+        }
         let identity = self.identity();
         let mut buf = Vec::with_capacity(
-            identity.len() + 2 + self.definition.options.len() + options_json.len(),
+            identity.len()
+                + 3
+                + self.definition.options.len()
+                + options_json.len()
+                + output_extensions_json.len(),
         );
         buf.extend_from_slice(identity.as_bytes());
         buf.push(0);
         buf.extend_from_slice(self.definition.options.as_bytes());
         buf.push(0);
         buf.extend_from_slice(options_json.as_bytes());
+        if !output_extensions_json.is_empty() {
+            buf.push(0);
+            buf.extend_from_slice(output_extensions_json.as_bytes());
+        }
         xxhash_rust::xxh3::xxh3_128(&buf)
     }
 
@@ -173,16 +216,16 @@ pub struct OptionPathSegment {
 // and package directory. It never executes the package. On failure it returns a diagnostic describing why
 // the mapper could not be resolved; on success the diagnostic is nil.
 // contentmappers.go:17
-pub(crate) fn resolve_content_mapper_manifest(
-    host: &'static dyn ParseConfigHost,
+pub fn resolve_content_mapper_manifest(
+    host: &dyn ParseConfigHost,
     containing_file: &str,
     package_name: &str,
 ) -> (Manifest, String, Option<P<Diagnostic>>) {
-    let resolver_host: &'static ResolverHost = P::new(ResolverHost { host }).get();
+    let resolver_host = ResolverHost { host };
     let resolver = tsrs_module::new_resolver(tsrs_module::ResolverOptions::new(
-        resolver_host,
+        &resolver_host,
         P::new(CompilerOptions {
-            module_resolution: ModuleResolutionKind::Bundler,
+            module_resolution: ModuleResolutionKind::BUNDLER,
             ..Default::default()
         }),
     ));
@@ -197,7 +240,7 @@ pub(crate) fn resolve_content_mapper_manifest(
             Manifest::default(),
             String::new(),
             Some(new_compiler_diagnostic(
-                &diagnostics::The_content_mapper_package_0_could_not_be_resolved,
+                &diagnostics::THE_CONTENT_MAPPER_PACKAGE_0_COULD_NOT_BE_RESOLVED,
                 &[&package_name],
             )),
         );
@@ -210,7 +253,7 @@ pub(crate) fn resolve_content_mapper_manifest(
             Manifest::default(),
             package_directory,
             Some(new_compiler_diagnostic(
-                &diagnostics::The_content_mapper_package_0_could_not_be_resolved,
+                &diagnostics::THE_CONTENT_MAPPER_PACKAGE_0_COULD_NOT_BE_RESOLVED,
                 &[&package_name],
             )),
         );
@@ -220,7 +263,7 @@ pub(crate) fn resolve_content_mapper_manifest(
             Manifest::default(),
             package_directory,
             Some(new_compiler_diagnostic(
-                &diagnostics::The_package_json_of_the_content_mapper_package_0_could_not_be_parsed,
+                &diagnostics::THE_PACKAGE_JSON_OF_THE_CONTENT_MAPPER_PACKAGE_0_COULD_NOT_BE_PARSED,
                 &[&package_name],
             )),
         );
@@ -232,7 +275,7 @@ pub(crate) fn resolve_content_mapper_manifest(
             Manifest::default(),
             package_directory,
             Some(new_compiler_diagnostic(
-                &diagnostics::The_package_json_of_the_content_mapper_package_0_does_not_specify_a_name,
+                &diagnostics::THE_PACKAGE_JSON_OF_THE_CONTENT_MAPPER_PACKAGE_0_DOES_NOT_SPECIFY_A_NAME,
                 &[&package_name],
             )),
         );
@@ -246,7 +289,7 @@ pub(crate) fn resolve_content_mapper_manifest(
             Manifest::default(),
             package_directory,
             Some(new_compiler_diagnostic(
-                &diagnostics::The_package_json_of_the_content_mapper_package_0_does_not_declare_a_typescript_contentMapper_object,
+                &diagnostics::THE_PACKAGE_JSON_OF_THE_CONTENT_MAPPER_PACKAGE_0_DOES_NOT_DECLARE_A_TYPESCRIPT_CONTENT_MAPPER_OBJECT,
                 &[&package_name],
             )),
         );
@@ -258,7 +301,7 @@ pub(crate) fn resolve_content_mapper_manifest(
                 Manifest::default(),
                 package_directory,
                 Some(new_compiler_diagnostic(
-                    &diagnostics::The_typescript_contentMapper_exec_of_the_content_mapper_package_0_must_be_a_non_empty_array_of_strings,
+                    &diagnostics::THE_TYPESCRIPT_CONTENT_MAPPER_EXEC_OF_THE_CONTENT_MAPPER_PACKAGE_0_MUST_BE_A_NON_EMPTY_ARRAY_OF_STRINGS,
                     &[&package_name],
                 )),
             );
@@ -266,5 +309,53 @@ pub(crate) fn resolve_content_mapper_manifest(
     };
     let compiler_options = cm.compiler_options.value.clone();
     let dynamic_config = cm.dynamic_config.value;
-    (Manifest { name, version, exec, compiler_options, dynamic_config }, package_directory, None)
+    if cm.output_extensions.is_present() && !cm.output_extensions.is_valid() {
+        return (
+            Manifest::default(), package_directory,
+            Some(new_compiler_diagnostic(
+                &diagnostics::THE_TYPESCRIPT_CONTENT_MAPPER_OUTPUT_EXTENSIONS_OF_THE_CONTENT_MAPPER_PACKAGE_0_MUST_BE_AN_OBJECT_WITH_STRING_VALUES,
+                &[&package_name],
+            )),
+        );
+    }
+    let output_extensions = cm.output_extensions.value.clone();
+    let default_output_extensions_present = cm.output_extensions.is_present();
+    let mut entries: Vec<_> = output_extensions.iter().collect();
+    entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    for (source, target) in entries {
+        for extension in [source, target] {
+            if extension.contains('/') || extension.contains('\\') {
+                return (
+                    Manifest::default(),
+                    package_directory,
+                    Some(new_compiler_diagnostic(
+                        &diagnostics::CONTENT_MAPPER_EXTENSION_0_MUST_NOT_CONTAIN_PATH_SEPARATORS,
+                        &[extension],
+                    )),
+                );
+            }
+        }
+        if !is_valid_extension(source) || !is_valid_extension(target) {
+            return (
+                Manifest::default(), package_directory,
+                Some(new_compiler_diagnostic(
+                    &diagnostics::THE_TYPESCRIPT_CONTENT_MAPPER_OUTPUT_EXTENSIONS_OF_THE_CONTENT_MAPPER_PACKAGE_0_CONTAINS_AN_INVALID_MAPPING_FROM_1_TO_2_EXTENSIONS_MUST_BE_NON_EMPTY_AND_BEGIN_WITH_A,
+                    &[&package_name, source, target],
+                )),
+            );
+        }
+    }
+    (
+        Manifest {
+            name,
+            version,
+            exec,
+            compiler_options,
+            dynamic_config,
+            default_output_extensions: output_extensions,
+            default_output_extensions_present,
+        },
+        package_directory,
+        None,
+    )
 }

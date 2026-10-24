@@ -38,19 +38,19 @@ impl NodeBuilderImpl {
         };
 
         let kind = classify_property_name(&text, ast::is_string_literal(res), is_method);
-        if ast::is_identifier(res) && kind == propertyNameNodeKind::Identifier {
+        if ast::is_identifier(res) && kind == PropertyNameNodeKind::Identifier {
             return Some(res);
         }
-        if ast::is_string_literal(res) && kind == propertyNameNodeKind::StringLiteral {
+        if ast::is_string_literal(res) && kind == PropertyNameNodeKind::StringLiteral {
             return Some(res);
         }
 
         let renamed = match kind {
-            propertyNameNodeKind::Identifier => self.new_identifier(c, &text, None),
-            propertyNameNodeKind::StringLiteral => {
+            PropertyNameNodeKind::Identifier => self.new_identifier(c, &text, None),
+            PropertyNameNodeKind::StringLiteral => {
                 self.f.new_string_literal(self.f.alloc_text(&text), TokenFlags::None)
             }
-            propertyNameNodeKind::NumericLiteral => return Some(res),
+            PropertyNameNodeKind::NumericLiteral => return Some(res),
         };
         self.e.set_original(renamed, res);
         Some(self.set_text_range(c, renamed, Some(res)))
@@ -106,7 +106,7 @@ impl NodeBuilderImpl {
     }
 }
 
-impl recoveryBoundary {
+impl RecoveryBoundary {
     // nodecopy.go:109
     pub(crate) fn mark_error(&self, f: Option<Box<dyn FnOnce()>>) {
         self.had_error.set(true);
@@ -116,10 +116,10 @@ impl recoveryBoundary {
     }
 
     // nodecopy.go:122
-    pub(crate) fn start_recovery_scope(&self) -> originalRecoveryScopeState {
+    pub(crate) fn start_recovery_scope(&self) -> OriginalRecoveryScopeState {
         let tracked_symbols_top = self.ctx.tracked_symbols.borrow().len();
         let unreported_errors_top = self.deferred_reports.borrow().len();
-        originalRecoveryScopeState {
+        OriginalRecoveryScopeState {
             tracked_symbols_top,
             unreported_errors_top,
             had_error: self.had_error.get(),
@@ -127,14 +127,14 @@ impl recoveryBoundary {
     }
 
     // nodecopy.go:128
-    pub(crate) fn end_recovery_scope(&self, state: originalRecoveryScopeState) {
+    pub(crate) fn end_recovery_scope(&self, state: OriginalRecoveryScopeState) {
         self.had_error.set(state.had_error);
         self.ctx.tracked_symbols.borrow_mut().truncate(state.tracked_symbols_top);
         self.deferred_reports.borrow_mut().truncate(state.unreported_errors_top);
     }
 }
 
-impl wrappingTracker {
+impl WrappingTracker {
     // nodecopy.go:139
     pub fn pop_error_fallback_node(&self) {
         self.wrapped.pop_error_fallback_node();
@@ -239,19 +239,19 @@ impl wrappingTracker {
 }
 
 // nodecopy.go:188
-pub(crate) fn new_wrapping_tracker(
+pub fn new_wrapping_tracker(
     inner: &'static dyn SymbolTracker,
-    bound: P<recoveryBoundary>,
-) -> P<wrappingTracker> {
-    P::new_scratch(wrappingTracker { wrapped: inner, bound })
+    bound: P<RecoveryBoundary>,
+) -> P<WrappingTracker> {
+    P::new_scratch(WrappingTracker { wrapped: inner, bound })
 }
 
 impl NodeBuilderImpl {
     // nodecopy.go:195
-    pub(crate) fn create_recovery_boundary(&self, c: &Checker) -> P<recoveryBoundary> {
+    pub(crate) fn create_recovery_boundary(&self, c: &Checker) -> P<RecoveryBoundary> {
         c.check_not_canceled();
         let ctx = self.ctx();
-        let bound = P::new_scratch(recoveryBoundary {
+        let bound = P::new_scratch(RecoveryBoundary {
             ctx,
             had_error: Cell::new(false),
             deferred_reports: RefCell::new(Vec::new()),
@@ -271,7 +271,7 @@ impl NodeBuilderImpl {
     }
 
     // nodecopy.go:204
-    pub(crate) fn finalize_boundary(&self, c: &mut Checker, bound: P<recoveryBoundary>) -> bool {
+    pub(crate) fn finalize_boundary(&self, c: &mut Checker, bound: P<RecoveryBoundary>) -> bool {
         let _ = c;
         let ctx = self.ctx();
         ctx.tracker.set(bound.old_tracker);
@@ -344,8 +344,8 @@ impl NodeBuilderImpl {
                 SymbolFlags::Type
             };
             let mut parent_symbol: Option<P<Symbol>> = None;
-            if let Some(node_symbol) = node_symbol {
-                if c.is_symbol_accessible(
+            if let Some(node_symbol) = node_symbol
+                && c.is_symbol_accessible(
                     Some(node_symbol),
                     ctx.enclosing_declaration.get(),
                     meaning,
@@ -353,10 +353,8 @@ impl NodeBuilderImpl {
                 )
                 .accessibility
                     == SymbolAccessibility::Accessible
-                {
-                    parent_symbol =
-                        Some(self.lookup_symbol_chain(c, node_symbol, meaning, true)[0]);
-                }
+            {
+                parent_symbol = Some(self.lookup_symbol_chain(c, node_symbol, meaning, true)[0]);
             }
             if let Some(parent_symbol) = parent_symbol.filter(|s| is_external_module_symbol(*s)) {
                 name = self.get_specifier_for_module_symbol(c, parent_symbol, mode).specifier;
@@ -390,9 +388,16 @@ impl NodeBuilderImpl {
         parent: P<Node>,
         lit: P<Node>,
     ) -> P<Node> {
-        let new_name = self.get_module_specifier_override(c, parent, lit);
+        let mut new_name = self.get_module_specifier_override(c, parent, lit);
         if new_name.is_empty() {
-            return lit;
+            let Some(rewritten) = self.rewrite_content_mapped_module_specifier(c, lit.text())
+            else {
+                return lit;
+            };
+            if rewritten == lit.text() {
+                return lit;
+            }
+            new_name = rewritten;
         }
         let res = self.f.new_string_literal(self.f.alloc_text(&new_name), TokenFlags::None);
         self.e.set_original(res, lit);
@@ -417,10 +422,10 @@ impl NodeBuilderImpl {
 }
 
 // nodecopy.go:288
-pub(crate) fn get_existing_node_tree_visitor(
+pub fn get_existing_node_tree_visitor(
     c: &Checker,
     b: P<NodeBuilderImpl>,
-    bound: P<recoveryBoundary>,
+    bound: P<RecoveryBoundary>,
 ) -> NodeVisitor {
     // TODO: wrap all these closures into methods on an object so we can guarantee we reuse the same memory on each invocation by reusing/resetting the object
     // instead of re-closing-over all of these each time we need a visitor. In theory the compiler could handle this, but in practice closure inlining hasn't been reliable
@@ -438,13 +443,13 @@ pub(crate) fn get_existing_node_tree_visitor(
         let non_local_node = Rc::clone(&non_local_node);
         Rc::new(move |nodes: Option<P<NodeList>>, v: &mut NodeVisitor| {
             let mut res = v.visit_nodes(nodes);
-            if non_local_node.get() {
-                if let Some(r) = res {
-                    // Remove position data from node lists originating in other files
-                    let r = if Some(r) == nodes { nodes.unwrap().clone_list(&b.f) } else { r };
-                    r.loc.set(TextRange::synthetic());
-                    res = Some(r);
-                }
+            if non_local_node.get()
+                && let Some(r) = res
+            {
+                // Remove position data from node lists originating in other files
+                let r = if Some(r) == nodes { nodes.unwrap().clone_list(&b.f) } else { r };
+                r.loc.set(TextRange::synthetic());
+                res = Some(r);
             }
             res
         })
@@ -477,7 +482,7 @@ pub(crate) fn get_existing_node_tree_visitor(
 #[derive(Clone, Copy)]
 struct ExistingNodeTree {
     b: P<NodeBuilderImpl>,
-    bound: P<recoveryBoundary>,
+    bound: P<RecoveryBoundary>,
 }
 
 impl ExistingNodeTree {
@@ -674,18 +679,16 @@ impl ExistingNodeTree {
 
         if let Some(sym) = sym {
             // If a parameter is resolvable in the current context it is also visible, so no need to go to symbol accesibility
-            if sym.flags().intersects(SymbolFlags::FunctionScopedVariable) {
-                if let Some(value_declaration) = sym.value_declaration() {
-                    if ast::is_part_of_parameter_declaration(value_declaration)
-                        || ast::is_jsdoc_parameter_tag(value_declaration)
-                    {
-                        return (
-                            introduces_error,
-                            self.attach_symbol_to_leftmost_identifier(c, leftmost, node, Some(sym)),
-                            None,
-                        );
-                    }
-                }
+            if sym.flags().intersects(SymbolFlags::FunctionScopedVariable)
+                && let Some(value_declaration) = sym.value_declaration()
+                && (ast::is_part_of_parameter_declaration(value_declaration)
+                    || ast::is_jsdoc_parameter_tag(value_declaration))
+            {
+                return (
+                    introduces_error,
+                    self.attach_symbol_to_leftmost_identifier(c, leftmost, node, Some(sym)),
+                    None,
+                );
             }
             if !sym.flags().intersects(SymbolFlags::TypeParameter) /* Type parameters are visible in the current context if they are are resolvable */
                 && !ast::is_declaration_name(node)
@@ -773,10 +776,10 @@ impl ExistingNodeTree {
             nodebuilder_types::NodeBuilderImpl::try_get_resolved_symbol_from_type_node(c, node)?; // ???
         if s.flags().intersects(SymbolFlags::TypeParameter) {
             let declared_type = c.get_declared_type_of_symbol(s);
-            if let Some(mapper) = b.ctx().mapper.get() {
-                if c.get_mapped_type(declared_type, mapper) != declared_type {
-                    return None; // refers to type parameter remapped by context (TODO improvement: just return the remapped param name?)
-                }
+            if let Some(mapper) = b.ctx().mapper.get()
+                && c.get_mapped_type(declared_type, mapper) != declared_type
+            {
+                return None; // refers to type parameter remapped by context (TODO improvement: just return the remapped param name?)
             }
         }
         let t = b.get_type_from_type_node(c, node, false).unwrap();
@@ -795,17 +798,17 @@ impl ExistingNodeTree {
             && b.ctx().enclosing_declaration.get().is_none_or(ast::is_source_file)
             && ast::is_identifier(type_name)
             && s.parent().is_some_and(|p| p.flags().intersects(SymbolFlags::Namespace));
-        if !introduces_error && !qualify_legacy_name {
-            let type_arguments = self.visit_nodes(c, v, node.type_argument_list());
-            let updated = b.f.update_type_reference_node(node, new_name, type_arguments);
-            Some(self.set_text_range(c, updated, node))
-        } else {
+        if introduces_error || qualify_legacy_name {
             let type_arguments = self.visit_nodes(c, v, node.type_argument_list());
             let serialized_name = b.serialize_type_name(c, type_name, false, type_arguments);
             if let Some(serialized_name) = serialized_name {
                 return Some(self.set_text_range(c, serialized_name, type_name));
             }
             None
+        } else {
+            let type_arguments = self.visit_nodes(c, v, node.type_argument_list());
+            let updated = b.f.update_type_reference_node(node, new_name, type_arguments);
+            Some(self.set_text_range(c, updated, node))
         }
     }
 
@@ -1045,23 +1048,22 @@ impl ExistingNodeTree {
                 type_arguments,
             ));
         }
-        if let Some(name) = node.name() {
-            if name.kind() == Kind::ComputedPropertyName && !c.has_late_bindable_name(node) {
-                if !ast::has_dynamic_name(node) {
-                    // !!! TODO: This matches strada, but rather than recursing, this should probably fall down to later cases.
-                    // Take a `["field"]` property declaration - it still needs a `: any` appended to it
-                    return self.visit_each_child(c, v, node);
-                }
-                // !!! TODO: this condition matches strada, but it just seems wrong? Or at the very least extraordinarily approximate, and doesn't flag a builder error...
-                let should_remove_declaration =
-                    !(b.ctx().internal_flags.get().intersects(InternalFlags::AllowUnresolvedNames)
-                        && ast::is_entity_name_expression(
-                            name.as_computed_property_name().expression,
-                        )
-                        && c.check_computed_property_name(name).flags().intersects(TypeFlags::Any));
-                if should_remove_declaration {
-                    return None;
-                }
+        if let Some(name) = node.name()
+            && name.kind() == Kind::ComputedPropertyName
+            && !c.has_late_bindable_name(node)
+        {
+            if !ast::has_dynamic_name(node) {
+                // !!! TODO: This matches strada, but rather than recursing, this should probably fall down to later cases.
+                // Take a `["field"]` property declaration - it still needs a `: any` appended to it
+                return self.visit_each_child(c, v, node);
+            }
+            // !!! TODO: this condition matches strada, but it just seems wrong? Or at the very least extraordinarily approximate, and doesn't flag a builder error...
+            let should_remove_declaration =
+                !(b.ctx().internal_flags.get().intersects(InternalFlags::AllowUnresolvedNames)
+                    && ast::is_entity_name_expression(name.as_computed_property_name().expression)
+                    && c.check_computed_property_name(name).flags().intersects(TypeFlags::Any));
+            if should_remove_declaration {
+                return None;
             }
         }
         if (ast::is_function_like(node) && node.type_node().is_none())
@@ -1290,7 +1292,7 @@ impl ExistingNodeTree {
             if ast::is_function_like(node) {
                 let sig = c.get_signature_from_declaration(node);
                 params = sig.parameters.get();
-                type_params = sig.type_parameters.get().to_vec();
+                type_params = sig.type_parameters().to_vec();
             } else if ast::is_conditional_type_node(node) {
                 // !!! TODO: impossible in combination with the scope start check???
                 type_params = c.get_infer_type_parameters(node);

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# PGO training workload for release builds and the README benchmark (.github/workflows/release.yml,
-# .github/workflows/update-benchmarks.yml; notes/perf-pgo.md): runs PGO-instrumented binaries and leaves their
-# raw profiles (*.profraw) in <raw-dir>. Compiler workload exit codes are ignored (the suite has known failures
+# PGO training workload for release builds (.github/workflows/release.yml; notes/perf-pgo.md):
+# runs PGO-instrumented binaries and leaves their raw profiles (*.profraw) in <raw-dir>.
+# Compiler workload exit codes are ignored (the suite has known failures
 # and the bench projects have type errors); crashes and missing profiles fail. Go Fourslash must pass its gate.
 #
 #   pgo-train.sh <dir with instrumented tsrs + tsrs-test + fourslash_server> <raw-dir> <bench work dir>
@@ -10,9 +10,9 @@
 # profile counts apply to the checker code in tsrs), the Go fourslash suite (Rust language-server workers,
 # for the language-service and project-system code behind `tsrs --lsp`), plus
 # the tsrs binary itself on two open-source projects from bench/projects.json (xstate-main, webpack; default mode,
-# tsrs's default checker count for the runner). Needs Go, Python 3.12+, the pinned ts-ref/tsc source checkout,
+# tsrs's default checker count for the runner). Needs Go, Node.js 24+, the pinned ts-ref/tsc source checkout,
 # and network for the bench projects' clone + install
-# (bench/run.py --setup-only). Never train on private code.
+# (bench/bench.mjs prepare). Never train on private code.
 set -euo pipefail
 
 bin=$(cd "$1" && pwd)
@@ -20,7 +20,7 @@ mkdir -p "$2" "$3"
 raw=$(cd "$2" && pwd)
 work=$(cd "$3" && pwd)
 
-python3 bench/run.py --setup-only --projects xstate-main,webpack --work-dir "$work"
+node bench/bench.mjs prepare --projects xstate-main,webpack --work-dir "$work"
 
 check_exit() { # $1 = exit status, $2 = what ran; 0/1/2 are tsc exit codes, anything else is a crash
   if [ "$1" -gt 2 ]; then echo "::error::$2 exited with $1"; exit 1; fi

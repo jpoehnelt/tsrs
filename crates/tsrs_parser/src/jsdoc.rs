@@ -13,7 +13,7 @@ static INIT: std::sync::Once = std::sync::Once::new();
 
 // Go registers this from the parser package's init(); Rust has no package initializers, so parser
 // entry points call this (idempotent) before any lazy JSDoc access can happen.
-pub(crate) fn init() {
+pub fn init() {
     INIT.call_once(|| ast::set_parse_jsdoc_for_node(parse_jsdoc_for_node));
 }
 
@@ -175,7 +175,7 @@ impl Parser {
         let save_token = self.token;
         let save_context_flags = self.context_flags;
         let save_parsing_contexts = self.parsing_contexts;
-        let save_scanner_state = self.scanner.mark();
+        let save_scanner_state = self.scanner.take_state();
         let save_diagnostics_length = self.diagnostics.len();
         let save_has_parse_error = self.has_parse_error;
         let save_has_await_identifier = self.statement_has_await_identifier;
@@ -203,7 +203,7 @@ impl Parser {
         self.scanner.set_text(self.source_text);
         self.parsing_contexts = save_parsing_contexts;
         self.context_flags = save_context_flags;
-        self.scanner.rewind(save_scanner_state);
+        self.scanner.restore_state(save_scanner_state);
         self.token = save_token;
         self.has_parse_error = save_has_parse_error;
         self.statement_has_await_identifier = save_has_await_identifier;
@@ -432,11 +432,11 @@ impl Parser {
     }
 
     pub(crate) fn skip_whitespace(&mut self) {
-        if self.token == Kind::WhitespaceTrivia || self.token == Kind::NewLineTrivia {
-            if self.look_ahead(Parser::is_next_nonwhitespace_token_end_of_file) {
-                return;
-                // Don't skip whitespace prior to EoF (or end of comment) - that shouldn't be included in any node's range
-            }
+        if (self.token == Kind::WhitespaceTrivia || self.token == Kind::NewLineTrivia)
+            && self.look_ahead(Parser::is_next_nonwhitespace_token_end_of_file)
+        {
+            return;
+            // Don't skip whitespace prior to EoF (or end of comment) - that shouldn't be included in any node's range
         }
         while self.token == Kind::WhitespaceTrivia || self.token == Kind::NewLineTrivia {
             self.next_token_jsdoc();
@@ -444,31 +444,44 @@ impl Parser {
     }
 
     pub(crate) fn skip_whitespace_or_asterisk(&mut self) -> String {
-        if self.token == Kind::WhitespaceTrivia || self.token == Kind::NewLineTrivia {
-            if self.look_ahead(Parser::is_next_nonwhitespace_token_end_of_file) {
-                return String::new();
-                // Don't skip whitespace prior to EoF (or end of comment) - that shouldn't be included in any node's range
-            }
+        if (self.token == Kind::WhitespaceTrivia || self.token == Kind::NewLineTrivia)
+            && self.look_ahead(Parser::is_next_nonwhitespace_token_end_of_file)
+        {
+            return String::new();
+            // Don't skip whitespace prior to EoF (or end of comment) - that shouldn't be included in any node's range
         }
 
         let mut preceding_line_break = self.scanner.has_preceding_line_break();
         let mut seen_line_break = false;
-        let mut indents: Vec<&'static str> = Vec::with_capacity(4);
+        // The tokens since the last line break are adjacent in the text (JSDoc scanning returns trivia as
+        // tokens), so the indent is one slice of it, not a list of token texts joined at the end.
+        let mut indent_start: Option<u32> = None;
+        let mut indent_end: u32 = 0;
         while (preceding_line_break && self.token == Kind::AsteriskToken)
             || self.token == Kind::WhitespaceTrivia
             || self.token == Kind::NewLineTrivia
         {
-            indents.push(self.scanner.token_text());
             if self.token == Kind::NewLineTrivia {
                 preceding_line_break = true;
                 seen_line_break = true;
-                indents.clear();
-            } else if self.token == Kind::AsteriskToken {
-                preceding_line_break = false;
+                indent_start = None;
+            } else {
+                if indent_start.is_none() {
+                    indent_start = Some(self.scanner.token_start());
+                }
+                indent_end = self.scanner.token_end();
+                if self.token == Kind::AsteriskToken {
+                    preceding_line_break = false;
+                }
             }
             self.next_token_jsdoc();
         }
-        if seen_line_break { indents.concat() } else { String::new() }
+        match (seen_line_break, indent_start) {
+            (true, Some(start)) => {
+                self.scanner.text()[start as usize..indent_end as usize].to_string()
+            }
+            _ => String::new(),
+        }
     }
 
     pub(crate) fn parse_tag(&mut self, tags: &[P<Node>], margin: u32) -> P<Node> {
@@ -476,7 +489,7 @@ impl Parser {
         let start = self.scanner.token_start();
         self.next_token_jsdoc();
 
-        let tag_name = self.parse_jsdoc_identifier_name(Some(&diagnostics::Identifier_expected));
+        let tag_name = self.parse_jsdoc_identifier_name(Some(&diagnostics::IDENTIFIER_EXPECTED));
         let indent_text = self.skip_whitespace_or_asterisk();
 
         match tag_name.text() {
@@ -741,11 +754,11 @@ impl Parser {
         comments.clear();
         self.jsdoc_tag_comments_space = comments;
 
-        let result = if !parts.is_empty() {
+        let result = if parts.is_empty() {
+            None
+        } else {
             let end = self.scanner.token_end();
             Some(self.new_node_list(TextRange::new(comments_pos, end), &parts))
-        } else {
-            None
         };
         parts.clear();
         self.jsdoc_tag_comments_parts_space = parts;
@@ -856,7 +869,7 @@ impl Parser {
         let name = self.parse_jsdoc_entity_name(if target == PropertyLikeParse::Parameter {
             None
         } else {
-            Some(&diagnostics::Identifier_expected)
+            Some(&diagnostics::IDENTIFIER_EXPECTED)
         });
         if is_backquoted {
             self.parse_expected_token_jsdoc(Kind::BacktickToken);
@@ -925,41 +938,39 @@ impl Parser {
         target: PropertyLikeParse,
         indent: u32,
     ) -> Option<P<Node>> {
-        if let Some(type_expression) = type_expression {
-            if is_object_or_object_array_type_reference(type_expression.type_node().unwrap()) {
-                let pos = self.node_pos();
-                let mut children: Option<Vec<P<Node>>> = None;
-                loop {
-                    let state = self.mark();
-                    let child =
-                        self.parse_child_parameter_or_property_tag(target, indent, Some(name));
-                    let Some(child) = child else {
-                        self.rewind(state);
-                        break;
-                    };
-                    match child.kind() {
-                        Kind::JSDocParameterTag | Kind::JSDocPropertyTag => {
-                            children.get_or_insert_with(Vec::new).push(child);
-                        }
-                        Kind::JSDocTemplateTag => {
-                            self.parse_error_at_range(
+        if let Some(type_expression) = type_expression
+            && is_object_or_object_array_type_reference(type_expression.type_node().unwrap())
+        {
+            let pos = self.node_pos();
+            let mut children: Option<Vec<P<Node>>> = None;
+            loop {
+                let state = self.mark();
+                let child = self.parse_child_parameter_or_property_tag(target, indent, Some(name));
+                let Some(child) = child else {
+                    self.rewind(state);
+                    break;
+                };
+                match child.kind() {
+                    Kind::JSDocParameterTag | Kind::JSDocPropertyTag => {
+                        children.get_or_insert_with(Vec::new).push(child);
+                    }
+                    Kind::JSDocTemplateTag => {
+                        self.parse_error_at_range(
                                 child.tag_name().loc(),
-                                &diagnostics::A_JSDoc_template_tag_may_not_follow_a_typedef_callback_or_overload_tag,
+                                &diagnostics::A_JSDOC_TEMPLATE_TAG_MAY_NOT_FOLLOW_A_TYPEDEF_CALLBACK_OR_OVERLOAD_TAG,
                                 &[],
                             );
-                        }
-                        _ => {}
                     }
+                    _ => {}
                 }
-                if let Some(children) = children {
-                    let is_array_type =
-                        type_expression.type_node().unwrap().kind() == Kind::ArrayType;
-                    let literal =
-                        self.factory.new_jsdoc_type_literal(alloc_vec(children), is_array_type);
-                    let literal = self.finish_node(literal, pos);
-                    let node = self.factory.new_jsdoc_type_expression(literal);
-                    return Some(self.finish_node(node, pos));
-                }
+            }
+            if let Some(children) = children {
+                let is_array_type = type_expression.type_node().unwrap().kind() == Kind::ArrayType;
+                let literal =
+                    self.factory.new_jsdoc_type_literal(alloc_vec(children), is_array_type);
+                let literal = self.finish_node(literal, pos);
+                let node = self.factory.new_jsdoc_type_expression(literal);
+                return Some(self.finish_node(node, pos));
             }
         }
         None
@@ -978,7 +989,7 @@ impl Parser {
             self.parse_error_at(
                 tag_name.pos().expect_source("parsed nodes have source positions"),
                 end,
-                &diagnostics::X_0_tag_already_specified,
+                &diagnostics::X_0_TAG_ALREADY_SPECIFIED,
                 &[&tag_name.text()],
             );
         }
@@ -1003,7 +1014,7 @@ impl Parser {
             self.parse_error_at(
                 tag_name.pos().expect_source("parsed nodes have source positions"),
                 end,
-                &diagnostics::X_0_tag_already_specified,
+                &diagnostics::X_0_TAG_ALREADY_SPECIFIED,
                 &[&tag_name.text()],
             );
         }
@@ -1148,9 +1159,9 @@ impl Parser {
 
     pub(crate) fn parse_property_access_entity_name_expression(&mut self) -> P<Node> {
         let pos = self.node_pos();
-        let mut node = self.parse_jsdoc_identifier_name(Some(&diagnostics::Identifier_expected));
+        let mut node = self.parse_jsdoc_identifier_name(Some(&diagnostics::IDENTIFIER_EXPECTED));
         while self.parse_optional(Kind::DotToken) {
-            let name = self.parse_jsdoc_identifier_name(Some(&diagnostics::Identifier_expected));
+            let name = self.parse_jsdoc_identifier_name(Some(&diagnostics::IDENTIFIER_EXPECTED));
             let access =
                 self.factory.new_property_access_expression(node, None, name, NodeFlags::None);
             node = self.finish_node(access, pos);
@@ -1228,7 +1239,7 @@ impl Parser {
         let mut full_name = self.parse_jsdoc_type_name_with_namespace(false /*nested*/);
         if full_name.is_none() {
             full_name =
-                Some(self.parse_jsdoc_identifier_name(Some(&diagnostics::Identifier_expected)));
+                Some(self.parse_jsdoc_identifier_name(Some(&diagnostics::IDENTIFIER_EXPECTED)));
         }
         self.skip_whitespace();
         let mut comment = self.parse_tag_comments(indent, None);
@@ -1254,7 +1265,7 @@ impl Parser {
                     Kind::JSDocTemplateTag => {
                         self.parse_error_at_range(
                             child.tag_name().loc(),
-                            &diagnostics::A_JSDoc_template_tag_may_not_follow_a_typedef_callback_or_overload_tag,
+                            &diagnostics::A_JSDOC_TEMPLATE_TAG_MAY_NOT_FOLLOW_A_TYPEDEF_CALLBACK_OR_OVERLOAD_TAG,
                             &[],
                         );
                     }
@@ -1263,14 +1274,14 @@ impl Parser {
                             child_type_tag = Some(child);
                         } else {
                             let last_error = self.parse_error_at_current_token(
-                                &diagnostics::A_JSDoc_typedef_comment_may_not_contain_multiple_type_tags,
+                                &diagnostics::A_JSDOC_TYPEDEF_COMMENT_MAY_NOT_CONTAIN_MULTIPLE_TYPE_TAGS,
                                 &[],
                             );
                             if let Some(last_error) = last_error {
                                 let related = ast::new_diagnostic(
                                     None,
                                     TextRange::new(0, 0),
-                                    &diagnostics::The_tag_was_first_specified_here,
+                                    &diagnostics::THE_TAG_WAS_FIRST_SPECIFIED_HERE,
                                     &[],
                                 );
                                 last_error.add_related_info(related);
@@ -1354,7 +1365,7 @@ impl Parser {
             if child.kind() == Kind::JSDocTemplateTag {
                 self.parse_error_at_range(
                     child.tag_name().loc(),
-                    &diagnostics::A_JSDoc_template_tag_may_not_follow_a_typedef_callback_or_overload_tag,
+                    &diagnostics::A_JSDOC_TEMPLATE_TAG_MAY_NOT_FOLLOW_A_TYPEDEF_CALLBACK_OR_OVERLOAD_TAG,
                     &[],
                 );
             } else {
@@ -1392,7 +1403,7 @@ impl Parser {
         let mut full_name = self.parse_jsdoc_type_name_with_namespace(false /*nested*/);
         if full_name.is_none() {
             full_name =
-                Some(self.parse_jsdoc_identifier_name(Some(&diagnostics::Identifier_expected)));
+                Some(self.parse_jsdoc_identifier_name(Some(&diagnostics::IDENTIFIER_EXPECTED)));
         }
         self.skip_whitespace();
         let mut comment = self.parse_tag_comments(indent, None);
@@ -1452,17 +1463,16 @@ impl Parser {
                 Kind::AtToken => {
                     if can_parse_tag && self.scanner.can_follow_jsdoc_at() {
                         let child = self.try_parse_child_tag(target, indent);
-                        if let (Some(child), Some(name)) = (child, name) {
-                            if (child.kind() == Kind::JSDocParameterTag
+                        if let (Some(child), Some(name)) = (child, name)
+                            && (child.kind() == Kind::JSDocParameterTag
                                 || child.kind() == Kind::JSDocPropertyTag)
-                                && (ast::is_identifier(child.name().unwrap())
-                                    || !texts_equal(
-                                        name,
-                                        child.name().unwrap().as_qualified_name().left,
-                                    ))
-                            {
-                                return None;
-                            }
+                            && (ast::is_identifier(child.name().unwrap())
+                                || !texts_equal(
+                                    name,
+                                    child.name().unwrap().as_qualified_name().left,
+                                ))
+                        {
+                            return None;
                         }
                         return child;
                     }
@@ -1498,7 +1508,7 @@ impl Parser {
         let start = self.scanner.token_full_start();
         self.next_token_jsdoc();
 
-        let tag_name = self.parse_jsdoc_identifier_name(Some(&diagnostics::Identifier_expected));
+        let tag_name = self.parse_jsdoc_identifier_name(Some(&diagnostics::IDENTIFIER_EXPECTED));
         let indent_text = self.skip_whitespace_or_asterisk();
         let mut t = PropertyLikeParse::empty();
         match tag_name.text() {
@@ -1536,7 +1546,7 @@ impl Parser {
 
         let modifiers = self.parse_modifiers_ex(false, true /*permitConstAsModifier*/, false);
         let name = self.parse_jsdoc_identifier_name(Some(
-            &diagnostics::Unexpected_token_A_type_parameter_name_was_expected_without_curly_braces,
+            &diagnostics::UNEXPECTED_TOKEN_A_TYPE_PARAMETER_NAME_WAS_EXPECTED_WITHOUT_CURLY_BRACES,
         ));
         let mut default_type = None;
         if is_bracketed {
@@ -1630,7 +1640,7 @@ impl Parser {
             // but it's not worth it to enforce that restriction.
         }
         while self.parse_optional(Kind::DotToken) {
-            let name = self.parse_jsdoc_identifier_name(Some(&diagnostics::Identifier_expected));
+            let name = self.parse_jsdoc_identifier_name(Some(&diagnostics::IDENTIFIER_EXPECTED));
             if self.parse_optional(Kind::OpenBracketToken) {
                 self.parse_expected(Kind::CloseBracketToken);
             }
@@ -1651,7 +1661,7 @@ impl Parser {
             } else if is_reserved_word(self.token) {
                 let text = self.scanner.token_text();
                 self.parse_error_at_current_token(
-                    &diagnostics::Identifier_expected_0_is_a_reserved_word_that_cannot_be_used_here,
+                    &diagnostics::IDENTIFIER_EXPECTED_0_IS_A_RESERVED_WORD_THAT_CANNOT_BE_USED_HERE,
                     &[&text],
                 );
             }

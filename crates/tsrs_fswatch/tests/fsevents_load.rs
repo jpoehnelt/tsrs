@@ -7,10 +7,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use tsrs_fswatch::{ErrOverflow, fsevents};
+use tsrs_fswatch::{ERR_OVERFLOW, fsevents};
 
 #[test]
 fn a_burst_under_load_drops_no_events() {
+    const FILES: usize = 10_000;
+
     let dir = std::env::temp_dir().join(format!("tsrs-fswatch-load-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -23,7 +25,7 @@ fn a_burst_under_load_drops_no_events() {
         .watch_directory(
             dir.to_str().unwrap(),
             Arc::new(move |batch, err| {
-                if err.is_some_and(|err| err.is(ErrOverflow)) {
+                if err.is_some_and(|err| err.is(ERR_OVERFLOW)) {
                     o.fetch_add(1, Ordering::SeqCst);
                 }
                 e.fetch_add(batch.len(), Ordering::SeqCst);
@@ -46,7 +48,6 @@ fn a_burst_under_load_drops_no_events() {
     .take(2 * std::thread::available_parallelism().map_or(8, std::num::NonZero::get))
     .collect();
 
-    const FILES: usize = 10_000;
     for i in 0..FILES {
         std::fs::write(dir.join(format!("f{i}.ts")), "export {};\n").unwrap();
     }

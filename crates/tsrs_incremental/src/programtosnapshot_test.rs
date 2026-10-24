@@ -5,20 +5,23 @@
 use std::sync::{Arc, Mutex};
 
 use tsrs_compiler::{
-    CompilerHost, Program as CompilerProgram, ProgramOptions, new_compiler_host, new_program,
+    CompilerHost, Context, Program as CompilerProgram, ProgramOptions, new_compiler_host,
+    new_program,
 };
 use tsrs_core::P;
 use tsrs_core::tspath::Path;
 use tsrs_tsoptions::{self as tsoptions, ParseConfigHost};
 use tsrs_vfs::{FS, vfstest};
 
+use crate::emit::ProgramLike;
 use crate::program::Program;
+use crate::snapshot::FileEmitKind;
 
-struct configHost {
+struct ConfigHost {
     fs: Arc<dyn FS>,
 }
 
-impl ParseConfigHost for configHost {
+impl ParseConfigHost for ConfigHost {
     fn fs(&self) -> &dyn FS {
         &*self.fs
     }
@@ -75,7 +78,7 @@ fn compiler_program_with(
     host: Arc<dyn CompilerHost>,
 ) -> &'static CompilerProgram {
     let fs: Arc<dyn FS> = Arc::new(vfstest::from_map(files.iter().copied(), true));
-    let config_host: &'static configHost = Box::leak(Box::new(configHost { fs }));
+    let config_host: &'static ConfigHost = Box::leak(Box::new(ConfigHost { fs }));
     let (config, diagnostics) = tsoptions::get_parsed_command_line_of_config_file(
         "/src/tsconfig.json",
         None,
@@ -88,12 +91,12 @@ fn compiler_program_with(
 }
 
 // A host that hands out the file it parsed first for each path, like the watch's source file cache.
-struct cachingHost {
+struct CachingHost {
     inner: Arc<dyn CompilerHost>,
     cache: Arc<Mutex<rustc_hash::FxHashMap<Path, P<tsrs_ast::SourceFile>>>>,
 }
 
-impl CompilerHost for cachingHost {
+impl CompilerHost for CachingHost {
     fn fs(&self) -> &dyn FS {
         self.inner.fs()
     }
@@ -292,12 +295,12 @@ fn a_full_rebuild_that_shares_files_looks_up_their_references_again() {
     ]);
     let old_program = compiler_program_with(
         &before,
-        Arc::new(cachingHost { inner: compiler_host(&before), cache: Arc::clone(&cache) }),
+        Arc::new(CachingHost { inner: compiler_host(&before), cache: Arc::clone(&cache) }),
     );
     let old = incremental(old_program, None);
     let new_program = compiler_program_with(
         &after,
-        Arc::new(cachingHost { inner: compiler_host(&after), cache }),
+        Arc::new(CachingHost { inner: compiler_host(&after), cache }),
     );
     let e = Path::from("/src/e.ts");
     assert_eq!(
@@ -309,4 +312,117 @@ fn a_full_rebuild_that_shares_files_looks_up_their_references_again() {
     assert_eq!(file_states(&new), file_states(&incremental(new_program, None)));
     let e = file_states(&new).into_iter().find(|(p, ..)| p.as_str() == "/src/e.ts").unwrap();
     assert_eq!(e.3, ["/src/m.d.ts", "/src/x.ts"]);
+}
+
+#[test]
+fn mixed_deletions_visit_a_global_file_after_a_non_global_file() {
+    let old = incremental(compiler_program(&FILES), None);
+    let deleted = [Path::from("/src/d.ts"), Path::from("/src/g.ts")];
+    let ordered: Vec<Path> =
+        old.snapshot.file_infos.keys().into_iter().filter(|path| deleted.contains(path)).collect();
+    assert_eq!(ordered.len(), 2);
+    // Make the last deleted entry global so stopping at the first deletion misses it.
+    for (index, path) in ordered.iter().enumerate() {
+        let mut info = old.snapshot.file_infos.load(path).unwrap();
+        info.affects_global_scope = index == 1;
+        old.snapshot.file_infos.store(path.clone(), info);
+        old.snapshot.changed_files_set.add(path.clone());
+        old.snapshot.affected_files_pending_emit.store(path.clone(), FileEmitKind::Js);
+    }
+    old.snapshot.build_info_emit_pending.set(false);
+
+    let remaining = with(&[("/src/d.ts", None), ("/src/g.ts", None)]);
+    let current = incremental(compiler_program(&remaining), Some(old));
+    assert_eq!(
+        changed_files(&current),
+        ["/src/a.ts", "/src/aug.ts", "/src/b.ts", "/src/c.ts", "/src/m.d.ts"]
+    );
+    for path in &deleted {
+        assert!(!current.snapshot.changed_files_set.has(path), "{path} remained changed");
+        assert!(
+            current.snapshot.affected_files_pending_emit.load(path).is_none(),
+            "{path} remained pending emit"
+        );
+    }
+    assert!(current.snapshot.build_info_emit_pending.get());
+}
+
+#[test]
+fn deleted_pending_paths_without_file_info_are_not_reused() {
+    let old = incremental(compiler_program(&FILES), None);
+    let missing = Path::from("/src/missing.ts");
+    assert!(old.snapshot.file_infos.load(&missing).is_none());
+    old.snapshot.changed_files_set.add(missing.clone());
+    old.snapshot.affected_files_pending_emit.store(missing.clone(), FileEmitKind::Js);
+    old.snapshot.build_info_emit_pending.set(false);
+
+    let current = incremental(compiler_program(&FILES), Some(old));
+    assert!(!current.snapshot.changed_files_set.has(&missing));
+    assert!(current.snapshot.affected_files_pending_emit.load(&missing).is_none());
+    assert!(current.snapshot.build_info_emit_pending.get());
+}
+
+const DELETION_TEST_LIB: &str = "interface Array<T> {}\ninterface Boolean {}\ninterface CallableFunction {}\ninterface Function {}\ninterface IArguments {}\ninterface NewableFunction {}\ninterface Number {}\ninterface Object {}\ninterface RegExp {}\ninterface String {}\ninterface LibraryConsumer { property: RemovedGlobal; }\n";
+const DELETION_TEST_GLOBAL: &str = "interface RemovedGlobal {}\n";
+const DELETION_TEST_CONFIG: &str = r#"{ "compilerOptions": { "target": "es5", "incremental": true, "noEmit": true, "types": [], "tsBuildInfoFile": "/src/state.tsbuildinfo" } }"#;
+const DELETION_TEST_SKIP_LIB_CONFIG: &str = r#"{ "compilerOptions": { "target": "es5", "incremental": true, "noEmit": true, "types": [], "tsBuildInfoFile": "/src/state.tsbuildinfo", "skipLibCheck": true } }"#;
+const DELETION_TEST_SKIP_DEFAULT_LIB_CONFIG: &str = r#"{ "compilerOptions": { "target": "es5", "incremental": true, "noEmit": true, "types": [], "tsBuildInfoFile": "/src/state.tsbuildinfo", "skipDefaultLibCheck": true } }"#;
+
+fn deletion_test_files(config: &'static str, global: bool) -> Vec<(&'static str, &'static str)> {
+    let mut files = vec![
+        ("/src/tsconfig.json", config),
+        ("/lib/lib.d.ts", DELETION_TEST_LIB),
+        ("/src/consumer.ts", "export const unchanged = 1;\n"),
+    ];
+    if global {
+        files.push(("/src/global.d.ts", DELETION_TEST_GLOBAL));
+    }
+    files
+}
+
+fn deletion_test_program(files: &[(&'static str, &'static str)]) -> &'static CompilerProgram {
+    let fs: Arc<dyn FS> = Arc::new(vfstest::from_map(files.iter().copied(), true));
+    compiler_program_with(files, new_compiler_host("/", fs, "/lib", None, None, None))
+}
+
+#[test]
+fn global_deletion_invalidates_live_default_library_diagnostics() {
+    let before = deletion_test_files(DELETION_TEST_CONFIG, true);
+    let old = incremental(deletion_test_program(&before), None);
+    let ctx = Context::default();
+    assert_eq!(old.get().get_semantic_diagnostics(&ctx, None).len(), 0);
+    let library = Path::from("/lib/lib.d.ts");
+    assert!(
+        old.snapshot.semantic_diagnostics_per_file.load(&library).is_some(),
+        "default={} files={:?}",
+        tsoptions::get_default_lib_file_name(&old.program.unwrap().options()),
+        old.program.unwrap().get_source_files().iter().map(|f| f.file_name()).collect::<Vec<_>>()
+    );
+
+    let after = deletion_test_files(DELETION_TEST_CONFIG, false);
+    let current = incremental(deletion_test_program(&after), Some(old));
+    assert!(current.snapshot.semantic_diagnostics_per_file.load(&library).is_none());
+    assert!(!current.snapshot.changed_files_set.has(&library));
+    let diagnostics = current.get().get_semantic_diagnostics(&ctx, None);
+    assert_eq!(diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>(), [2304]);
+    assert_eq!(diagnostics[0].file().unwrap().path(), &library);
+}
+
+#[test]
+fn global_deletion_preserves_skipped_default_library_diagnostics() {
+    for config in [DELETION_TEST_SKIP_LIB_CONFIG, DELETION_TEST_SKIP_DEFAULT_LIB_CONFIG] {
+        let before = deletion_test_files(config, true);
+        let old = incremental(deletion_test_program(&before), None);
+        let ctx = Context::default();
+        assert_eq!(old.get().get_semantic_diagnostics(&ctx, None).len(), 0);
+        let library = Path::from("/lib/lib.d.ts");
+        let old_cache = old.snapshot.semantic_diagnostics_per_file.load(&library).unwrap();
+
+        let after = deletion_test_files(config, false);
+        let current = incremental(deletion_test_program(&after), Some(old));
+        let new_cache = current.snapshot.semantic_diagnostics_per_file.load(&library).unwrap();
+        assert!(Arc::ptr_eq(&old_cache, &new_cache), "{config}");
+        assert!(!current.snapshot.changed_files_set.has(&library), "{config}");
+        assert_eq!(current.get().get_semantic_diagnostics(&ctx, None).len(), 0, "{config}");
+    }
 }

@@ -3,9 +3,9 @@ use tsrs_core::{PKey, PSlot};
 
 /// Go `core.LinkStore` keyed by node or symbol identity.
 ///
-/// Most of the checker's link stores use this type; `KeyedLinkStore`, `SymbolReferenceLinkStore`,
-/// `NodeLinkStore` (Go `nodeLinkStore`) and `SymbolArenaLinkStore` (Go `symbolArenaLinkStore`) below cover
-/// the rest. (The node builder's link stores use `tsrs_core::LinkStore`.) Values live in the arena, so `get`
+/// Most of the checker's link stores use this type; `SymbolReferenceLinkStore`, `NodeLinkStore`,
+/// `NodeValueLinkStore` (both Go `nodeLinkStore`) and `SymbolArenaLinkStore` (Go `symbolLinkStore`)
+/// below cover the rest. (The node builder's link stores use `tsrs_core::LinkStore`.) Values live in the arena, so `get`
 /// hands out a `Copy` pointer whose `Cell` fields are mutated in place.
 ///
 /// Keyed by the key's identity like Go's `map[K]*V`. A slot is the key (`P::key`: its handle with compressed
@@ -123,8 +123,9 @@ impl<K: 'static, V: Default + LinkCopy + 'static> LinkStore<K, V> {
     /// registers where this is inlined); the first access probes again in `create`.
     #[inline]
     #[cfg_attr(feature = "site-counts", track_caller)]
-    pub fn get(&mut self, key: P<K>) -> P<V> {
-        let key = Self::address(key);
+    pub fn get(&mut self, key: impl Into<Option<P<K>>>) -> P<V> {
+        // Go pointer keys may be nil; zero is never an arena handle or address.
+        let key = key.into().map_or(0, Self::address);
         match self.index_by_pkey(key) {
             Some(index) => self.at(index),
             None => self.create(key),
@@ -205,10 +206,9 @@ pub trait KeyedLinks {
 /// `LinkStore` for values with room for their key: a bucket holds only the value's index (4 bytes plus
 /// hashbrown's control byte, against 8 + 1), and a probe compares the key the value holds.
 ///
-/// `signature_links` and `type_node_links` keep the key in what was padding (`SignatureLinks` 12 -> 16 bytes
-/// in a 16-byte slot, `TypeNodeLinks` 20 -> 24 in 24, compressed pointers), so the values do not grow and the
-/// tables shrink by 4/9 (notes/mem-dense-link-tables.md: 18.0 -> 10.0 MiB each on vscode at one checker).
-/// Go's `LinkStore` maps the key's identity the same way.
+/// Before upstream switched their Go stores to paged node indexes, `signature_links` and
+/// `type_node_links` used this layout with their keys in each record's padding; that saved 4/9 of
+/// the table space (notes/mem-dense-link-tables.md). They now use `NodeValueLinkStore`.
 ///
 /// The key is written before the index is inserted, so a probe never sees a value without its key (and a
 /// fresh value's key 0 is never a handle: the reservation never hands out offset 0). A hit loads the value
@@ -704,10 +704,10 @@ impl<V: Default + LinkCopy + 'static> InlineIdStore<V> {
     #[inline]
     #[cfg_attr(feature = "site-counts", track_caller)]
     pub fn get(&mut self, id: u64) -> &'static V {
-        if let Ok(narrow) = u32::try_from(id) {
-            if let Some(value) = self.narrow(narrow) {
-                return value;
-            }
+        if let Ok(narrow) = u32::try_from(id)
+            && let Some(value) = self.narrow(narrow)
+        {
+            return value;
         }
         self.create(id)
     }
@@ -770,19 +770,36 @@ impl<V: Default + LinkCopy + 'static> InlineIdStore<V> {
     }
 }
 
-/// Go `nodeLinkStore`: keyed by the node id, so every access assigns the node its id (`ast.GetNodeId`) the
-/// way Go does.
+const MAX_PAGE_LINK_COUNT: u64 = 0x100_0000;
+
+#[inline]
+fn dense_link_key(id: u64) -> Option<u64> {
+    // Ordinary ids wrap to a large key and fail the bound check; the hot path needs one comparison.
+    let key = id.wrapping_sub(ast::BLOCK_ID_OFFSET);
+    (key < MAX_PAGE_LINK_COUNT).then_some(key)
+}
+
+/// Go `nodeLinkStore` with a checker-local 256-id generator.
 ///
-/// Ids are observable (e.g. in cache keys and internal names), so the assignment order must match. The values
-/// are stored inline (`InlineIdStore`): its one user, `symbol_node_links`, holds a 4-byte symbol handle per
-/// node.
+/// Go uses a reserved high id range for this store; the AST decodes Rust's tagged 32-bit representation to that
+/// range.
+///
+/// High-range ids are normalized before indexing the dense `InlineIdStore`; an ordinary id assigned elsewhere
+/// uses a separate store so the two ranges cannot alias. Its one user, `symbol_node_links`, holds a 4-byte
+/// symbol handle per node.
 pub struct NodeLinkStore<V: 'static> {
-    store: InlineIdStore<V>,
+    generator: ast::NodeIdGenerator,
+    block_store: InlineIdStore<V>,
+    ordinary_store: InlineIdStore<V>,
 }
 
 impl<V: 'static> Default for NodeLinkStore<V> {
     fn default() -> Self {
-        NodeLinkStore { store: InlineIdStore::default() }
+        NodeLinkStore {
+            generator: ast::NodeIdGenerator::default(),
+            block_store: InlineIdStore::default(),
+            ordinary_store: InlineIdStore::default(),
+        }
     }
 }
 
@@ -790,7 +807,11 @@ impl<V: 'static> NodeLinkStore<V> {
     /// Shared graph: see `InlineIdStore::fork`.
     #[must_use]
     pub fn fork(&'static self) -> Self {
-        NodeLinkStore { store: self.store.fork() }
+        NodeLinkStore {
+            generator: ast::NodeIdGenerator::default(),
+            block_store: self.block_store.fork(),
+            ordinary_store: self.ordinary_store.fork(),
+        }
     }
 }
 
@@ -799,7 +820,12 @@ impl<V: Default + LinkCopy + 'static> NodeLinkStore<V> {
     #[inline]
     #[cfg_attr(feature = "site-counts", track_caller)]
     pub fn get(&mut self, node: P<Node>) -> &'static V {
-        self.store.get(ast::get_node_id(node).0)
+        let id = self.generator.get_node_id(node).0;
+        if let Some(key) = dense_link_key(id) {
+            self.block_store.get(key)
+        } else {
+            self.ordinary_store.get(id)
+        }
     }
 }
 
@@ -808,32 +834,155 @@ impl<V: 'static> NodeLinkStore<V> {
     /// never had links (`InlineIdStore`). Assigns the node an id, as Go's `TryGet` does.
     #[inline]
     pub fn try_get(&self, node: P<Node>) -> Option<&'static V> {
-        self.store.try_get(ast::get_node_id(node).0)
+        let id = self.generator.get_node_id(node).0;
+        if let Some(key) = dense_link_key(id) {
+            self.block_store.try_get(key)
+        } else {
+            self.ordinary_store.try_get(id)
+        }
     }
 
     /// `try_get` that returns `None` for a node without an id instead of assigning one (no side effect).
     #[inline]
     pub fn try_get_if_id_assigned(&self, node: P<Node>) -> Option<&'static V> {
-        let id = ast::get_assigned_node_id(node)?;
-        match self.store.narrow(id) {
+        let id = ast::get_assigned_node_id(node)?.0;
+        let (store, key) = match dense_link_key(id) {
+            Some(key) => (&self.block_store, key),
+            None if id >= ast::BLOCK_ID_OFFSET => return self.ordinary_store.try_get(id),
+            None => (&self.ordinary_store, id),
+        };
+        let key = u32::try_from(key).ok()?;
+        match store.narrow(key) {
             Some(v) => Some(v),
-            None => self.store.parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN)?.narrow(id),
+            None => store.parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN)?.narrow(key),
         }
     }
 }
 
-/// Go `symbolArenaLinkStore`: keyed by the symbol id, so every access assigns the symbol its id
-/// (`ast.GetSymbolId`) the way Go does.
+/// Go `nodeLinkStore` with per-id presence in each page.
 ///
-/// Symbol ids are observable (the internal names of unique-symbol-keyed properties embed them, and the node
-/// builder counts their length toward truncation), so the assignment order must match.
+/// Values are separate arena objects, so their addresses stay stable as pages grow. The ordinary-id
+/// map covers nodes assigned an id before this checker first sees them. Rust uses 32-id groups
+/// behind a second-level index: Go's 256-id pages increased multi-checker RSS on the public
+/// VS Code case because each checker sparsely touches blocks assigned by other checkers.
+pub struct NodeValueLinkStore<V: 'static> {
+    generator: ast::NodeIdGenerator,
+    blocks: Vec<Option<P<NodeValueBlock<V>>>>,
+    ordinary: FxHashMap<u64, P<V>>,
+    parent: Option<&'static NodeValueLinkStore<V>>,
+}
+
+type NodeValueGroup<V> = [Cell<Option<P<V>>>; INLINE_GROUP];
+type NodeValueBlock<V> = [Cell<Option<P<NodeValueGroup<V>>>>; INLINE_BLOCK_GROUPS];
+
+impl<V: 'static> Default for NodeValueLinkStore<V> {
+    fn default() -> Self {
+        Self {
+            generator: ast::NodeIdGenerator::default(),
+            blocks: Vec::new(),
+            ordinary: FxHashMap::default(),
+            parent: None,
+        }
+    }
+}
+
+impl<V: 'static> NodeValueLinkStore<V> {
+    #[inline]
+    fn local(&self, id: u64) -> Option<P<V>> {
+        if let Some(key) = dense_link_key(id) {
+            let block = (*self.blocks.get((key >> INLINE_BLOCK_SHIFT) as usize)?)?;
+            let group =
+                block[(key >> INLINE_GROUP_SHIFT) as usize & (INLINE_BLOCK_GROUPS - 1)].get()?;
+            group[(key as usize) & (INLINE_GROUP - 1)].get()
+        } else {
+            self.ordinary.get(&id).copied()
+        }
+    }
+
+    #[inline]
+    fn try_get_id(&self, id: u64) -> Option<P<V>> {
+        self.local(id)
+            .or_else(|| self.parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN)?.try_get_id(id))
+    }
+
+    #[inline]
+    pub fn try_get(&self, node: P<Node>) -> Option<P<V>> {
+        self.try_get_id(self.generator.get_node_id(node).0)
+    }
+
+    #[inline]
+    pub fn has(&self, node: P<Node>) -> bool {
+        self.try_get(node).is_some()
+    }
+
+    /// Shared graph: the fork reads the frozen store and copies a link on first mutation.
+    #[must_use]
+    pub fn fork(&'static self) -> Self {
+        Self { parent: Some(self), ..Self::default() }
+    }
+}
+
+impl<V: Default + LinkCopy + 'static> NodeValueLinkStore<V> {
+    #[inline]
+    #[cfg_attr(feature = "site-counts", track_caller)]
+    pub fn get(&mut self, node: P<Node>) -> P<V> {
+        let id = self.generator.get_node_id(node).0;
+        self.local(id).unwrap_or_else(|| self.create(id))
+    }
+
+    #[inline(never)]
+    #[cfg_attr(feature = "site-counts", track_caller)]
+    fn create(&mut self, id: u64) -> P<V> {
+        crate::sitecount::hit("links", std::any::type_name::<V>());
+        let value = P::new(V::default());
+        if let Some(frozen) = self
+            .parent
+            .filter(|_| tsrs_core::sharedgraph::COMPILED_IN)
+            .and_then(|p| p.try_get_id(id))
+        {
+            value.copy_link_from(&frozen);
+        }
+        if let Some(key) = dense_link_key(id) {
+            let block_index = (key >> INLINE_BLOCK_SHIFT) as usize;
+            if block_index >= self.blocks.len() {
+                self.blocks.resize(block_index + 1, None);
+            }
+            let block = *self.blocks[block_index]
+                .get_or_insert_with(|| P::new(std::array::from_fn(|_| Cell::new(None))));
+            let cell = &block[(key >> INLINE_GROUP_SHIFT) as usize & (INLINE_BLOCK_GROUPS - 1)];
+            let group = if let Some(group) = cell.get() {
+                group
+            } else {
+                let group = P::new(std::array::from_fn(|_| Cell::new(None)));
+                cell.set(Some(group));
+                group
+            };
+            group[(key as usize) & (INLINE_GROUP - 1)].set(Some(value));
+        } else {
+            self.ordinary.insert(id, value);
+        }
+        value
+    }
+}
+
+/// Go `symbolLinkStore`: assigns an id from a checker-local 256-id block when the symbol has no id.
+///
+/// Its reserved high ids are observable: unique-symbol internal names embed them, and the node builder counts
+/// their length toward truncation. Rust keeps the packed `IdLinkStore` layout for high and ordinary ids in
+/// separate stores to prevent collisions.
 pub struct SymbolArenaLinkStore<V: 'static> {
-    store: IdLinkStore<V>,
+    generator: ast::SymbolIdGenerator,
+    block_store: IdLinkStore<V>,
+    ordinary_store: IdLinkStore<V>,
 }
 
 impl<V: 'static> Default for SymbolArenaLinkStore<V> {
     fn default() -> Self {
-        SymbolArenaLinkStore { store: IdLinkStore::default() }
+        SymbolArenaLinkStore {
+            generator: ast::SymbolIdGenerator::default(),
+            block_store: IdLinkStore::default(),
+            ordinary_store: IdLinkStore::default(),
+        }
     }
 }
 
@@ -841,7 +990,11 @@ impl<V: 'static> SymbolArenaLinkStore<V> {
     /// Shared graph: see `IdLinkStore::fork`.
     #[must_use]
     pub fn fork(&'static self) -> Self {
-        SymbolArenaLinkStore { store: self.store.fork() }
+        SymbolArenaLinkStore {
+            generator: ast::SymbolIdGenerator::default(),
+            block_store: self.block_store.fork(),
+            ordinary_store: self.ordinary_store.fork(),
+        }
     }
 }
 
@@ -849,40 +1002,175 @@ impl<V: Default + LinkCopy + 'static> SymbolArenaLinkStore<V> {
     #[inline]
     #[cfg_attr(feature = "site-counts", track_caller)]
     pub fn get(&mut self, symbol: P<Symbol>) -> P<V> {
-        self.store.get(ast::get_symbol_id(symbol).0)
+        let id = self.generator.get_symbol_id(symbol).0;
+        if let Some(key) = dense_link_key(id) {
+            self.block_store.get(key)
+        } else {
+            self.ordinary_store.get(id)
+        }
     }
 }
 
 impl<V: 'static> SymbolArenaLinkStore<V> {
     #[inline]
     pub fn try_get(&self, symbol: P<Symbol>) -> Option<P<V>> {
-        self.store.try_get(ast::get_symbol_id(symbol).0)
+        let id = self.generator.get_symbol_id(symbol).0;
+        if let Some(key) = dense_link_key(id) {
+            self.block_store.try_get(key)
+        } else {
+            self.ordinary_store.try_get(id)
+        }
     }
 
     /// `try_get` that returns `None` for a symbol without an id instead of assigning one (no side effect, no call:
     /// for fast paths whose fallback does the `get`).
     #[inline]
     pub fn try_get_if_id_assigned(&self, symbol: P<Symbol>) -> Option<P<V>> {
-        let id = ast::get_assigned_symbol_id(symbol)?;
-        match self.store.narrow_slot(id) {
-            Some(slot) => Some(self.store.at(slot)),
-            None => self
-                .store
+        let id = ast::get_assigned_symbol_id(symbol)?.0;
+        let (store, key) = match dense_link_key(id) {
+            Some(key) => (&self.block_store, key),
+            None if id >= ast::BLOCK_ID_OFFSET => return self.ordinary_store.try_get(id),
+            None => (&self.ordinary_store, id),
+        };
+        let key = u32::try_from(key).ok()?;
+        match store.narrow_slot(key) {
+            Some(slot) => Some(store.at(slot)),
+            None => store
                 .parent
                 .filter(|_| tsrs_core::sharedgraph::COMPILED_IN)?
-                .try_get(id as u64),
+                .try_get(u64::from(key)),
         }
     }
 
     #[inline]
     pub fn has(&self, symbol: P<Symbol>) -> bool {
-        self.store.has(ast::get_symbol_id(symbol).0)
+        let id = self.generator.get_symbol_id(symbol).0;
+        if let Some(key) = dense_link_key(id) {
+            self.block_store.has(key)
+        } else {
+            self.ordinary_store.has(id)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_store_preserves_nil_key_through_growth() {
+        let mut store = LinkStore::<u64, Cell<u32>>::default();
+        let nil_links = store.get(None);
+        nil_links.set(42);
+        for i in 0..4096 {
+            let key = P::new(i);
+            let links = store.get(key);
+            assert_ne!(links, nil_links);
+            links.set(i as u32);
+        }
+        assert_eq!(store.get(None), nil_links);
+        assert_eq!(nil_links.get().get(), 42);
+    }
+
+    #[test]
+    fn type_node_and_signature_links_keep_mixed_ids_separate() {
+        let factory = ast::NodeFactory::default();
+        let nodes: Vec<_> =
+            std::iter::repeat_with(|| factory.new_identifier("node")).take(4096).collect();
+        let mut first_types = NodeValueLinkStore::<TypeNodeLinks>::default();
+        let mut first_signatures = NodeValueLinkStore::<SignatureLinks>::default();
+        let mut second_types = NodeValueLinkStore::<TypeNodeLinks>::default();
+        let mut second_signatures = NodeValueLinkStore::<SignatureLinks>::default();
+        for (i, &node) in nodes.iter().enumerate() {
+            if i % 2 == 0 {
+                ast::get_node_id(node);
+            }
+            assert!(!first_types.has(node), "type links already present at {i}");
+            assert!(!first_signatures.has(node), "signature links already present at {i}");
+            for (types, signatures, id) in [
+                (&mut first_types, &mut first_signatures, i + 1),
+                (&mut second_types, &mut second_signatures, i + 2),
+            ] {
+                let t = Type::alloc(
+                    TypeFlags::Any,
+                    ObjectFlags::None,
+                    TypeId(id as u32),
+                    IntrinsicType::default(),
+                );
+                let s = P::new(Signature::default());
+                s.id.set(SignatureId(id as u32));
+                types.get(node).resolved_type.set(Some(t));
+                signatures.get(node).resolved_signature.set(Some(s));
+            }
+        }
+        for (i, &node) in nodes.iter().enumerate() {
+            assert_eq!(first_types.get(node).resolved_type.get().unwrap().id, TypeId(i as u32 + 1));
+            assert_eq!(
+                first_signatures.get(node).resolved_signature.get().unwrap().id.get(),
+                SignatureId(i as u32 + 1)
+            );
+            assert_eq!(
+                second_types.get(node).resolved_type.get().unwrap().id,
+                TypeId(i as u32 + 2)
+            );
+            assert_eq!(
+                second_signatures.get(node).resolved_signature.get().unwrap().id.get(),
+                SignatureId(i as u32 + 2)
+            );
+        }
+        let clone = nodes[0].clone_node(&factory);
+        assert!(!first_types.has(clone));
+        assert!(!first_signatures.has(clone));
+    }
+
+    #[test]
+    fn node_value_link_fork_copies_a_frozen_record_on_first_write() {
+        if !tsrs_core::sharedgraph::COMPILED_IN {
+            return;
+        }
+        let node = ast::NodeFactory::default().new_identifier("node");
+        let seed = Box::leak(Box::new(NodeValueLinkStore::<Cell<u32>>::default()));
+        seed.get(node).set(7);
+        let seed: &'static NodeValueLinkStore<Cell<u32>> = seed;
+        let mut fork = seed.fork();
+        assert_eq!(fork.try_get(node).unwrap().get().get(), 7);
+        fork.get(node).set(8);
+        assert_eq!(fork.get(node).get().get(), 8);
+        assert_eq!(seed.try_get(node).unwrap().get().get(), 7);
+    }
+
+    #[test]
+    fn symbol_link_store_separates_reserved_and_ordinary_ids() {
+        assert_eq!(dense_link_key(ast::BLOCK_ID_OFFSET), Some(0));
+        assert_eq!(
+            dense_link_key(ast::BLOCK_ID_OFFSET + MAX_PAGE_LINK_COUNT - 1),
+            Some(MAX_PAGE_LINK_COUNT - 1)
+        );
+        assert_eq!(dense_link_key(ast::BLOCK_ID_OFFSET + MAX_PAGE_LINK_COUNT), None);
+        let ordinary = Symbol::new(SymbolFlags::None, "");
+        let ordinary_id = ast::get_symbol_id(ordinary).0;
+        assert!(ordinary_id < ast::BLOCK_ID_OFFSET);
+
+        let mut store: SymbolArenaLinkStore<Cell<u32>> = SymbolArenaLinkStore::default();
+        store.get(ordinary).set(7);
+        let symbols: Vec<_> =
+            std::iter::repeat_with(|| Symbol::new(SymbolFlags::None, "")).take(600).collect();
+        for (index, &symbol) in symbols.iter().enumerate() {
+            assert!(store.try_get_if_id_assigned(symbol).is_none());
+            let link = store.get(symbol);
+            link.set(index as u32 + 100);
+            assert_eq!(store.get(symbol), link, "symbol {index} changed links immediately");
+            assert!(ast::get_symbol_id(symbol).0 >= ast::BLOCK_ID_OFFSET);
+        }
+        assert_eq!(store.get(ordinary).get().get(), 7);
+        for (index, &symbol) in symbols.iter().enumerate() {
+            assert_eq!(store.get(symbol).get().get(), index as u32 + 100);
+            assert_eq!(
+                store.try_get_if_id_assigned(symbol).unwrap().get().get(),
+                index as u32 + 100
+            );
+        }
+    }
 
     // A narrow group stores slot offsets from its first slot in 16 bits. A group that gets a link again after more
     // than 2^16 other links must get its dense form and keep every earlier id's slot.
@@ -1035,7 +1323,7 @@ mod tests {
     #[test]
     fn reference_kinds_accumulate_in_their_slots() {
         let symbols: Vec<P<Symbol>> =
-            std::iter::repeat_with(|| P::new(Symbol::default())).take(20000).collect();
+            std::iter::repeat_with(|| Symbol::new(SymbolFlags::None, "")).take(20000).collect();
         let mut store = SymbolReferenceLinkStore::default();
         for (i, &symbol) in symbols.iter().enumerate().filter(|(i, _)| i % 3 != 0) {
             store.add_reference_kinds(symbol, SymbolFlags::Value);

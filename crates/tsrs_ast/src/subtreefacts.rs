@@ -179,9 +179,6 @@ thread_local! {
 
 /// Runs `f` with `Node::subtree_facts` cached on this thread (nested calls share the outer cache).
 pub fn with_subtree_facts_cache<T>(f: impl FnOnce() -> T) -> T {
-    if SUBTREE_FACTS_CACHE.with(|c| c.enabled.replace(true)) {
-        return f();
-    }
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -190,6 +187,10 @@ pub fn with_subtree_facts_cache<T>(f: impl FnOnce() -> T) -> T {
                 c.facts.borrow_mut().clear();
             });
         }
+    }
+
+    if SUBTREE_FACTS_CACHE.with(|c| c.enabled.replace(true)) {
+        return f();
     }
     let _reset = Reset;
     f()
@@ -541,7 +542,6 @@ impl Node {
                 Kind::SuperKeyword => F::ContainsLexicalSuper,
                 _ => NONE,
             },
-            NodeData::BigIntLiteral(_) => NONE, // `bigint` is not downleveled in any way
             NodeData::Identifier(_) => F::ContainsIdentifier,
             NodeData::NoSubstitutionTemplateLiteral(d) => template_facts(d.template_flags()),
             NodeData::BinaryExpression(d) => {
@@ -615,7 +615,8 @@ impl Node {
                     | propagate_eraseable_syntax_list_subtree_facts(d.type_arguments())
                     | propagate_node_list_subtree_facts(d.arguments(), propagate_subtree_facts)
                     | if_else(
-                        d.expression().kind() == Kind::ImportKeyword,
+                        d.expression().kind() == Kind::ImportKeyword
+                            || is_import_phase_meta_property(d.expression()),
                         F::ContainsDynamicImport,
                         NONE,
                     )
@@ -690,15 +691,15 @@ impl Node {
                 propagate_node_list_subtree_facts(d.children(), propagate_subtree_facts)
                     | F::ContainsJsx
             }
-            NodeData::JsxOpeningFragment => F::ContainsJsx,
-            NodeData::JsxClosingFragment => F::ContainsJsx,
+            NodeData::JsxOpeningFragment | NodeData::JsxClosingFragment | NodeData::JsxText(_) => {
+                F::ContainsJsx
+            }
             NodeData::JsxAttribute(d) => {
                 prop(d.name()) | propagate_subtree_facts(d.initializer()) | F::ContainsJsx
             }
             NodeData::JsxSpreadAttribute(d) => prop(d.expression()) | F::ContainsJsx,
             NodeData::JsxClosingElement(d) => prop(d.tag_name()) | F::ContainsJsx,
             NodeData::JsxExpression(d) => propagate_subtree_facts(d.expression()) | F::ContainsJsx,
-            NodeData::JsxText(_) => F::ContainsJsx,
             NodeData::SourceFile(d) => {
                 propagate_node_list_subtree_facts(d.statements, propagate_subtree_facts)
             }
@@ -793,6 +794,7 @@ impl Node {
             NodeData::PartiallyEmittedExpression(d) => prop(d.expression()),
             NodeData::SyntheticReferenceExpression(d) => prop(d.expression()) | prop(d.this_arg()),
 
+            // `bigint` is not downleveled in any way
             _ => NONE,
         }
     }
@@ -850,7 +852,9 @@ impl Node {
             }
             NodeData::BindingPattern(_) => self.subtree_facts() & !F::ExclusionsBindingPattern,
             NodeData::ParameterDeclaration(_) => self.subtree_facts() & !F::ExclusionsParameter,
-            NodeData::FunctionDeclaration(_) => self.subtree_facts() & !F::ExclusionsFunction,
+            NodeData::FunctionDeclaration(_) | NodeData::FunctionExpression(_) => {
+                self.subtree_facts() & !F::ExclusionsFunction
+            }
             NodeData::ClassDeclaration(_) | NodeData::ClassExpression(_) => {
                 self.subtree_facts() & !F::ExclusionsClass
             }
@@ -866,7 +870,6 @@ impl Node {
                 self.subtree_facts() & !F::ExclusionsProperty | propagate_subtree_facts(self.name())
             }
             NodeData::ArrowFunction(_) => self.subtree_facts() & !F::ExclusionsArrowFunction,
-            NodeData::FunctionExpression(_) => self.subtree_facts() & !F::ExclusionsFunction,
             NodeData::AsExpression(_)
             | NodeData::SatisfiesExpression(_)
             | NodeData::TypeAssertion(_) => self.subtree_facts() & !F::ExclusionsOuterExpression,
@@ -898,16 +901,16 @@ pub fn contains_object_rest_or_spread(node: P<Node>) -> bool {
         // will not be correctly interpreted by the rest/spread transformer
         if get_elements_of_binding_or_assignment_pattern(node).iter().any(|&element| {
             let target = get_target_of_binding_or_assignment_element(element);
-            if let Some(target) = target {
-                if is_assignment_pattern(target) {
-                    if target.subtree_facts().intersects(SubtreeFacts::ContainsObjectRestOrSpread) {
-                        return true;
-                    }
-                    if target.subtree_facts().intersects(SubtreeFacts::ContainsESObjectRestOrSpread)
-                        && contains_object_rest_or_spread(target)
-                    {
-                        return true;
-                    }
+            if let Some(target) = target
+                && is_assignment_pattern(target)
+            {
+                if target.subtree_facts().intersects(SubtreeFacts::ContainsObjectRestOrSpread) {
+                    return true;
+                }
+                if target.subtree_facts().intersects(SubtreeFacts::ContainsESObjectRestOrSpread)
+                    && contains_object_rest_or_spread(target)
+                {
+                    return true;
                 }
             }
 

@@ -359,10 +359,10 @@ pub(crate) fn update_node(
 
 pub(crate) fn clone_node(updated: P<Node>, original: P<Node>, hooks: &NodeFactoryHooks) -> P<Node> {
     update_node(updated, original, hooks);
-    if updated != original {
-        if let Some(on_clone) = &hooks.on_clone {
-            on_clone(updated, original);
-        }
+    if updated != original
+        && let Some(on_clone) = &hooks.on_clone
+    {
+        on_clone(updated, original);
     }
     updated
 }
@@ -535,8 +535,8 @@ impl ModifierList {
 /// `KeywordTypeNode`, ...) allocate only the header.
 ///
 /// The header is 24 bytes: the kind, the data tag and the parent pointer share one word (`NodeHeaderWord`),
-/// and the id is stored in 32 bits (ids still come from a 64-bit counter and are returned as `NodeId`; more
-/// than `u32::MAX` node ids panic, like symbol ids). 23M nodes on the private monorepo.
+/// and the id is stored in 32 bits (ordinary ids are 31-bit; the high bit tags ids from a checker's reserved
+/// 64-bit block range, decoded by `get_node_id`).
 pub struct Node {
     header: OwnedCell<NodeHeaderWord>,
     pub flags: OwnedCell<NodeFlags>,
@@ -1451,10 +1451,10 @@ impl Node {
             _ => {}
         }
         let postfix = self.postfix_token();
-        if let Some(postfix) = postfix {
-            if postfix.kind() == Kind::QuestionToken {
-                return Some(postfix);
-            }
+        if let Some(postfix) = postfix
+            && postfix.kind() == Kind::QuestionToken
+        {
+            return Some(postfix);
         }
         None
     }
@@ -1605,25 +1605,25 @@ pub fn get_declaration_from_name(name: Option<P<Node>>) -> Option<P<Node>> {
         }
         if is_qualified_name(parent) {
             let tag = parent.parent();
-            if let Some(tag) = tag {
-                if is_jsdoc_parameter_tag(tag) && tag.name() == Some(parent) {
-                    return Some(tag);
-                }
+            if let Some(tag) = tag
+                && is_jsdoc_parameter_tag(tag)
+                && tag.name() == Some(parent)
+            {
+                return Some(tag);
             }
             return None;
         }
         let bin_exp = parent.parent();
-        if let Some(bin_exp) = bin_exp {
-            if is_binary_expression(bin_exp)
-                && get_assignment_declaration_kind(bin_exp) != JSDeclarationKind::None
+        if let Some(bin_exp) = bin_exp
+            && is_binary_expression(bin_exp)
+            && get_assignment_declaration_kind(bin_exp) != JSDeclarationKind::None
+        {
+            // (binExp.left as BindableStaticNameExpression).symbol || binExp.symbol
+            let left_has_symbol = bin_exp.as_binary_expression().left.symbol().is_some();
+            if (left_has_symbol || bin_exp.symbol().is_some())
+                && get_name_of_declaration(Some(bin_exp)) == Some(name)
             {
-                // (binExp.left as BindableStaticNameExpression).symbol || binExp.symbol
-                let left_has_symbol = bin_exp.as_binary_expression().left.symbol().is_some();
-                if left_has_symbol || bin_exp.symbol().is_some() {
-                    if get_name_of_declaration(Some(bin_exp)) == Some(name) {
-                        return Some(bin_exp);
-                    }
-                }
+                return Some(bin_exp);
             }
         }
     }
@@ -1729,7 +1729,6 @@ fn access_kind(node: P<Node>) -> AccessKind {
         return AccessKind::Read;
     };
     match parent.kind() {
-        Kind::ParenthesizedExpression => access_kind(parent),
         Kind::PrefixUnaryExpression => {
             let operator = parent.as_prefix_unary_expression().operator;
             if operator == Kind::PlusPlusToken || operator == Kind::MinusMinusToken {
@@ -1779,7 +1778,7 @@ fn access_kind(node: P<Node>) -> AccessKind {
             }
             access_kind(parent.parent().unwrap())
         }
-        Kind::ArrayLiteralExpression => access_kind(parent),
+        Kind::ParenthesizedExpression | Kind::ArrayLiteralExpression => access_kind(parent),
         Kind::ForInStatement | Kind::ForOfStatement => {
             if node == parent.as_for_in_or_of_statement().initializer {
                 return AccessKind::Write;
@@ -1860,7 +1859,7 @@ impl ImportAttributes {
             if let Some(f) = grammar_error_on_node.as_mut() {
                 f(
                     elem.value,
-                    &diagnostics::X_resolution_mode_should_be_either_require_or_import,
+                    &diagnostics::X_RESOLUTION_MODE_SHOULD_BE_EITHER_REQUIRE_OR_IMPORT,
                     &[],
                 );
             }
@@ -1869,7 +1868,7 @@ impl ImportAttributes {
         if text == "import" {
             Some(tsrs_core::RESOLUTION_MODE_ESM)
         } else {
-            Some(tsrs_core::ModuleKind::CommonJS)
+            Some(tsrs_core::ModuleKind::COMMON_JS)
         }
     }
 }
@@ -2001,6 +2000,9 @@ pub struct SourceFile {
 
     // Go `declarationMapMu`, `declarationMap` (workspace symbols), see get_declaration_map
     declaration_map: OnceLock<FxHashMap<String, Vec<P<Node>>>>,
+
+    // Go `sourceFileSymbolIndexKey` data (api/session.go getSourceFileSymbolIndex), see get_or_compute_api_symbol_index
+    api_symbol_index: OnceLock<FxHashMap<u64, P<Symbol>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -2078,6 +2080,7 @@ impl NodeFactory {
                 position_map: OnceLock::new(),
                 token_cache: std::sync::Mutex::new(FxHashMap::default()),
                 declaration_map: OnceLock::new(),
+                api_symbol_index: OnceLock::new(),
             },
         );
         node.as_source_file().node.set(Some(node));
@@ -2267,9 +2270,6 @@ impl SourceFile {
         }
         let _region = self.owner_region();
         self.name_table.get_or_init(|| {
-            let mut name_table: tsrs_core::collections::OrderedMap<&'static str, NameTableEntry> =
-                tsrs_core::collections::OrderedMap::default();
-            let file: &'static SourceFile = self.as_node().as_source_file();
             fn walk(
                 node: P<Node>,
                 file: &'static SourceFile,
@@ -2298,6 +2298,10 @@ impl SourceFile {
                 }
                 false
             }
+
+            let mut name_table: tsrs_core::collections::OrderedMap<&'static str, NameTableEntry> =
+                tsrs_core::collections::OrderedMap::default();
+            let file: &'static SourceFile = self.as_node().as_source_file();
             self.as_node().for_each_child(&mut |c| walk(c, file, &mut name_table));
             name_table
         })
@@ -2603,7 +2607,6 @@ impl Node {
 }
 
 fn collect_identifiers_for_source_file(source_file: &SourceFile) -> Set<&'static str> {
-    let mut identifiers: Set<&'static str> = Set::default();
     fn collect(node: P<Node>, identifiers: &mut Set<&'static str>) -> bool {
         match node.kind() {
             Kind::Identifier
@@ -2619,6 +2622,8 @@ fn collect_identifiers_for_source_file(source_file: &SourceFile) -> Set<&'static
         node.for_each_child(&mut |child| collect(child, identifiers));
         false
     }
+
+    let mut identifiers: Set<&'static str> = Set::default();
     collect(source_file.as_node(), &mut identifiers);
     identifiers
 }
@@ -2703,10 +2708,20 @@ impl SourceFile {
         self.declaration_map.get_or_init(|| self.compute_declaration_map())
     }
 
+    // Go `GetOrComputeData(sourceFileSymbolIndexKey, ...)`: the API's file-owned symbols by id, computed once.
+    pub fn get_or_compute_api_symbol_index(
+        &self,
+        compute: impl FnOnce() -> FxHashMap<u64, P<Symbol>>,
+    ) -> &FxHashMap<u64, P<Symbol>> {
+        if let Some(m) = self.api_symbol_index.get() {
+            return m;
+        }
+        let _region = self.owner_region();
+        self.api_symbol_index.get_or_init(compute)
+    }
+
     // ast.go:2982
     fn compute_declaration_map(&self) -> FxHashMap<String, Vec<P<Node>>> {
-        let mut result: FxHashMap<String, Vec<P<Node>>> = FxHashMap::default();
-
         fn add_declaration(result: &mut FxHashMap<String, Vec<P<Node>>>, declaration: P<Node>) {
             let name = get_declaration_name(declaration);
             if !name.is_empty() {
@@ -2833,6 +2848,8 @@ impl SourceFile {
             false
         }
 
+        let mut result: FxHashMap<String, Vec<P<Node>>> = FxHashMap::default();
+
         self.as_node().for_each_child(&mut |c| visit(&mut result, c));
         result
     }
@@ -2948,13 +2965,13 @@ pub struct Pragma {
 
 pub type PragmaKindFlags = u8;
 
-pub const PragmaKindTripleSlashXML: PragmaKindFlags = 1 << 0;
-pub const PragmaKindSingleLine: PragmaKindFlags = 1 << 1;
-pub const PragmaKindMultiLine: PragmaKindFlags = 1 << 2;
-pub const PragmaKindFlagsNone: PragmaKindFlags = 0;
-pub const PragmaKindAll: PragmaKindFlags =
-    PragmaKindTripleSlashXML | PragmaKindSingleLine | PragmaKindMultiLine;
-pub const PragmaKindDefault: PragmaKindFlags = PragmaKindAll;
+pub const PRAGMA_KIND_TRIPLE_SLASH_XML: PragmaKindFlags = 1 << 0;
+pub const PRAGMA_KIND_SINGLE_LINE: PragmaKindFlags = 1 << 1;
+pub const PRAGMA_KIND_MULTI_LINE: PragmaKindFlags = 1 << 2;
+pub const PRAGMA_KIND_FLAGS_NONE: PragmaKindFlags = 0;
+pub const PRAGMA_KIND_ALL: PragmaKindFlags =
+    PRAGMA_KIND_TRIPLE_SLASH_XML | PRAGMA_KIND_SINGLE_LINE | PRAGMA_KIND_MULTI_LINE;
+pub const PRAGMA_KIND_DEFAULT: PragmaKindFlags = PRAGMA_KIND_ALL;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PragmaArgumentSpecification {
@@ -2971,7 +2988,7 @@ pub struct PragmaSpecification {
 
 impl PragmaSpecification {
     pub fn is_triple_slash(&self) -> bool {
-        (self.kind & PragmaKindTripleSlashXML) > 0
+        (self.kind & PRAGMA_KIND_TRIPLE_SLASH_XML) > 0
     }
 }
 
@@ -3075,6 +3092,131 @@ mod tests {
             seen == 2
         }));
         assert_eq!(seen, 2);
+    }
+
+    #[test]
+    fn token_factory_uses_canonical_payloads() {
+        let f = NodeFactory::default();
+
+        let identifier = f.new_token(Kind::Identifier);
+        assert_eq!(identifier.as_identifier().text(), "");
+        assert!(identifier.has_flow_node_data());
+
+        let literal = f.new_token(Kind::StringLiteral);
+        assert_eq!(literal.as_string_literal().text(), "");
+        assert!(literal.literal_like_data().is_some());
+
+        let keyword = f.new_token(Kind::NullKeyword);
+        assert!(matches!(keyword.data(), NodeData::KeywordExpression(_)));
+        assert!(keyword.has_flow_node_data());
+        assert!(matches!(keyword.clone_node(&f).data(), NodeData::KeywordExpression(_)));
+
+        let type_keyword = f.new_token(Kind::NumberKeyword);
+        assert!(matches!(type_keyword.data(), NodeData::KeywordTypeNode));
+        assert!(type_keyword.subtree_facts().contains(SubtreeFacts::ContainsTypeScript));
+
+        assert!(matches!(f.new_token(Kind::PlusToken).data(), NodeData::Token));
+        assert_eq!(f.text_count(), 0);
+        assert_eq!(f.node_count(), 6);
+    }
+
+    #[test]
+    fn factory_kind_parameters_reject_noncanonical_kinds() {
+        let f = NodeFactory::default();
+        let leaf = f.new_identifier("name");
+        let list = f.new_node_list(vec![]);
+
+        for kind in [Kind::ForInStatement, Kind::ForOfStatement] {
+            f.new_for_in_or_of_statement(kind, None, leaf, leaf, leaf).as_for_in_or_of_statement();
+        }
+        for kind in [Kind::CaseClause, Kind::DefaultClause] {
+            f.new_case_or_default_clause(kind, None, list).as_case_or_default_clause();
+        }
+        for kind in [Kind::ArrayBindingPattern, Kind::ObjectBindingPattern] {
+            f.new_binding_pattern(kind, list).as_binding_pattern();
+        }
+        for kind in [
+            Kind::FalseKeyword,
+            Kind::ImportKeyword,
+            Kind::NullKeyword,
+            Kind::SuperKeyword,
+            Kind::ThisKeyword,
+            Kind::TrueKeyword,
+        ] {
+            f.new_keyword_expression(kind).as_keyword_expression();
+        }
+        for kind in [
+            Kind::VoidKeyword,
+            Kind::AnyKeyword,
+            Kind::BooleanKeyword,
+            Kind::IntrinsicKeyword,
+            Kind::NeverKeyword,
+            Kind::NumberKeyword,
+            Kind::ObjectKeyword,
+            Kind::StringKeyword,
+            Kind::SymbolKeyword,
+            Kind::UndefinedKeyword,
+            Kind::UnknownKeyword,
+            Kind::BigIntKeyword,
+        ] {
+            f.new_keyword_type_node(kind).as_keyword_type_node();
+        }
+        for kind in [Kind::JSDocParameterTag, Kind::JSDocPropertyTag] {
+            f.new_jsdoc_parameter_or_property_tag(kind, leaf, leaf, false, None, false, None)
+                .as_jsdoc_parameter_or_property_tag();
+        }
+
+        let rejects = |make: &dyn Fn()| {
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(make)).is_err());
+        };
+        let before_invalid = f.node_count();
+        rejects(&|| {
+            f.new_for_in_or_of_statement(Kind::FunctionDeclaration, None, leaf, leaf, leaf);
+        });
+        rejects(&|| {
+            f.new_case_or_default_clause(Kind::FunctionDeclaration, None, list);
+        });
+        rejects(&|| {
+            f.new_binding_pattern(Kind::FunctionDeclaration, list);
+        });
+        rejects(&|| {
+            f.new_keyword_expression(Kind::FunctionDeclaration);
+        });
+        rejects(&|| {
+            f.new_keyword_type_node(Kind::FunctionDeclaration);
+        });
+        rejects(&|| {
+            f.new_jsdoc_parameter_or_property_tag(
+                Kind::FunctionDeclaration,
+                leaf,
+                leaf,
+                false,
+                None,
+                false,
+                None,
+            );
+        });
+        rejects(&|| {
+            f.new_token(Kind::FunctionDeclaration);
+        });
+        rejects(&|| {
+            f.new_token(Kind::Count);
+        });
+        assert_eq!(f.node_count(), before_invalid);
+
+        f.new_token(Kind::Unknown).as_token();
+        f.new_token(Kind::PlusToken).as_token();
+        rejects(&|| {
+            f.new_token(Kind::Identifier).as_token();
+        });
+        rejects(&|| {
+            f.new_identifier("other").as_string_literal();
+        });
+
+        assert_eq!(std::mem::offset_of!(super::NodeAlloc<Identifier>, node), 0);
+        assert_eq!(std::mem::offset_of!(super::NodeAlloc<SourceFile>, node), 0);
+        assert_eq!(std::mem::offset_of!(super::NodeAlloc<FlowSwitchClauseData>, node), 0);
+        assert_eq!(std::mem::offset_of!(super::NodeAlloc<FlowReduceLabelData>, node), 0);
     }
 
     #[test]
@@ -3185,8 +3327,8 @@ mod tests {
         assert_eq!(table.len(), 1);
         assert_eq!(table.lookup("b"), Some(s1));
         assert!(!table.has("a"));
-        assert!(InternalSymbolNameCall.starts_with(InternalSymbolNamePrefix));
-        assert_eq!(escape_symbol_name(InternalSymbolNameCall), "__call");
+        assert!(INTERNAL_SYMBOL_NAME_CALL.starts_with(INTERNAL_SYMBOL_NAME_PREFIX));
+        assert_eq!(escape_symbol_name(INTERNAL_SYMBOL_NAME_CALL), "__call");
     }
 
     // Regression: a table past the linear-search size keeps insertion order, keeps the original position on
@@ -3262,8 +3404,8 @@ mod tests {
 
     #[test]
     fn kinds_and_flags() {
-        assert_eq!(Kind::FirstKeyword, Kind::BreakKeyword);
-        assert_eq!(Kind::LastToken, Kind::DeferKeyword);
+        assert_eq!(Kind::FIRST_KEYWORD, Kind::BreakKeyword);
+        assert_eq!(Kind::LAST_TOKEN, Kind::SourceKeyword);
         assert_eq!(Kind::from_i16(Kind::Identifier as i16), Kind::Identifier);
         assert!(is_keyword_kind(Kind::ClassKeyword));
         assert!(is_assignment_operator(Kind::PlusEqualsToken));
@@ -3280,21 +3422,21 @@ mod tests {
     fn node_header_word_keeps_kind_tag_and_parent() {
         let f = NodeFactory::default();
         let parent = f.new_keyword_expression(Kind::ThisKeyword);
-        let child = f.new_token(Kind::Count);
+        let child = f.new_token(Kind::Unknown);
         assert_eq!(
             (child.kind(), child.data_tag(), child.parent()),
-            (Kind::Count, NodeDataTag::Token, None)
+            (Kind::Unknown, NodeDataTag::Token, None)
         );
         child.set_parent(Some(parent));
         assert_eq!(
             (child.kind(), child.data_tag(), child.parent()),
-            (Kind::Count, NodeDataTag::Token, Some(parent))
+            (Kind::Unknown, NodeDataTag::Token, Some(parent))
         );
         assert_eq!(
             (parent.kind(), parent.data_tag()),
             (Kind::ThisKeyword, NodeDataTag::KeywordExpression)
         );
         child.set_parent(None);
-        assert_eq!((child.kind(), child.parent()), (Kind::Count, None));
+        assert_eq!((child.kind(), child.parent()), (Kind::Unknown, None));
     }
 }

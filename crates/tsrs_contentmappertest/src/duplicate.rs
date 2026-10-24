@@ -7,16 +7,16 @@ use tsrs_ipc as ipc;
 use tsrs_spanmap::{Feature, Kind, Segment};
 
 use crate::protocol::{
-    initialize_result, marshal_span_map, no_notifications, testHandler, unexpected_method,
+    TestHandler, initialize_result, marshal_span_map, no_notifications, unexpected_method,
     unmarshal_params,
 };
 
 // duplicate.go:14
-pub(crate) struct duplicateHandler;
+pub struct DuplicateHandler;
 
-impl testHandler for duplicateHandler {}
+impl TestHandler for DuplicateHandler {}
 
-impl ipc::Handler for duplicateHandler {
+impl ipc::Handler for DuplicateHandler {
     // duplicate.go:16
     fn handle_request(&self, method: &str, params: Option<&Value>) -> Result<Value, ipc::Error> {
         match method {
@@ -31,7 +31,7 @@ impl ipc::Handler for duplicateHandler {
                     virtual_end: (virtual_start + length) as u32,
                     original_start: 0,
                     original_end: length as u32,
-                    kind: Kind::Verbatim,
+                    kind: Kind::VERBATIM,
                     features,
                 };
                 let result = |virtual_: String, mappings: Value| {

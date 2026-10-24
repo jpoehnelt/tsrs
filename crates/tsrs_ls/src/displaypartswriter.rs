@@ -7,7 +7,7 @@ use tsrs_printer::EmitTextWriter;
 // for VS colorized labels, while also building a plain string.
 // When vsCapability is false, only the plain string is built; runs are skipped.
 // displaypartswriter.go:19
-pub(crate) struct DisplayPartsWriter {
+pub struct DisplayPartsWriter {
     builder: String,
     runs: Vec<lsproto::VSClassifiedTextRun>,
     vs_capability: bool,
@@ -15,7 +15,7 @@ pub(crate) struct DisplayPartsWriter {
 }
 
 // displaypartswriter.go:26
-pub(crate) fn new_display_parts_writer(vs_capability: bool) -> DisplayPartsWriter {
+pub fn new_display_parts_writer(vs_capability: bool) -> DisplayPartsWriter {
     DisplayPartsWriter {
         builder: String::new(),
         runs: Vec::new(),
@@ -139,69 +139,69 @@ impl EmitTextWriter for DisplayPartsWriter {
 
     // displaypartswriter.go:103
     fn raw_write(&mut self, s: &str) {
-        self.add_run(lsproto::ClassificationTypeName::Text, s);
+        self.add_run(lsproto::ClassificationTypeName::TEXT, s);
     }
 
     // displaypartswriter.go:107
     fn write(&mut self, s: &str) {
-        self.add_run(lsproto::ClassificationTypeName::Text, s);
+        self.add_run(lsproto::ClassificationTypeName::TEXT, s);
     }
 
     // displaypartswriter.go:111
     fn write_comment(&mut self, text: &str) {
         // Strada's writeComment uses unknownWrite → SymbolDisplayPartKind.text → "text"
-        self.add_run(lsproto::ClassificationTypeName::Text, text);
+        self.add_run(lsproto::ClassificationTypeName::TEXT, text);
     }
 
     // displaypartswriter.go:116
     fn write_keyword(&mut self, text: &str) {
-        self.add_run(lsproto::ClassificationTypeName::Keyword, text);
+        self.add_run(lsproto::ClassificationTypeName::KEYWORD, text);
     }
 
     // displaypartswriter.go:120
     fn write_line(&mut self) {
-        self.add_run(lsproto::ClassificationTypeName::WhiteSpace, " ");
+        self.add_run(lsproto::ClassificationTypeName::WHITE_SPACE, " ");
     }
 
     // displaypartswriter.go:124
     fn write_line_force(&mut self, _force: bool) {
-        self.add_run(lsproto::ClassificationTypeName::WhiteSpace, " ");
+        self.add_run(lsproto::ClassificationTypeName::WHITE_SPACE, " ");
     }
 
     // displaypartswriter.go:128
     fn write_literal(&mut self, s: &str) {
         // Strada's writeLiteral → SymbolDisplayPartKind.stringLiteral → "string"
-        self.add_run(lsproto::ClassificationTypeName::String, s);
+        self.add_run(lsproto::ClassificationTypeName::STRING, s);
     }
 
     // displaypartswriter.go:133
     fn write_operator(&mut self, text: &str) {
-        self.add_run(lsproto::ClassificationTypeName::Operator, text);
+        self.add_run(lsproto::ClassificationTypeName::OPERATOR, text);
     }
 
     // displaypartswriter.go:137
     fn write_parameter(&mut self, text: &str) {
-        self.add_run(lsproto::ClassificationTypeName::ParameterName, text);
+        self.add_run(lsproto::ClassificationTypeName::PARAMETER_NAME, text);
     }
 
     // displaypartswriter.go:141
     fn write_property(&mut self, text: &str) {
-        self.add_run(lsproto::ClassificationTypeName::PropertyName, text);
+        self.add_run(lsproto::ClassificationTypeName::PROPERTY_NAME, text);
     }
 
     // displaypartswriter.go:145
     fn write_punctuation(&mut self, text: &str) {
-        self.add_run(lsproto::ClassificationTypeName::Punctuation, text);
+        self.add_run(lsproto::ClassificationTypeName::PUNCTUATION, text);
     }
 
     // displaypartswriter.go:149
     fn write_space(&mut self, text: &str) {
-        self.add_run(lsproto::ClassificationTypeName::WhiteSpace, text);
+        self.add_run(lsproto::ClassificationTypeName::WHITE_SPACE, text);
     }
 
     // displaypartswriter.go:153
     fn write_string_literal(&mut self, text: &str) {
-        self.add_run(lsproto::ClassificationTypeName::String, text);
+        self.add_run(lsproto::ClassificationTypeName::STRING, text);
     }
 
     // displaypartswriter.go:157
@@ -212,7 +212,7 @@ impl EmitTextWriter for DisplayPartsWriter {
 
     // displaypartswriter.go:162
     fn write_trailing_semicolon(&mut self, text: &str) {
-        self.add_run(lsproto::ClassificationTypeName::Punctuation, text);
+        self.add_run(lsproto::ClassificationTypeName::PUNCTUATION, text);
     }
 }
 
@@ -221,39 +221,39 @@ impl EmitTextWriter for DisplayPartsWriter {
 // displaypartswriter.go:168
 fn classification_for_symbol(symbol: Option<P<Symbol>>) -> lsproto::ClassificationTypeName {
     let Some(symbol) = symbol else {
-        return lsproto::ClassificationTypeName::Text;
+        return lsproto::ClassificationTypeName::TEXT;
     };
     let flags = symbol.flags();
     if flags.intersects(SymbolFlags::Variable) {
         if is_first_declaration_of_symbol_parameter(symbol) {
-            return lsproto::ClassificationTypeName::ParameterName;
+            return lsproto::ClassificationTypeName::PARAMETER_NAME;
         }
-        lsproto::ClassificationTypeName::LocalName
+        lsproto::ClassificationTypeName::LOCAL_NAME
     } else if (flags.intersects(SymbolFlags::Property))
         || (flags.intersects(SymbolFlags::GetAccessor))
         || (flags.intersects(SymbolFlags::SetAccessor))
     {
-        lsproto::ClassificationTypeName::PropertyName
+        lsproto::ClassificationTypeName::PROPERTY_NAME
     } else if flags.intersects(SymbolFlags::EnumMember) {
-        lsproto::ClassificationTypeName::FieldName
+        lsproto::ClassificationTypeName::FIELD_NAME
     } else if flags.intersects(SymbolFlags::Function) {
-        lsproto::ClassificationTypeName::MethodName
+        lsproto::ClassificationTypeName::METHOD_NAME
     } else if flags.intersects(SymbolFlags::Class) {
-        lsproto::ClassificationTypeName::ClassName
+        lsproto::ClassificationTypeName::CLASS_NAME
     } else if flags.intersects(SymbolFlags::Interface) {
-        lsproto::ClassificationTypeName::InterfaceName
+        lsproto::ClassificationTypeName::INTERFACE_NAME
     } else if flags.intersects(SymbolFlags::Enum) {
-        lsproto::ClassificationTypeName::EnumName
+        lsproto::ClassificationTypeName::ENUM_NAME
     } else if flags.intersects(SymbolFlags::Module) {
-        lsproto::ClassificationTypeName::ModuleName
+        lsproto::ClassificationTypeName::MODULE_NAME
     } else if flags.intersects(SymbolFlags::Method) {
-        lsproto::ClassificationTypeName::MethodName
+        lsproto::ClassificationTypeName::METHOD_NAME
     } else if flags.intersects(SymbolFlags::TypeParameter) {
-        lsproto::ClassificationTypeName::TypeParameterName
+        lsproto::ClassificationTypeName::TYPE_PARAMETER_NAME
     } else if (flags.intersects(SymbolFlags::TypeAlias)) || (flags.intersects(SymbolFlags::Alias)) {
-        lsproto::ClassificationTypeName::Identifier
+        lsproto::ClassificationTypeName::IDENTIFIER
     } else {
-        lsproto::ClassificationTypeName::Text
+        lsproto::ClassificationTypeName::TEXT
     }
 }
 

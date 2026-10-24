@@ -2,13 +2,12 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use tsrs_ast::{Kind, Node, SourceFile, SourceFileParseOptions};
-use tsrs_core::collections::OrderedMap;
-use tsrs_core::json::{self, Value};
+use tsrs_core::json::{self, JsonMap, Value};
 use tsrs_core::{P, ScriptKind, TextRange, position_to_line_and_byte_offset};
 
 use super::*;
 
-pub(crate) fn repo_root() -> PathBuf {
+pub fn repo_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     while !dir.join("ts-ref").exists() {
         dir = dir.parent().expect("repository root with ts-ref").to_path_buf();
@@ -20,11 +19,7 @@ fn test_files() -> Vec<PathBuf> {
     vec![repo_root().join("ts-ref/tsc/testdata/fixtures/services/mapCode.ts")]
 }
 
-pub(crate) fn parse_for_test(
-    file_name: &str,
-    text: &str,
-    script_kind: ScriptKind,
-) -> P<SourceFile> {
+pub fn parse_for_test(file_name: &str, text: &str, script_kind: ScriptKind) -> P<SourceFile> {
     tsrs_parser::parse_source_file(
         SourceFileParseOptions {
             file_name: file_name.to_string(),
@@ -131,12 +126,12 @@ fn baseline_go_tokens_json(
         let values: Vec<Value> = runs
             .iter()
             .map(|r| {
-                let mut m: OrderedMap<String, Value> = OrderedMap::default();
-                m.insert("startPos".into(), Value::Number(r.start_pos as f64));
-                m.insert("endPos".into(), Value::Number(r.end_pos as f64));
-                m.insert("kind".into(), Value::String(r.kind.clone()));
-                m.insert("nodePos".into(), Value::Number(r.node_pos as f64));
-                m.insert("nodeEnd".into(), Value::Number(r.node_end as f64));
+                let mut m: JsonMap = JsonMap::new();
+                m.insert("startPos", Value::Number(r.start_pos as f64));
+                m.insert("endPos", Value::Number(r.end_pos as f64));
+                m.insert("kind", Value::String(r.kind.clone()));
+                m.insert("nodePos", Value::Number(r.node_pos as f64));
+                m.insert("nodeEnd", Value::Number(r.node_end as f64));
                 Value::Object(m)
             })
             .collect();

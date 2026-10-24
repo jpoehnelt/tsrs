@@ -1,5 +1,5 @@
 // Differential test against the Go resolver (tools/oracle/module). Generate the inputs with
-//   python3 tools/oracle/module/gen.py > target/scratch/module/scenarios.jsonl
+//   node tools/oracle/module/gen.mjs > target/scratch/module/scenarios.jsonl
 //   bin/tsrs-oracle-module < target/scratch/module/scenarios.jsonl > target/scratch/module/expected.jsonl
 // and run `cargo test -p tsrs_module oracle -- --ignored`. `testdata/oracle` holds the handcrafted subset
 // (`grep handcrafted`) of both files.
@@ -67,42 +67,42 @@ fn strings_of(value: Option<&Json>) -> Option<Vec<String>> {
 
 fn module_kind(n: i32) -> ModuleKind {
     match n {
-        1 => ModuleKind::CommonJS,
+        1 => ModuleKind::COMMON_JS,
         2 => ModuleKind::AMD,
         3 => ModuleKind::UMD,
-        4 => ModuleKind::System,
+        4 => ModuleKind::SYSTEM,
         5 => ModuleKind::ES2015,
         6 => ModuleKind::ES2020,
         7 => ModuleKind::ES2022,
-        99 => ModuleKind::ESNext,
-        100 => ModuleKind::Node16,
-        101 => ModuleKind::Node18,
-        102 => ModuleKind::Node20,
-        199 => ModuleKind::NodeNext,
-        200 => ModuleKind::Preserve,
-        _ => ModuleKind::None,
+        99 => ModuleKind::ES_NEXT,
+        100 => ModuleKind::NODE16,
+        101 => ModuleKind::NODE18,
+        102 => ModuleKind::NODE20,
+        199 => ModuleKind::NODE_NEXT,
+        200 => ModuleKind::PRESERVE,
+        _ => ModuleKind::NONE,
     }
 }
 
 fn module_resolution_kind(n: i32) -> ModuleResolutionKind {
     match n {
-        1 => ModuleResolutionKind::Classic,
-        2 => ModuleResolutionKind::Node10,
-        3 => ModuleResolutionKind::Node16,
-        99 => ModuleResolutionKind::NodeNext,
-        100 => ModuleResolutionKind::Bundler,
-        _ => ModuleResolutionKind::Unknown,
+        1 => ModuleResolutionKind::CLASSIC,
+        2 => ModuleResolutionKind::NODE10,
+        3 => ModuleResolutionKind::NODE16,
+        99 => ModuleResolutionKind::NODE_NEXT,
+        100 => ModuleResolutionKind::BUNDLER,
+        _ => ModuleResolutionKind::UNKNOWN,
     }
 }
 
 fn jsx(n: i32) -> JsxEmit {
     match n {
-        1 => JsxEmit::Preserve,
-        2 => JsxEmit::React,
-        3 => JsxEmit::ReactNative,
-        4 => JsxEmit::ReactJSX,
-        5 => JsxEmit::ReactJSXDev,
-        _ => JsxEmit::None,
+        1 => JsxEmit::PRESERVE,
+        2 => JsxEmit::REACT,
+        3 => JsxEmit::REACT_NATIVE,
+        4 => JsxEmit::REACT_JSX,
+        5 => JsxEmit::REACT_JSX_DEV,
+        _ => JsxEmit::NONE,
     }
 }
 
@@ -231,10 +231,10 @@ fn run(scenario: &Json) -> Vec<(String, String, String)> {
                     .join(","),
                 _ => String::new(),
             };
-            if &want != value {
-                Some((label.clone(), field.to_string(), format!("want {want:?}, got {value:?}")))
-            } else {
+            if &want == value {
                 None
+            } else {
+                Some((label.clone(), field.to_string(), format!("want {want:?}, got {value:?}")))
             }
         }));
         let want_traces: Vec<String> = match get(expected, "traces") {
@@ -276,7 +276,7 @@ fn run(scenario: &Json) -> Vec<(String, String, String)> {
     mismatches
 }
 
-// The hand-written scenarios from gen.py, with the Go results checked in.
+// The hand-written scenarios from gen.mjs, with the Go results checked in.
 #[test]
 fn oracle_handcrafted() {
     run_oracle_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/oracle"));

@@ -2,6 +2,7 @@
 // from the Go sources in ts-ref/tsc/internal/ast. Run: node tools/gen-ast/gen-flags.ts
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { constantNames } from "../lib/rust-names.mjs";
 
 const root = path.resolve(import.meta.dirname, "../..");
 const goDir = path.join(root, "ts-ref/tsc/internal/ast");
@@ -37,7 +38,8 @@ function genKind() {
     out += names.map(n => `            Kind::${n} => "${n}",`).join("\n");
     out += "\n        })\n    }\n}\n\n";
     out += "impl Kind {\n";
-    for (const [n, v] of consts) out += `    pub const ${n}: Kind = Kind::${v};\n`;
+    const rustConsts = constantNames(consts.map(([n]) => n));
+    for (const [n, v] of consts) out += `    pub const ${rustConsts.get(n)}: Kind = Kind::${rustConsts.get(v) ?? v};\n`;
     out += "\n    #[inline]\n    pub fn from_i16(v: i16) -> Kind {\n        assert!(v >= 0 && v <= Kind::Count as i16);\n        // SAFETY: Kind is repr(i16) with contiguous discriminants 0..=Count.\n        unsafe { std::mem::transmute::<i16, Kind>(v) }\n    }\n}\n\n";
     const aliases = src.slice(src.indexOf("type ("));
     for (const m of aliases.matchAll(/^\t(\w+)\s+= Kind(.*)$/gm)) out += `pub type ${m[1]} = Kind;\n`;

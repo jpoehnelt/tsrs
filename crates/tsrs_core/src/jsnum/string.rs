@@ -20,7 +20,7 @@ impl Number {
         }
 
         // Fast path: for safe integers, directly convert to string.
-        if MinSafeInteger <= self && self <= MaxSafeInteger {
+        if MIN_SAFE_INTEGER <= self && self <= MAX_SAFE_INTEGER {
             let i = self.0 as i64;
             if i as f64 == self.0 {
                 return i.to_string();
@@ -53,7 +53,7 @@ pub fn from_string(s: &str) -> Number {
     }
 
     if let Some(result) =
-        s.bytes().into_iter().find_map(|b| if !is_number_byte(b) { Some(nan()) } else { None })
+        s.bytes().into_iter().find_map(|b| if is_number_byte(b) { None } else { Some(nan()) })
     {
         return result;
     }
@@ -89,7 +89,7 @@ fn cut_prefix<'a>(s: &'a str, prefix: &str) -> (&'a str, bool) {
     }
 }
 
-pub(crate) fn is_str_white_space(r: char) -> bool {
+pub fn is_str_white_space(r: char) -> bool {
     // This is different than stringutil.IsWhiteSpaceLike.
 
     // https://tc39.es/ecma262/2024/multipage/ecmascript-language-lexical-grammar.html#prod-LineTerminator
@@ -97,9 +97,9 @@ pub(crate) fn is_str_white_space(r: char) -> bool {
 
     match r {
         // LineTerminator
-        '\n' | '\r' | '\u{2028}' | '\u{2029}' => return true,
+        '\n' | '\r' | '\u{2028}' | '\u{2029}'
         // WhiteSpace
-        '\t' | '\u{000B}' | '\u{000C}' | '\u{FEFF}' => return true,
+        | '\t' | '\u{000B}' | '\u{000C}' | '\u{FEFF}' => return true,
         _ => {}
     }
 
@@ -111,7 +111,7 @@ pub(crate) fn is_str_white_space(r: char) -> bool {
     )
 }
 
-pub(crate) fn try_parse_int(s: &str) -> Option<Number> {
+pub fn try_parse_int(s: &str) -> Option<Number> {
     let mut s = s;
     let mut i: i64 = 0;
     let mut err = false;
@@ -176,7 +176,7 @@ fn parse_int(s: &str, base: u32) -> (i64, bool) {
     }
 }
 
-pub(crate) fn trim_leading_zeros(s: &str) -> &str {
+pub fn trim_leading_zeros(s: &str) -> &str {
     let mut s = s;
     if s.starts_with('0') {
         s = s.trim_start_matches('0');
@@ -187,23 +187,23 @@ pub(crate) fn trim_leading_zeros(s: &str) -> &str {
     s
 }
 
-pub(crate) fn is_all_digits(s: &str) -> bool {
+pub fn is_all_digits(s: &str) -> bool {
     s.bytes().all(|b| b.is_ascii_digit())
 }
 
-pub(crate) fn is_all_binary_digits(s: &str) -> bool {
+pub fn is_all_binary_digits(s: &str) -> bool {
     s.bytes().all(|b| matches!(b, b'0' | b'1'))
 }
 
-pub(crate) fn is_all_octal_digits(s: &str) -> bool {
+pub fn is_all_octal_digits(s: &str) -> bool {
     s.bytes().all(|b| matches!(b, b'0'..=b'7'))
 }
 
-pub(crate) fn is_all_hex_digits(s: &str) -> bool {
+pub fn is_all_hex_digits(s: &str) -> bool {
     s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-pub(crate) fn is_number_byte(b: u8) -> bool {
+pub fn is_number_byte(b: u8) -> bool {
     if b.is_ascii_digit() {
         return true;
     }

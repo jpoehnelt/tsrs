@@ -4,11 +4,11 @@
 use tsrs_ast::{self as ast, SourceFile};
 use tsrs_core::P;
 use tsrs_core::tspath::{self, ComparePathsOptions};
+use tsrs_tsoptions::outputpaths;
 
-use crate::outputpaths;
 use crate::program::Program;
 
-pub(crate) fn source_file_may_be_emitted(
+pub fn source_file_may_be_emitted(
     source_file: P<SourceFile>,
     host: &Program,
     force_dts_emit: bool,
@@ -100,7 +100,7 @@ pub(crate) fn source_file_may_be_emitted(
     true
 }
 
-pub(crate) fn get_source_files_to_emit(
+pub fn get_source_files_to_emit(
     host: &Program,
     target_source_files: Option<&[P<SourceFile>]>,
     force_dts_emit: bool,
@@ -119,7 +119,7 @@ fn is_source_file_not_json(file: P<SourceFile>) -> bool {
 }
 
 // emitter.go:566. Runs inside the caller's `CheckerSlot::lend` (the host's resolver borrows the checker from it).
-pub(crate) fn get_declaration_diagnostics(
+pub fn get_declaration_diagnostics(
     host: &'static crate::emithost::EmitHost,
     program: &Program,
     file: P<SourceFile>,
@@ -135,12 +135,10 @@ pub(crate) fn get_declaration_diagnostics(
         return Vec::new();
     }
     let options = program.options();
-    // The caller runs this in a scratch region (`Program::get_declaration_diagnostics_for_file`): a scratch emit
-    // context, so the nodes the node builder makes for the transform die with it. Go passes nil and the transformer
-    // makes a fresh context, which is what this is.
+    // The caller creates the resolver and context together in the file's scratch region.
     let transform = tsrs_declarations::new_declaration_transformer(
         host,
-        Some(tsrs_printer::new_scratch_emit_context()),
+        tsrs_transformers::EmitHost::get_emit_resolver(host),
         options,
         "",
         "",
@@ -195,7 +193,7 @@ mod emit {
     }
 
     // emitter.go:33
-    pub(crate) struct emitter<'a> {
+    pub struct Emitter<'a> {
         pub(crate) host: &'static EmitHost,
         pub(crate) emit_only: EmitOnly,
         pub(crate) emitter_diagnostics: DiagnosticsCollection,
@@ -205,13 +203,14 @@ mod emit {
         pub(crate) force_emit: bool,
         pub(crate) write_file: Option<WriteFile<'a>>,
         pub(crate) times: &'a EmitTimes,
-        pub(crate) pending_js: Option<pendingPrint>,
+        pub(crate) pending_js: Option<PendingPrint>,
         pub(crate) declaration_diagnostics: Vec<P<Diagnostic>>,
-        pub(crate) pending_declaration: Option<pendingPrint>,
+        pub(crate) pending_declaration: Option<PendingPrint>,
+        pub(crate) emit_context: P<EmitContext>,
     }
 
     /// `TSRS_EMIT_MEM=1`: per file, the arena bytes its emit used in its region and outside it (stderr, `emitmem`).
-    pub(crate) fn emit_mem_log() -> bool {
+    pub fn emit_mem_log() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var_os("TSRS_EMIT_MEM").is_some_and(|v| v == "1"))
     }
@@ -219,7 +218,7 @@ mod emit {
     // tsrs-only: what printing a transformed file needs. Go prints and writes each file while it still holds the
     // file's checker; tsrs splits `emit` into `transform` (needs the checker) and `print` (does not), so that
     // `Program::emit` can print and write on another thread while the checker transforms the next file.
-    pub(crate) struct pendingPrint {
+    pub struct PendingPrint {
         source_file: P<SourceFile>,
         emit_context: P<EmitContext>,
         printer_options: PrinterOptions,
@@ -237,7 +236,7 @@ mod emit {
         dyn Fn(printer::SourceMapSource, u32) -> Option<(printer::SourceMapSource, u32)> + Send,
     >;
 
-    impl emitter<'_> {
+    impl Emitter<'_> {
         // emitter.go:46 `emit` is `transform` followed by `print`. This part runs the transformers (and so needs the
         // file's checker).
         pub(crate) fn transform(&mut self) {
@@ -270,12 +269,13 @@ mod emit {
             if let Some(pending) = self.pending_declaration.take() {
                 self.print_pending(pending, writer);
             }
+            self.emit_context.reset();
             self.emit_result.diagnostics = self.emitter_diagnostics.get_diagnostics();
         }
 
         fn print_pending(
             &mut self,
-            mut pending: pendingPrint,
+            mut pending: PendingPrint,
             writer: &mut (dyn EmitTextWriter + 'static),
         ) {
             // create a printer to print the nodes
@@ -304,14 +304,12 @@ mod emit {
                 pending.should_emit_source_maps,
                 writer,
             );
-            pending.emit_context.reset(); // put_emit_context
         }
 
         // emitter.go:62. Go returns a slice of the `declarationTransformer` interface; the two transformers run in
         // `run_declaration_transformers` in the same order.
         fn run_declaration_transformers(
             &self,
-            emit_context: P<EmitContext>,
             source_file: P<SourceFile>,
             declaration_file_path: &str,
             declaration_map_path: &str,
@@ -322,7 +320,7 @@ mod emit {
             // getDeclarationTransformers (emitter.go:62)
             let declaration = tsrs_declarations::new_declaration_transformer(
                 self.host,
-                Some(emit_context),
+                self.host.get_emit_resolver(),
                 self.host.options(),
                 declaration_file_path,
                 declaration_map_path,
@@ -388,7 +386,7 @@ mod emit {
                 return;
             }
 
-            let (emit_context, _) = printer::get_scratch_emit_context();
+            let emit_context = self.emit_context;
 
             let source_file = self.run_script_transformers(emit_context, source_file);
 
@@ -405,7 +403,7 @@ mod emit {
             };
 
             // the printer is created, and the file printed, in `print`
-            self.pending_js = Some(pendingPrint {
+            self.pending_js = Some(PendingPrint {
                 source_file,
                 emit_context,
                 printer_options,
@@ -436,9 +434,8 @@ mod emit {
                 && options.declaration_map.is_true();
             let content_mapped_source = source_file;
 
-            let (emit_context, _) = printer::get_scratch_emit_context();
+            let emit_context = self.emit_context;
             let (source_file, diags) = self.run_declaration_transformers(
-                emit_context,
                 source_file,
                 declaration_file_path,
                 declaration_map_path,
@@ -456,13 +453,11 @@ mod emit {
                     || self.host.is_emit_blocked(declaration_file_path))
             {
                 self.emit_result.emit_skipped = true;
-                emit_context.reset(); // put_emit_context
                 return;
             }
 
             if decl_blocked {
                 self.emit_result.emit_skipped = true;
-                emit_context.reset(); // put_emit_context
                 return;
             }
 
@@ -487,7 +482,7 @@ mod emit {
             if let Some(span_map) =
                 content_mapped_source.span_map().filter(|_| emit_declaration_map)
             {
-                let original_source: &'static declarationMapSource =
+                let original_source: &'static DeclarationMapSource =
                     new_declaration_map_source(content_mapped_source);
                 let content_mapped_file_name = content_mapped_source.get().file_name();
                 map_source_position =
@@ -511,7 +506,7 @@ mod emit {
                 ..Default::default()
             };
             let should_emit = should_emit_source_maps(&declaration_map_options, source_file);
-            self.pending_declaration = Some(pendingPrint {
+            self.pending_declaration = Some(PendingPrint {
                 source_file,
                 emit_context,
                 printer_options,
@@ -591,7 +586,9 @@ mod emit {
                 }
 
                 // Write the source map
-                if !source_map_file_path.is_empty() {
+                if source_map_file_path.is_empty() {
+                    self.times.add(EmitPhase::SourceMap, source_map_start);
+                } else {
                     let source_map = source_map_generator.string();
                     self.times.add(EmitPhase::SourceMap, source_map_start);
                     let err = self.write_text(
@@ -605,7 +602,7 @@ mod emit {
                     match err {
                         Err(err) => {
                             self.emitter_diagnostics.add(new_compiler_diagnostic(
-                                &diagnostics::Could_not_write_file_0_Colon_1,
+                                &diagnostics::COULD_NOT_WRITE_FILE_0_COLON_1,
                                 &[&js_file_path, &err],
                             ));
                         }
@@ -613,8 +610,6 @@ mod emit {
                             self.emit_result.emitted_files.push(source_map_file_path.to_string());
                         }
                     }
-                } else {
-                    self.times.add(EmitPhase::SourceMap, source_map_start);
                 }
             } else {
                 writer.write_line();
@@ -636,7 +631,7 @@ mod emit {
             match err {
                 Err(err) => {
                     self.emitter_diagnostics.add(new_compiler_diagnostic(
-                        &diagnostics::Could_not_write_file_0_Colon_1,
+                        &diagnostics::COULD_NOT_WRITE_FILE_0_COLON_1,
                         &[&js_file_path, &err],
                     ));
                 }
@@ -761,18 +756,16 @@ mod emit {
 
     // emitter.go:295
     // Go `declarationMapSource`: the original (content-mapped) source a declaration map points at.
-    pub(crate) struct declarationMapSource {
+    pub struct DeclarationMapSource {
         pub(crate) file_name: String,
         pub(crate) text: &'static str,
         pub(crate) line_map: Vec<u32>,
     }
 
     // emitter.go:301
-    pub(crate) fn new_declaration_map_source(
-        source_file: P<SourceFile>,
-    ) -> &'static declarationMapSource {
+    pub fn new_declaration_map_source(source_file: P<SourceFile>) -> &'static DeclarationMapSource {
         let text = source_file.original_text();
-        P::new(declarationMapSource {
+        P::new(DeclarationMapSource {
             file_name: source_file.original_file_name().to_string(),
             text,
             line_map: tsrs_core::compute_ecma_line_starts(text),
@@ -780,7 +773,7 @@ mod emit {
         .get()
     }
 
-    impl tsrs_sourcemap::Source for declarationMapSource {
+    impl tsrs_sourcemap::Source for DeclarationMapSource {
         // emitter.go:310
         fn file_name(&self) -> &str {
             &self.file_name
@@ -798,25 +791,25 @@ mod emit {
     // emitter.go:93
     fn get_module_transformer(opts: &TransformOptions) -> Option<P<Transformer>> {
         match opts.compiler_options.get_emit_module_kind() {
-            ModuleKind::Preserve => {
+            ModuleKind::PRESERVE => {
                 // `ESModuleTransformer` contains logic for preserving CJS input syntax in `--module preserve`
                 moduletransforms::new_es_module_transformer(opts)
             }
-            ModuleKind::ESNext
+            ModuleKind::ES_NEXT
             | ModuleKind::ES2022
             | ModuleKind::ES2020
             | ModuleKind::ES2015
-            | ModuleKind::Node20
-            | ModuleKind::Node18
-            | ModuleKind::Node16
-            | ModuleKind::NodeNext
-            | ModuleKind::CommonJS => moduletransforms::new_implied_module_transformer(opts),
+            | ModuleKind::NODE20
+            | ModuleKind::NODE18
+            | ModuleKind::NODE16
+            | ModuleKind::NODE_NEXT
+            | ModuleKind::COMMON_JS => moduletransforms::new_implied_module_transformer(opts),
             _ => moduletransforms::new_common_js_module_transformer(opts),
         }
     }
 
     // emitter.go:116
-    pub(crate) fn get_script_transformers(
+    pub fn get_script_transformers(
         emit_context: P<EmitContext>,
         host: &'static EmitHost,
         source_file: P<SourceFile>,
@@ -853,6 +846,8 @@ mod emit {
             get_emit_module_format_of_file: std::rc::Rc::new(move |file| {
                 host.get_emit_module_format_of_file(file)
             }),
+            content_mapper_extension_rewrites: host.content_mapper_extension_rewrites(),
+            use_case_sensitive_file_names: host.use_case_sensitive_file_names(),
         };
 
         // transform TypeScript syntax
@@ -900,7 +895,7 @@ mod emit {
     }
 
     // emitter.go:444
-    pub(crate) fn should_emit_source_maps(
+    pub fn should_emit_source_maps(
         map_options: &CompilerOptions,
         source_file: P<SourceFile>,
     ) -> bool {
@@ -909,7 +904,7 @@ mod emit {
     }
 
     // emitter.go:449
-    pub(crate) fn get_source_root(map_options: &CompilerOptions) -> String {
+    pub fn get_source_root(map_options: &CompilerOptions) -> String {
         // Normalize source root and make sure it has trailing "/" so that it can be used to combine paths with the
         // relative paths of the sources list in the sourcemap
         let mut source_root = tspath::normalize_slashes(&map_options.source_root);

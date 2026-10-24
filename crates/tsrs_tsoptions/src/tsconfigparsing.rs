@@ -7,7 +7,7 @@ use tsrs_ast::{
     Diagnostic, Kind, Node, NodeFactory, SourceFile, SourceFileParseOptions,
     new_compiler_diagnostic, new_diagnostic,
 };
-use tsrs_core::collections::{OrderedMap, OrderedMapExt};
+use tsrs_core::collections::OrderedMap;
 use tsrs_core::tspath::{self, ComparePathsOptions, Path};
 use tsrs_core::{
     CompilerOptions, P, ProjectReference, ScriptKind, TextRange, Tristate, TypeAcquisition, jsnum,
@@ -21,7 +21,10 @@ use crate::commandlineoption::{
     CommandLineOption, CommandLineOptionKind, CompilerOptionsValue, ExtraValidation,
 };
 use crate::commandlineparser::{convert_json_option_of_enum_type, try_read_file};
-use crate::contentmappers::{Mapper, OptionPathSegment, resolve_content_mapper_manifest};
+use crate::contentmappers::{
+    Mapper, OptionPathSegment, has_reserved_source_extension, is_valid_extension,
+    resolve_content_mapper_manifest,
+};
 use crate::declscompiler::{OPTIONS_DECLARATIONS, OPTIONS_FOR_COMPILER};
 use crate::declstypeacquisition::TYPE_ACQUISITION_DECLARATION;
 use crate::errors::{
@@ -31,6 +34,7 @@ use crate::errors::{
     get_compiler_option_value_type_string,
 };
 use crate::parsedcommandline::ParsedCommandLine;
+use crate::parsedcommandline::get_content_mapper_output_extension;
 use crate::parsedoptions::ParsedOptions;
 use crate::parsinghelpers::{
     CompilerOptionsParser, OptionParser, TypeAcquisitionParser, merge_compiler_options,
@@ -48,7 +52,7 @@ struct ExtendsResult {
     extended_source_files: FxHashSet<String>,
 }
 
-pub(crate) static COMPILER_OPTIONS_DECLARATION: LazyLock<CommandLineOption> =
+pub static COMPILER_OPTIONS_DECLARATION: LazyLock<CommandLineOption> =
     LazyLock::new(|| CommandLineOption {
         name: "compilerOptions",
         kind: CommandLineOptionKind::Object,
@@ -56,7 +60,7 @@ pub(crate) static COMPILER_OPTIONS_DECLARATION: LazyLock<CommandLineOption> =
         ..CommandLineOption::DEFAULT
     });
 
-pub(crate) static COMPILE_ON_SAVE_COMMAND_LINE_OPTION: CommandLineOption = CommandLineOption {
+pub static COMPILE_ON_SAVE_COMMAND_LINE_OPTION: CommandLineOption = CommandLineOption {
     name: "compileOnSave",
     kind: CommandLineOptionKind::Boolean,
     default_value_description: crate::commandlineoption::DefaultValueDescription::Bool(false),
@@ -69,11 +73,11 @@ static EXTENDS_OPTION_DECLARATION_ELEMENT: CommandLineOption = CommandLineOption
     ..CommandLineOption::DEFAULT
 };
 
-pub(crate) static EXTENDS_OPTION_DECLARATION: LazyLock<CommandLineOption> =
+pub static EXTENDS_OPTION_DECLARATION: LazyLock<CommandLineOption> =
     LazyLock::new(|| CommandLineOption {
         name: "extends",
         kind: CommandLineOptionKind::ListOrElement,
-        category: Some(&diagnostics::File_Management),
+        category: Some(&diagnostics::FILE_MANAGEMENT),
         element_options: Some(command_line_options_to_map(&[&EXTENDS_OPTION_DECLARATION_ELEMENT])),
         ..CommandLineOption::DEFAULT
     });
@@ -112,7 +116,7 @@ static TSCONFIG_ROOT_OPTIONS_MAP_ITEMS: [CommandLineOption; 5] = [
     },
 ];
 
-pub(crate) static TSCONFIG_ROOT_OPTIONS_MAP: LazyLock<CommandLineOption> =
+pub static TSCONFIG_ROOT_OPTIONS_MAP: LazyLock<CommandLineOption> =
     LazyLock::new(|| CommandLineOption {
         name: "undefined", // should never be needed since this is root
         kind: CommandLineOptionKind::Object,
@@ -131,7 +135,7 @@ pub(crate) static TSCONFIG_ROOT_OPTIONS_MAP: LazyLock<CommandLineOption> =
     });
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ConfigFileSpecs {
+pub struct ConfigFileSpecs {
     // Present to report errors (user specified specs), validatedIncludeSpecs are used for file name matching
     pub(crate) include_specs: Option<Vec<CompilerOptionsValue>>,
     // Present to report errors (user specified specs), validatedExcludeSpecs are used for file name matching
@@ -161,12 +165,10 @@ impl ConfigFileSpecs {
                     vfsmatch::Usage::Files,
                     compare_paths_options.use_case_sensitive_file_names,
                 );
-                if let Some(include_matcher) = include_matcher {
-                    if include_matcher.match_string(file_name) {
-                        return Some(
-                            self.validated_include_specs_before_substitution[index].clone(),
-                        );
-                    }
+                if let Some(include_matcher) = include_matcher
+                    && include_matcher.match_string(file_name)
+                {
+                    return Some(self.validated_include_specs_before_substitution[index].clone());
                 }
 
                 None
@@ -216,7 +218,7 @@ pub trait ExtendedConfigCache: Sync {
         file_name: &str,
         path: &Path,
         resolution_stack: &[Path],
-        host: &'static dyn ParseConfigHost,
+        host: &dyn ParseConfigHost,
     ) -> P<ExtendedConfigCacheEntry>;
 }
 
@@ -236,7 +238,7 @@ impl ExtendedConfigCacheEntry {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ParsedTsconfig {
+pub struct ParsedTsconfig {
     pub(crate) raw: CompilerOptionsValue,
     pub(crate) options: Option<CompilerOptions>,
     pub(crate) type_acquisition: Option<TypeAcquisition>,
@@ -246,7 +248,7 @@ pub(crate) struct ParsedTsconfig {
 
 fn parse_own_config_of_json_source_file(
     source_file: P<SourceFile>,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     base_path: &str,
     config_file_name: &str,
 ) -> (ParsedTsconfig, Vec<P<Diagnostic>>) {
@@ -264,19 +266,19 @@ fn parse_own_config_of_json_source_file(
         // Ensure value is verified except for extends which is handled in its own way for error reporting
         let mut value = value;
         let mut property_set_errors: Vec<P<Diagnostic>> = Vec::new();
-        if let Some(option) = option {
-            if !std::ptr::eq(option, &raw const *EXTENDS_OPTION_DECLARATION) {
-                let (v, e) = convert_json_option(
-                    option,
-                    value,
-                    base_path,
-                    Some(property_assignment),
-                    Some(initializer_of(property_assignment)),
-                    Some(source_file),
-                );
-                value = v;
-                property_set_errors = e;
-            }
+        if let Some(option) = option
+            && !std::ptr::eq(option, &raw const *EXTENDS_OPTION_DECLARATION)
+        {
+            let (v, e) = convert_json_option(
+                option,
+                value,
+                base_path,
+                Some(property_assignment),
+                Some(initializer_of(property_assignment)),
+                Some(source_file),
+            );
+            value = v;
+            property_set_errors = e;
         }
         if parent_option.is_some_and(|p| p.name != "undefined") && !value.is_null() {
             let parent_option = parent_option.unwrap();
@@ -346,7 +348,7 @@ fn parse_own_config_of_json_source_file(
                     property_set_errors.push(create_diagnostic_for_node_in_source_file(
                         source_file,
                         property_assignment.name().unwrap(),
-                        &diagnostics::Unknown_option_excludes_Did_you_mean_exclude,
+                        &diagnostics::UNKNOWN_OPTION_EXCLUDES_DID_YOU_MEAN_EXCLUDE,
                         &[],
                     ));
                 }
@@ -366,15 +368,16 @@ fn parse_own_config_of_json_source_file(
         }),
     );
     errors.extend(err);
-    if let CompilerOptionsValue::Object(json_object) = &json {
-        if !root_compiler_options.is_empty() && !json_object.has(&"compilerOptions".to_string()) {
-            errors.push(create_diagnostic_for_node_in_source_file(
+    if let CompilerOptionsValue::Object(json_object) = &json
+        && !root_compiler_options.is_empty()
+        && !json_object.contains_key(&"compilerOptions".to_string())
+    {
+        errors.push(create_diagnostic_for_node_in_source_file(
                 source_file,
                 root_compiler_options[0],
-                &diagnostics::X_0_should_be_set_inside_the_compilerOptions_object_of_the_config_json_file,
+                &diagnostics::X_0_SHOULD_BE_SET_INSIDE_THE_COMPILER_OPTIONS_OBJECT_OF_THE_CONFIG_JSON_FILE,
                 &[&tsrs_ast::get_text_of_property_name(root_compiler_options[0])],
             ));
-        }
     }
     (
         ParsedTsconfig {
@@ -412,7 +415,7 @@ impl TsConfigSourceFile {
     clippy::single_option_map,
     reason = "named Go conversion helper used at the tsconfig/source-file boundary"
 )]
-pub(crate) fn tsconfig_to_source_file(
+pub fn tsconfig_to_source_file(
     tsconfig_source_file: Option<P<TsConfigSourceFile>>,
 ) -> Option<P<SourceFile>> {
     tsconfig_source_file.map(|f| f.source_file)
@@ -435,7 +438,7 @@ pub fn new_tsconfig_source_file_from_file_path(
     TsConfigSourceFile::new(source_file)
 }
 
-pub(crate) struct JsonConversionNotifier<'a> {
+pub struct JsonConversionNotifier<'a> {
     root_options: &'static CommandLineOption,
     on_property_set: &'a mut dyn FnMut(
         &str,
@@ -446,49 +449,49 @@ pub(crate) struct JsonConversionNotifier<'a> {
     ) -> (CompilerOptionsValue, Vec<P<Diagnostic>>),
 }
 
-pub(crate) fn convert_config_file_to_object(
+pub fn convert_config_file_to_object(
     source_file: P<SourceFile>,
     json_conversion_notifier: Option<&mut JsonConversionNotifier>,
 ) -> (CompilerOptionsValue, Vec<P<Diagnostic>>) {
     let statements = source_file.as_node().statements();
-    let root_expression = if !statements.is_empty() { statements[0].expression() } else { None };
-    if let Some(root_expression) = root_expression {
-        if root_expression.kind() != Kind::ObjectLiteralExpression {
-            let mut base_file_name = "tsconfig.json";
-            if tspath::get_base_file_name(source_file.file_name()) == "jsconfig.json" {
-                base_file_name = "jsconfig.json";
-            }
-            let errors = vec![create_diagnostic_for_node_in_source_file(
-                source_file,
-                root_expression,
-                &diagnostics::The_root_value_of_a_0_file_must_be_an_object,
-                &[&base_file_name],
-            )];
-            // Last-ditch error recovery. Somewhat useful because the JSON parser will recover from some parse errors by
-            // synthesizing a top-level array literal expression. There's a reasonable chance the first element of that
-            // array is a well-formed configuration object, made into an array element by stray characters.
-            if tsrs_ast::is_array_literal_expression(root_expression) {
-                let first_object = root_expression
-                    .elements()
-                    .iter()
-                    .copied()
-                    .find(|e| tsrs_ast::is_object_literal_expression(*e));
-                if let Some(first_object) = first_object {
-                    return convert_to_json(
-                        source_file,
-                        Some(first_object),
-                        true, /*returnValue*/
-                        json_conversion_notifier,
-                    );
-                }
-            }
-            return (CompilerOptionsValue::Object(OrderedMap::default()), errors);
+    let root_expression = if statements.is_empty() { None } else { statements[0].expression() };
+    if let Some(root_expression) = root_expression
+        && root_expression.kind() != Kind::ObjectLiteralExpression
+    {
+        let mut base_file_name = "tsconfig.json";
+        if tspath::get_base_file_name(source_file.file_name()) == "jsconfig.json" {
+            base_file_name = "jsconfig.json";
         }
+        let errors = vec![create_diagnostic_for_node_in_source_file(
+            source_file,
+            root_expression,
+            &diagnostics::THE_ROOT_VALUE_OF_A_0_FILE_MUST_BE_AN_OBJECT,
+            &[&base_file_name],
+        )];
+        // Last-ditch error recovery. Somewhat useful because the JSON parser will recover from some parse errors by
+        // synthesizing a top-level array literal expression. There's a reasonable chance the first element of that
+        // array is a well-formed configuration object, made into an array element by stray characters.
+        if tsrs_ast::is_array_literal_expression(root_expression) {
+            let first_object = root_expression
+                .elements()
+                .iter()
+                .copied()
+                .find(|e| tsrs_ast::is_object_literal_expression(*e));
+            if let Some(first_object) = first_object {
+                return convert_to_json(
+                    source_file,
+                    Some(first_object),
+                    true, /*returnValue*/
+                    json_conversion_notifier,
+                );
+            }
+        }
+        return (CompilerOptionsValue::Object(OrderedMap::default()), errors);
     }
     convert_to_json(source_file, root_expression, true, json_conversion_notifier)
 }
 
-pub(crate) fn is_compiler_options_value(
+pub fn is_compiler_options_value(
     option: Option<&CommandLineOption>,
     value: &CompilerOptionsValue,
 ) -> bool {
@@ -524,7 +527,7 @@ pub(crate) fn is_compiler_options_value(
     false
 }
 
-pub(crate) fn validate_json_option_value(
+pub fn validate_json_option_value(
     opt: &CommandLineOption,
     val: CompilerOptionsValue,
     value_expression: Option<P<Node>>,
@@ -537,22 +540,12 @@ pub(crate) fn validate_json_option_value(
     let mut errors: Vec<P<Diagnostic>> = Vec::new();
 
     match opt.extra_validation {
-        ExtraValidation::Spec => {
-            if let Some(diag) = spec_to_diagnostic(val.as_str().unwrap(), false) {
-                errors.push(create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
-                    source_file,
-                    value_expression,
-                    diag,
-                    &[],
-                ));
-            }
-        }
         ExtraValidation::Locale => {
             if !locale_parse(val.as_str().unwrap()) {
                 errors.push(create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
                     source_file,
                     value_expression,
-                    &diagnostics::Locale_must_be_an_IETF_BCP_47_language_tag_Examples_Colon_0_1,
+                    &diagnostics::LOCALE_MUST_BE_AN_IETF_BCP_47_LANGUAGE_TAG_EXAMPLES_COLON_0_1,
                     &[&"en", &"ja-jp"],
                 ));
             }
@@ -605,14 +598,13 @@ fn convert_json_option_of_list_type(
             }
             (CompilerOptionsValue::Array(filtered_values), errors)
         }
-        CompilerOptionsValue::NilArray => (CompilerOptionsValue::NilArray, errors),
         _ => (CompilerOptionsValue::NilArray, errors),
     }
 }
 
 const CONFIG_DIR_TEMPLATE: &str = "${configDir}";
 
-pub(crate) fn starts_with_config_dir_template(value: &str) -> bool {
+pub fn starts_with_config_dir_template(value: &str) -> bool {
     tsrs_core::stringutil::go_strings_to_lower(value)
         .starts_with(&tsrs_core::stringutil::go_strings_to_lower(CONFIG_DIR_TEMPLATE))
 }
@@ -635,7 +627,13 @@ fn normalize_non_list_option_value(
     value
 }
 
-pub(crate) fn convert_json_option(
+// Match the path that the file system will receive after resolving it against
+// the config's base directory; normalization can add or remove an /??/ prefix.
+pub fn is_network_path_value(value: &str, base_path: &str) -> bool {
+    tspath::is_network_path(&tspath::get_normalized_absolute_path(value, base_path))
+}
+
+pub fn convert_json_option(
     opt: &'static CommandLineOption,
     value: CompilerOptionsValue,
     base_path: &str,
@@ -649,7 +647,7 @@ pub(crate) fn convert_json_option(
             return (
                 CompilerOptionsValue::Null,
                 vec![new_compiler_diagnostic(
-                    &diagnostics::Option_0_can_only_be_specified_on_command_line,
+                    &diagnostics::OPTION_0_CAN_ONLY_BE_SPECIFIED_ON_COMMAND_LINE,
                     &[&opt.name],
                 )],
             );
@@ -659,7 +657,7 @@ pub(crate) fn convert_json_option(
             vec![create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
                 source_file,
                 node_value,
-                &diagnostics::Option_0_can_only_be_specified_on_command_line,
+                &diagnostics::OPTION_0_CAN_ONLY_BE_SPECIFIED_ON_COMMAND_LINE,
                 &[&opt.name],
             )],
         );
@@ -715,6 +713,19 @@ pub(crate) fn convert_json_option(
             validate_json_option_value(opt, value, value_expression, source_file);
         if !errors.is_empty() || validated_value.is_null() {
             (validated_value, errors)
+        } else if let CompilerOptionsValue::String(path) = &validated_value
+            && opt.is_file_path
+            && is_network_path_value(path, base_path)
+        {
+            (
+                CompilerOptionsValue::Null,
+                vec![create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
+                    source_file,
+                    value_expression,
+                    &diagnostics::NETWORK_PATH_0_IS_NOT_SUPPORTED,
+                    &[path],
+                )],
+            )
         } else {
             (normalize_non_list_option_value(opt, base_path, validated_value), errors)
         }
@@ -724,7 +735,7 @@ pub(crate) fn convert_json_option(
             vec![create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
                 source_file,
                 value_expression,
-                &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
+                &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
                 &[&opt.name, &get_compiler_option_value_type_string(opt)],
             )],
         )
@@ -733,7 +744,7 @@ pub(crate) fn convert_json_option(
 
 fn get_extends_config_path_or_array(
     value: &CompilerOptionsValue,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     base_path: &str,
     config_file_name: &str,
     property_assignment: Option<P<Node>>,
@@ -813,7 +824,7 @@ fn get_extends_config_path_or_array(
 
 fn get_extends_config_path(
     extended_config: &str,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     base_path: &str,
     value_expression: Option<P<Node>>,
     source_file: Option<P<SourceFile>>,
@@ -821,6 +832,15 @@ fn get_extends_config_path(
     let extended_config = tspath::normalize_slashes(extended_config);
     let mut errors: Vec<P<Diagnostic>> = Vec::new();
     let error_file = source_file;
+    if is_network_path_value(&extended_config, base_path) {
+        errors.push(create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
+            error_file,
+            value_expression,
+            &diagnostics::NETWORK_PATH_0_IS_NOT_SUPPORTED,
+            &[&extended_config],
+        ));
+        return (String::new(), errors);
+    }
     if tspath::is_rooted_disk_path(&extended_config)
         || extended_config.starts_with("./")
         || extended_config.starts_with("../")
@@ -835,7 +855,7 @@ fn get_extends_config_path(
                 errors.push(create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
                     error_file,
                     value_expression,
-                    &diagnostics::File_0_not_found,
+                    &diagnostics::FILE_0_NOT_FOUND,
                     &[&extended_config],
                 ));
                 return (String::new(), errors);
@@ -844,11 +864,11 @@ fn get_extends_config_path(
         return (extended_config_path, errors);
     }
     // If the path isn't a rooted or relative path, resolve like a module
-    let resolver_host: &'static ResolverHost = P::new(ResolverHost { host }).get();
+    let resolver_host = ResolverHost { host };
     let resolved = tsrs_module::resolve_config(
         &extended_config,
         &tspath::combine_paths(base_path, &["tsconfig.json"]),
-        resolver_host,
+        &resolver_host,
     );
     if resolved.is_resolved() {
         return (resolved.resolved_file_name.to_string(), errors);
@@ -857,14 +877,14 @@ fn get_extends_config_path(
         errors.push(create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
             error_file,
             value_expression,
-            &diagnostics::Compiler_option_0_cannot_be_given_an_empty_string,
+            &diagnostics::COMPILER_OPTION_0_CANNOT_BE_GIVEN_AN_EMPTY_STRING,
             &[&"extends"],
         ));
     } else {
         errors.push(create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
             error_file,
             value_expression,
-            &diagnostics::File_0_not_found,
+            &diagnostics::FILE_0_NOT_FOUND,
             &[&extended_config],
         ));
     }
@@ -893,7 +913,7 @@ impl CommandLineOptionNameMap {
     }
 }
 
-pub(crate) fn command_line_options_to_map(
+pub fn command_line_options_to_map(
     compiler_options: &[&'static CommandLineOption],
 ) -> CommandLineOptionNameMap {
     let mut result =
@@ -909,7 +929,7 @@ pub(crate) fn command_line_options_to_map(
 pub static COMMAND_LINE_COMPILER_OPTIONS_MAP: LazyLock<CommandLineOptionNameMap> =
     LazyLock::new(|| command_line_options_to_map(&OPTIONS_DECLARATIONS));
 
-pub(crate) fn convert_map_to_options<O: OptionParser>(
+pub fn convert_map_to_options<O: OptionParser>(
     compiler_options: &OrderedMap<String, CompilerOptionsValue>,
     mut result: O,
 ) -> O {
@@ -936,17 +956,17 @@ fn convert_options_from_json<O: OptionParser>(
     let mut errors: Vec<P<Diagnostic>> = Vec::new();
     for (key, value) in json_map {
         let opt = options_name_map.get(key);
-        if let Some(opt) = opt {
-            if opt.name != key {
-                // Case-insensitive match found but exact case doesn't match - provide "did you mean" suggestion
-                errors.push(create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
-                    None,
-                    None,
-                    result.unknown_did_you_mean_diagnostic(),
-                    &[key, &opt.name],
-                ));
-                continue;
-            }
+        if let Some(opt) = opt
+            && opt.name != key
+        {
+            // Case-insensitive match found but exact case doesn't match - provide "did you mean" suggestion
+            errors.push(create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
+                None,
+                None,
+                result.unknown_did_you_mean_diagnostic(),
+                &[key, &opt.name],
+            ));
+            continue;
         }
         let Some(opt) = opt else {
             errors.push(create_unknown_option_error(
@@ -1049,11 +1069,13 @@ pub trait ParseConfigHost: Send + Sync {
     fn get_current_directory(&self) -> &str;
 }
 
-pub(crate) struct ResolverHost {
-    pub(crate) host: &'static dyn ParseConfigHost,
+// Adapts a parse host for the module resolver while one `extends` or content-mapper lookup runs; it lives on that
+// call's stack and the resolver borrows it (issue #646).
+pub struct ResolverHost<'h> {
+    pub(crate) host: &'h dyn ParseConfigHost,
 }
 
-impl tsrs_module::ResolutionHost for ResolverHost {
+impl tsrs_module::ResolutionHost for ResolverHost<'_> {
     fn fs(&self) -> &dyn FS {
         self.host.fs()
     }
@@ -1065,7 +1087,7 @@ impl tsrs_module::ResolutionHost for ResolverHost {
 
 pub fn parse_json_source_file_config_file_content(
     source_file: P<TsConfigSourceFile>,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     base_path: &str,
     existing_options: Option<&CompilerOptions>,
     existing_options_raw: Option<&CompilerOptionsValue>,
@@ -1103,7 +1125,7 @@ fn convert_object_literal_expression_to_json(
             errors.push(new_diagnostic(
                 Some(source_file),
                 element.loc(),
-                &diagnostics::Property_assignment_expected,
+                &diagnostics::PROPERTY_ASSIGNMENT_EXPECTED,
                 &[],
             ));
             continue;
@@ -1113,7 +1135,7 @@ fn convert_object_literal_expression_to_json(
             errors.push(new_diagnostic(
                 Some(source_file),
                 token.loc(),
-                &diagnostics::The_0_modifier_can_only_be_used_in_TypeScript_files,
+                &diagnostics::THE_0_MODIFIER_CAN_ONLY_BE_USED_IN_TYPE_SCRIPT_FILES,
                 &[&"?"],
             ));
         }
@@ -1124,14 +1146,13 @@ fn convert_object_literal_expression_to_json(
         }
         let key_text = text_of_key;
         let mut option: Option<&'static CommandLineOption> = None;
-        if !key_text.is_empty() {
-            if let Some(object_option) = object_option {
-                if let Some(element_options) = &object_option.element_options {
-                    option = element_options.get(&key_text);
-                    if option.is_some_and(|o| o.name != key_text) {
-                        option = None;
-                    }
-                }
+        if !key_text.is_empty()
+            && let Some(object_option) = object_option
+            && let Some(element_options) = &object_option.element_options
+        {
+            option = element_options.get(&key_text);
+            if option.is_some_and(|o| o.name != key_text) {
+                option = None;
             }
         }
         let (value, err) = convert_property_value_to_json(
@@ -1146,7 +1167,7 @@ fn convert_object_literal_expression_to_json(
             let notified_value =
                 if json_conversion_notifier.is_some() { Some(value.clone()) } else { None };
             if let Some(result) = &mut result {
-                result.set(key_text.clone(), value);
+                result.insert(key_text.clone(), value);
             }
             // Notify key value set, if user asked for it
             if let Some(notifier) = json_conversion_notifier.as_deref_mut() {
@@ -1170,7 +1191,7 @@ fn convert_object_literal_expression_to_json(
 // convertToJson converts the json syntax tree into the json value and report errors
 // This returns the json value (apart from checking errors) only if returnValue provided is true.
 // Otherwise it just checks the errors and returns undefined
-pub(crate) fn convert_to_json(
+pub fn convert_to_json(
     source_file: P<SourceFile>,
     root_expression: Option<P<Node>>,
     return_value: bool,
@@ -1215,7 +1236,7 @@ fn convert_property_value_to_json(
                     vec![new_diagnostic(
                         Some(source_file),
                         value_expression.loc(),
-                        &diagnostics::String_literal_with_double_quotes_expected,
+                        &diagnostics::STRING_LITERAL_WITH_DOUBLE_QUOTES_EXPECTED,
                         &[],
                     )],
                 );
@@ -1270,14 +1291,14 @@ fn convert_property_value_to_json(
         vec![new_diagnostic(
             Some(source_file),
             value_expression.loc(),
-            &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
+            &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
             &[&option.name, &get_compiler_option_value_type_string(option)],
         )]
     } else {
         vec![new_diagnostic(
             Some(source_file),
             value_expression.loc(),
-            &diagnostics::Property_value_can_only_be_string_literal_numeric_literal_true_false_null_object_literal_or_array_literal,
+            &diagnostics::PROPERTY_VALUE_CAN_ONLY_BE_STRING_LITERAL_NUMERIC_LITERAL_TRUE_FALSE_NULL_OBJECT_LITERAL_OR_ARRAY_LITERAL,
             &[],
         )]
     };
@@ -1290,7 +1311,7 @@ fn convert_property_value_to_json(
 // basePath: A root directory to resolve relative path entries in the config file to. e.g. outDir
 pub fn parse_json_config_file_content(
     json: CompilerOptionsValue,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     base_path: &str,
     existing_options: Option<&CompilerOptions>,
     config_file_name: &str,
@@ -1339,7 +1360,7 @@ fn normalize_json_value(value: CompilerOptionsValue) -> CompilerOptionsValue {
 // convertToObject converts the json syntax tree into the json value
 fn convert_to_object(source_file: P<SourceFile>) -> (CompilerOptionsValue, Vec<P<Diagnostic>>) {
     let statements = source_file.as_node().statements();
-    let root_expression = if !statements.is_empty() { statements[0].expression() } else { None };
+    let root_expression = if statements.is_empty() { None } else { statements[0].expression() };
     convert_to_json(
         source_file,
         root_expression,
@@ -1411,14 +1432,14 @@ fn convert_type_acquisition_from_json_worker(
 
 fn parse_own_config_of_json(
     mut json: OrderedMap<String, CompilerOptionsValue>,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     base_path: &str,
     config_file_name: &str,
 ) -> (ParsedTsconfig, Vec<P<Diagnostic>>) {
     let mut errors: Vec<P<Diagnostic>> = Vec::new();
-    if json.has(&"excludes".to_string()) {
+    if json.contains_key(&"excludes".to_string()) {
         errors.push(new_compiler_diagnostic(
-            &diagnostics::Unknown_option_excludes_Did_you_mean_exclude,
+            &diagnostics::UNKNOWN_OPTION_EXCLUDES_DID_YOU_MEAN_EXCLUDE,
             &[],
         ));
     }
@@ -1445,24 +1466,25 @@ fn parse_own_config_of_json(
             None,
         );
         errors.extend(compile_on_save_errors);
-        json.set("compileOnSave".to_string(), converted);
+        json.insert("compileOnSave".to_string(), converted);
     }
     // Go stores a (possibly nil) []string in an `any` field, which is never a nil interface.
     let mut extended_config_path: Vec<String> = Vec::new();
-    if let Some(extends) = json.get("extends") {
-        if !extends.is_null() && *extends != CompilerOptionsValue::String(String::new()) {
-            let (path, err) = get_extends_config_path_or_array(
-                extends,
-                host,
-                base_path,
-                config_file_name,
-                None,
-                None,
-                None,
-            );
-            extended_config_path = path;
-            errors.extend(err);
-        }
+    if let Some(extends) = json.get("extends")
+        && !extends.is_null()
+        && *extends != CompilerOptionsValue::String(String::new())
+    {
+        let (path, err) = get_extends_config_path_or_array(
+            extends,
+            host,
+            base_path,
+            config_file_name,
+            None,
+            None,
+            None,
+        );
+        extended_config_path = path;
+        errors.extend(err);
     }
     let parsed_config = ParsedTsconfig {
         raw: CompilerOptionsValue::Object(json),
@@ -1479,20 +1501,7 @@ fn read_json_config_file(
     read_file: impl FnOnce(&str) -> Option<String>,
 ) -> (P<TsConfigSourceFile>, Vec<P<Diagnostic>>) {
     let (text, diagnostic) = try_read_file(file_name, read_file, Vec::new());
-    if !text.is_empty() {
-        (
-            TsConfigSourceFile::new(tsrs_parser::parse_source_file(
-                SourceFileParseOptions {
-                    file_name: file_name.to_string(),
-                    path,
-                    ..Default::default()
-                },
-                &text,
-                ScriptKind::JSON,
-            )),
-            diagnostic,
-        )
-    } else {
+    if text.is_empty() {
         let factory = NodeFactory::default();
         let statements = factory.new_node_list(Vec::new());
         let end_of_file = factory.new_token(Kind::EndOfFile);
@@ -1512,13 +1521,26 @@ fn read_json_config_file(
         );
         file.source_file.set_diagnostics(&diagnostic);
         (file, diagnostic)
+    } else {
+        (
+            TsConfigSourceFile::new(tsrs_parser::parse_source_file(
+                SourceFileParseOptions {
+                    file_name: file_name.to_string(),
+                    path,
+                    ..Default::default()
+                },
+                &text,
+                ScriptKind::JSON,
+            )),
+            diagnostic,
+        )
     }
 }
 
 fn get_extended_config(
     source_file: Option<P<TsConfigSourceFile>>,
     extended_config_file_name: &str,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     resolution_stack: &[Path],
     extended_config_cache: Option<&dyn ExtendedConfigCache>,
     result: &mut ExtendsResult,
@@ -1555,15 +1577,13 @@ fn get_extended_config(
         errors.extend(cache_entry.errors.iter().copied());
     }
 
-    if let Some(extended_result) = cache_entry.extended_result {
-        if source_file.is_some() {
-            result
-                .extended_source_files
-                .insert(extended_result.source_file.file_name().to_string());
-            result.extended_source_files.extend(
-                extended_result.extended_source_files.borrow().iter().map(std::clone::Clone::clone),
-            );
-        }
+    if let Some(extended_result) = cache_entry.extended_result
+        && source_file.is_some()
+    {
+        result.extended_source_files.insert(extended_result.source_file.file_name().to_string());
+        result.extended_source_files.extend(
+            extended_result.extended_source_files.borrow().iter().map(std::clone::Clone::clone),
+        );
     }
     (cache_entry.get().extended_config.as_ref(), errors)
 }
@@ -1572,7 +1592,7 @@ pub fn parse_extended_config(
     file_name: &str,
     path: Path,
     resolution_stack: &[Path],
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     extended_config_cache: Option<&dyn ExtendedConfigCache>,
 ) -> P<ExtendedConfigCacheEntry> {
     let (extended_result, read_errors) =
@@ -1613,7 +1633,7 @@ pub fn parse_extended_config(
 fn parse_config(
     json: Option<OrderedMap<String, CompilerOptionsValue>>,
     source_file: Option<P<TsConfigSourceFile>>,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     base_path: &str,
     config_file_name: &str,
     resolution_stack: &[Path],
@@ -1625,10 +1645,10 @@ fn parse_config(
     let mut errors: Vec<P<Diagnostic>> = Vec::new();
     if resolution_stack.contains(&resolved_path) {
         errors.push(new_compiler_diagnostic(
-            &diagnostics::Circularity_detected_while_resolving_configuration_Colon_0,
+            &diagnostics::CIRCULARITY_DETECTED_WHILE_RESOLVING_CONFIGURATION_COLON_0,
             &[],
         ));
-        let result = if json.as_ref().map_or(0, tsrs_core::collections::OrderedMapExt::size) == 0 {
+        let result = if json.as_ref().map_or(0, OrderedMap::len) == 0 {
             ParsedTsconfig {
                 raw: match json {
                     Some(json) => CompilerOptionsValue::Object(json),
@@ -1661,20 +1681,20 @@ fn parse_config(
         ),
     };
     errors.extend(err);
-    if let Some(options) = &mut own_config.options {
-        if options.paths.is_some() {
-            // If we end up needing to resolve relative paths from 'paths' relative to
-            // the config file location, we'll need to know where that config file was.
-            // Since 'paths' can be inherited from an extended config in another directory,
-            // we wouldn't know which directory to use unless we store it here.
-            options.paths_base_path.clone_from(&base_path);
-        }
+    if let Some(options) = &mut own_config.options
+        && options.paths.is_some()
+    {
+        // If we end up needing to resolve relative paths from 'paths' relative to
+        // the config file location, we'll need to know where that config file was.
+        // Since 'paths' can be inherited from an extended config in another directory,
+        // we wouldn't know which directory to use unless we store it here.
+        options.paths_base_path.clone_from(&base_path);
     }
 
     if let Some(extended_config_paths) = own_config.extended_config_path.clone() {
         // copy the resolution stack so it is never reused between branches in potential diamond-problem scenarios.
         let mut resolution_stack = resolution_stack.to_vec();
-        resolution_stack.push(resolved_path);
+        resolution_stack.push(resolved_path.clone());
         let mut result = ExtendsResult {
             options: tsrs_core::CompilerOptions::default(),
             include: None,
@@ -1699,21 +1719,21 @@ fn parse_config(
         }
         let raw = own_config.raw.as_object_mut().unwrap();
         if let Some(include) = result.include {
-            raw.set("include".to_string(), CompilerOptionsValue::Array(include));
+            raw.insert("include".to_string(), CompilerOptionsValue::Array(include));
         }
         if let Some(exclude) = result.exclude {
-            raw.set("exclude".to_string(), CompilerOptionsValue::Array(exclude));
+            raw.insert("exclude".to_string(), CompilerOptionsValue::Array(exclude));
         }
         if let Some(files) = result.files {
-            raw.set("files".to_string(), CompilerOptionsValue::Array(files));
+            raw.insert("files".to_string(), CompilerOptionsValue::Array(files));
         }
-        if let Some(content_mappers) = result.content_mappers {
-            if !raw.has(&"contentMappers".to_string()) {
-                raw.set("contentMappers".to_string(), CompilerOptionsValue::Array(content_mappers));
-            }
+        if let Some(content_mappers) = result.content_mappers
+            && !raw.contains_key(&"contentMappers".to_string())
+        {
+            raw.insert("contentMappers".to_string(), CompilerOptionsValue::Array(content_mappers));
         }
-        if result.compile_on_save && !raw.has(&"compileOnSave".to_string()) {
-            raw.set(
+        if result.compile_on_save && !raw.contains_key(&"compileOnSave".to_string()) {
+            raw.insert(
                 "compileOnSave".to_string(),
                 CompilerOptionsValue::Bool(result.compile_on_save),
             );
@@ -1725,6 +1745,14 @@ fn parse_config(
                 reason = "each file is inserted at its sorted position"
             )]
             for extended_source_file in result.extended_source_files {
+                if tspath::to_path(
+                    &extended_source_file,
+                    &base_path,
+                    host.fs().use_case_sensitive_file_names(),
+                ) == resolved_path
+                {
+                    continue;
+                }
                 let i = extended_source_files
                     .binary_search(&extended_source_file)
                     .unwrap_or_else(|i| i);
@@ -1746,7 +1774,7 @@ fn apply_extended_config(
     extended_config_path: &str,
     own_config: &ParsedTsconfig,
     source_file: Option<P<TsConfigSourceFile>>,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     base_path: &str,
     resolution_stack: &[Path],
     extended_config_cache: Option<&dyn ExtendedConfigCache>,
@@ -1770,52 +1798,51 @@ fn apply_extended_config(
     let extends_raw = &extended_config.raw;
     let mut relative_difference = String::new();
     let mut set_property_value = |property_name: &str, result: &mut ExtendsResult| {
-        if let CompilerOptionsValue::Object(raw_map) = &own_config.raw {
-            if raw_map.contains_key(property_name) {
-                return;
-            }
+        if let CompilerOptionsValue::Object(raw_map) = &own_config.raw
+            && raw_map.contains_key(property_name)
+        {
+            return;
         }
-        if property_name == "include" || property_name == "exclude" || property_name == "files" {
-            if let CompilerOptionsValue::Object(raw_map) = extends_raw {
-                if let Some(CompilerOptionsValue::Array(slice)) = raw_map.get(property_name) {
-                    let value: Vec<CompilerOptionsValue> = slice
-                        .iter()
-                        .map(|path| {
-                            let CompilerOptionsValue::String(path_str) = path else {
-                                return path.clone();
+        if (property_name == "include" || property_name == "exclude" || property_name == "files")
+            && let CompilerOptionsValue::Object(raw_map) = extends_raw
+            && let Some(CompilerOptionsValue::Array(slice)) = raw_map.get(property_name)
+        {
+            let value: Vec<CompilerOptionsValue> = slice
+                .iter()
+                .map(|path| {
+                    let CompilerOptionsValue::String(path_str) = path else {
+                        return path.clone();
+                    };
+                    if starts_with_config_dir_template(path_str)
+                        || tspath::is_rooted_disk_path(path_str)
+                    {
+                        CompilerOptionsValue::String(path_str.clone())
+                    } else {
+                        if relative_difference.is_empty() {
+                            let t = ComparePathsOptions {
+                                use_case_sensitive_file_names: host
+                                    .fs()
+                                    .use_case_sensitive_file_names(),
+                                current_directory: base_path.to_string(),
                             };
-                            if starts_with_config_dir_template(path_str)
-                                || tspath::is_rooted_disk_path(path_str)
-                            {
-                                CompilerOptionsValue::String(path_str.clone())
-                            } else {
-                                if relative_difference.is_empty() {
-                                    let t = ComparePathsOptions {
-                                        use_case_sensitive_file_names: host
-                                            .fs()
-                                            .use_case_sensitive_file_names(),
-                                        current_directory: base_path.to_string(),
-                                    };
-                                    relative_difference = tspath::convert_to_relative_path(
-                                        &tspath::get_directory_path(extended_config_path),
-                                        &t,
-                                    );
-                                }
-                                CompilerOptionsValue::String(tspath::combine_paths(
-                                    &relative_difference,
-                                    &[path_str],
-                                ))
-                            }
-                        })
-                        .collect();
-                    if property_name == "include" {
-                        result.include = Some(value);
-                    } else if property_name == "exclude" {
-                        result.exclude = Some(value);
-                    } else if property_name == "files" {
-                        result.files = Some(value);
+                            relative_difference = tspath::convert_to_relative_path(
+                                &tspath::get_directory_path(extended_config_path),
+                                &t,
+                            );
+                        }
+                        CompilerOptionsValue::String(tspath::combine_paths(
+                            &relative_difference,
+                            &[path_str],
+                        ))
                     }
-                }
+                })
+                .collect();
+            if property_name == "include" {
+                result.include = Some(value);
+            } else if property_name == "exclude" {
+                result.exclude = Some(value);
+            } else if property_name == "files" {
+                result.files = Some(value);
             }
         }
     };
@@ -1823,23 +1850,20 @@ fn apply_extended_config(
     set_property_value("include", result);
     set_property_value("exclude", result);
     set_property_value("files", result);
-    if let CompilerOptionsValue::Object(extended_raw_map) = extends_raw {
-        if extended_raw_map.contains_key("contentMappers") {
-            result.content_mappers = match extended_raw_map.get("contentMappers") {
-                Some(CompilerOptionsValue::Array(a)) => Some(a.clone()),
-                Some(CompilerOptionsValue::NilArray) => None,
-                _ => None,
-            };
-        }
+    if let CompilerOptionsValue::Object(extended_raw_map) = extends_raw
+        && extended_raw_map.contains_key("contentMappers")
+    {
+        result.content_mappers = match extended_raw_map.get("contentMappers") {
+            Some(CompilerOptionsValue::Array(a)) => Some(a.clone()),
+            _ => None,
+        };
     }
-    if let CompilerOptionsValue::Object(extended_raw_map) = extends_raw {
-        if extended_raw_map.contains_key("compileOnSave") {
-            if let Some(CompilerOptionsValue::Bool(compile_on_save)) =
-                extended_raw_map.get("compileOnSave")
-            {
-                result.compile_on_save = *compile_on_save;
-            }
-        }
+    if let CompilerOptionsValue::Object(extended_raw_map) = extends_raw
+        && extended_raw_map.contains_key("compileOnSave")
+        && let Some(CompilerOptionsValue::Bool(compile_on_save)) =
+            extended_raw_map.get("compileOnSave")
+    {
+        result.compile_on_save = *compile_on_save;
     }
     merge_compiler_options(
         &mut result.options,
@@ -1868,7 +1892,7 @@ fn is_string_value(value: &CompilerOptionsValue) -> bool {
 fn parse_json_config_file_content_worker(
     json: Option<OrderedMap<String, CompilerOptionsValue>>,
     source_file: Option<P<TsConfigSourceFile>>,
-    host: &'static dyn ParseConfigHost,
+    host: &dyn ParseConfigHost,
     base_path: &str,
     existing_options: Option<&CompilerOptions>,
     existing_options_raw: Option<&CompilerOptionsValue>,
@@ -1878,10 +1902,10 @@ fn parse_json_config_file_content_worker(
 ) -> ParsedCommandLine {
     assert!((json.is_none() && source_file.is_some()) || (json.is_some() && source_file.is_none()));
 
-    let base_path_for_file_names = if !config_file_name.is_empty() {
-        tspath::normalize_path(&directory_of_combined_path(config_file_name, base_path))
-    } else {
+    let base_path_for_file_names = if config_file_name.is_empty() {
         tspath::normalize_path(base_path)
+    } else {
+        tspath::normalize_path(&directory_of_combined_path(config_file_name, base_path))
     };
 
     let (mut parsed_config, mut errors) = parse_config(
@@ -1901,42 +1925,43 @@ fn parse_json_config_file_content_worker(
         &base_path_for_file_names,
     );
     let raw_config = parse_json_to_string_key(&parsed_config.raw);
-    if !config_file_name.is_empty() {
-        if let Some(options) = &mut parsed_config.options {
-            options.config_file_path = tspath::normalize_slashes(config_file_name);
-        }
+    if !config_file_name.is_empty()
+        && let Some(options) = &mut parsed_config.options
+    {
+        options.config_file_path = tspath::normalize_slashes(config_file_name);
     }
     let get_prop_from_raw = |prop: &str,
                              validate_element: &dyn Fn(&CompilerOptionsValue) -> bool,
                              element_type_name: &str,
                              errors: &mut Vec<P<Diagnostic>>|
      -> PropOfRaw {
-        if let Some(value) = raw_config.get(prop) {
-            if !value.is_null() {
-                if value.is_slice() {
-                    let result = match value {
-                        CompilerOptionsValue::Array(a) => Some(a.clone()),
-                        CompilerOptionsValue::StringArray(a) => Some(
-                            a.iter().map(|s| CompilerOptionsValue::String(s.clone())).collect(),
-                        ),
-                        _ => None,
-                    };
-                    if let CompilerOptionsValue::Array(a) = value {
-                        if source_file.is_none() && !a.iter().all(validate_element) {
-                            errors.push(new_compiler_diagnostic(
-                                &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
-                                &[&prop, &element_type_name],
-                            ));
-                        }
+        if let Some(value) = raw_config.get(prop)
+            && !value.is_null()
+        {
+            if value.is_slice() {
+                let result = match value {
+                    CompilerOptionsValue::Array(a) => Some(a.clone()),
+                    CompilerOptionsValue::StringArray(a) => {
+                        Some(a.iter().map(|s| CompilerOptionsValue::String(s.clone())).collect())
                     }
-                    return PropOfRaw { slice_value: result, wrong_value: "" };
-                } else if source_file.is_none() {
+                    _ => None,
+                };
+                if let CompilerOptionsValue::Array(a) = value
+                    && source_file.is_none()
+                    && !a.iter().all(validate_element)
+                {
                     errors.push(new_compiler_diagnostic(
-                        &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
-                        &[&prop, &"Array"],
+                        &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
+                        &[&prop, &element_type_name],
                     ));
-                    return PropOfRaw { slice_value: None, wrong_value: "not-array" };
                 }
+                return PropOfRaw { slice_value: result, wrong_value: "" };
+            } else if source_file.is_none() {
+                errors.push(new_compiler_diagnostic(
+                    &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
+                    &[&prop, &"Array"],
+                ));
+                return PropOfRaw { slice_value: None, wrong_value: "not-array" };
             }
         }
         PropOfRaw { slice_value: None, wrong_value: "no-prop" }
@@ -1960,8 +1985,8 @@ fn parse_json_config_file_content_worker(
         {
             if let Some(source_file) = source_file {
                 let file_name =
-                    if !config_file_name.is_empty() { config_file_name } else { "tsconfig.json" };
-                let diagnostic_message = &diagnostics::The_files_list_in_config_file_0_is_empty;
+                    if config_file_name.is_empty() { "tsconfig.json" } else { config_file_name };
+                let diagnostic_message = &diagnostics::THE_FILES_LIST_IN_CONFIG_FILE_0_IS_EMPTY;
                 let node_value = for_each_ts_config_prop_array(
                     Some(source_file.source_file),
                     "files",
@@ -1975,7 +2000,7 @@ fn parse_json_config_file_content_worker(
                 ));
             } else {
                 errors.push(new_compiler_diagnostic(
-                    &diagnostics::The_files_list_in_config_file_0_is_empty,
+                    &diagnostics::THE_FILES_LIST_IN_CONFIG_FILE_0_IS_EMPTY,
                     &[&config_file_name],
                 ));
             }
@@ -1984,20 +2009,20 @@ fn parse_json_config_file_content_worker(
     let mut include_specs = get_prop_from_raw("include", &is_string_value, "string", &mut errors);
     let mut exclude_specs = get_prop_from_raw("exclude", &is_string_value, "string", &mut errors);
     let mut is_default_include_spec = false;
-    if exclude_specs.wrong_value == "no-prop" {
-        if let Some(options) = &parsed_config.options {
-            let out_dir = &options.out_dir;
-            let declaration_dir = &options.declaration_dir;
-            if !out_dir.is_empty() || !declaration_dir.is_empty() {
-                let mut values: Vec<CompilerOptionsValue> = Vec::new();
-                if !out_dir.is_empty() {
-                    values.push(CompilerOptionsValue::String(out_dir.clone()));
-                }
-                if !declaration_dir.is_empty() {
-                    values.push(CompilerOptionsValue::String(declaration_dir.clone()));
-                }
-                exclude_specs = PropOfRaw { slice_value: Some(values), wrong_value: "" };
+    if exclude_specs.wrong_value == "no-prop"
+        && let Some(options) = &parsed_config.options
+    {
+        let out_dir = &options.out_dir;
+        let declaration_dir = &options.declaration_dir;
+        if !out_dir.is_empty() || !declaration_dir.is_empty() {
+            let mut values: Vec<CompilerOptionsValue> = Vec::new();
+            if !out_dir.is_empty() {
+                values.push(CompilerOptionsValue::String(out_dir.clone()));
             }
+            if !declaration_dir.is_empty() {
+                values.push(CompilerOptionsValue::String(declaration_dir.clone()));
+            }
+            exclude_specs = PropOfRaw { slice_value: Some(values), wrong_value: "" };
         }
     }
     if file_specs.slice_value.is_none() && include_specs.slice_value.is_none() {
@@ -2020,6 +2045,7 @@ fn parse_json_config_file_content_worker(
         (validated_include_specs_before_substitution, err) = validate_specs(
             include_specs,
             true, /*disallowTrailingRecursion*/
+            &base_path_for_file_names,
             tsconfig_to_source_file(source_file),
             "include",
         );
@@ -2037,6 +2063,7 @@ fn parse_json_config_file_content_worker(
         (validated_exclude_specs, err) = validate_specs(
             exclude_specs,
             false, /*disallowTrailingRecursion*/
+            &base_path_for_file_names,
             tsconfig_to_source_file(source_file),
             "exclude",
         );
@@ -2051,15 +2078,21 @@ fn parse_json_config_file_content_worker(
         }
     }
     if let Some(file_specs) = &file_specs.slice_value {
-        validated_files_spec_before_substitution.extend(
-            file_specs.iter().filter(|v| is_string_value(v)).filter_map(|spec| {
-                if let CompilerOptionsValue::String(spec) = spec {
-                    Some(spec.clone())
-                } else {
-                    None
-                }
-            }),
-        );
+        for value in file_specs {
+            let CompilerOptionsValue::String(spec) = value else {
+                continue;
+            };
+            if is_network_path_value(spec, &base_path_for_file_names) {
+                errors.push(create_diagnostic_for_spec(
+                    tsconfig_to_source_file(source_file),
+                    "files",
+                    &diagnostics::NETWORK_PATH_0_IS_NOT_SUPPORTED,
+                    spec,
+                ));
+                continue;
+            }
+            validated_files_spec_before_substitution.push(spec.clone());
+        }
         validated_files_spec = match get_substituted_string_array_with_config_dir_template(
             &validated_files_spec_before_substitution,
             &base_path_for_file_names,
@@ -2110,8 +2143,6 @@ fn parse_json_config_file_content_worker(
     );
     let mut content_mapper_extensions: Vec<String> =
         Vec::with_capacity(total_content_mapper_extensions);
-    let native_extensions: Vec<&str> =
-        tspath::ALL_SUPPORTED_EXTENSIONS_WITH_JSON.iter().flat_map(|g| g.iter().copied()).collect();
     let canonical_extension = |extension: &str| {
         tspath::get_canonical_file_name(extension, host.fs().use_case_sensitive_file_names())
     };
@@ -2128,19 +2159,25 @@ fn parse_json_config_file_content_worker(
             if !ext.starts_with('.') {
                 errors.push(set_content_mapper_diagnostic_location(
                     new_compiler_diagnostic(
-                        &diagnostics::Content_mapper_file_extension_0_must_begin_with_a,
+                        &diagnostics::CONTENT_MAPPER_FILE_EXTENSION_0_MUST_BEGIN_WITH_A,
                         &[ext],
                     ),
                     content_mapper_source_file,
                     ext_node,
                 ));
-            } else if native_extensions
-                .iter()
-                .any(|native_extension| tsrs_core::stringutil::equal_fold(native_extension, ext))
-            {
+            } else if ext.contains('/') || ext.contains('\\') {
                 errors.push(set_content_mapper_diagnostic_location(
                     new_compiler_diagnostic(
-                        &diagnostics::Content_mapper_file_extension_0_is_a_built_in_extension_and_cannot_be_registered_by_a_content_mapper,
+                        &diagnostics::CONTENT_MAPPER_EXTENSION_0_MUST_NOT_CONTAIN_PATH_SEPARATORS,
+                        &[ext],
+                    ),
+                    content_mapper_source_file,
+                    ext_node,
+                ));
+            } else if has_reserved_source_extension(ext) {
+                errors.push(set_content_mapper_diagnostic_location(
+                    new_compiler_diagnostic(
+                        &diagnostics::CONTENT_MAPPER_FILE_EXTENSION_0_IS_A_BUILT_IN_EXTENSION_AND_CANNOT_BE_REGISTERED_BY_A_CONTENT_MAPPER,
                         &[ext],
                     ),
                     content_mapper_source_file,
@@ -2149,7 +2186,7 @@ fn parse_json_config_file_content_worker(
             } else if !seen_content_mapper_extensions.insert(canonical_ext) {
                 errors.push(set_content_mapper_diagnostic_location(
                     new_compiler_diagnostic(
-                        &diagnostics::Content_mapper_file_extension_0_is_registered_by_more_than_one_content_mapper,
+                        &diagnostics::CONTENT_MAPPER_FILE_EXTENSION_0_IS_REGISTERED_BY_MORE_THAN_ONE_CONTENT_MAPPER,
                         &[ext],
                     ),
                     content_mapper_source_file,
@@ -2161,12 +2198,55 @@ fn parse_json_config_file_content_worker(
             }
         }
         mapper.definition.extensions = valid_extensions;
+        let mut output_extensions: Vec<_> = mapper.definition.output_extensions.iter().collect();
+        output_extensions.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        for (source_extension, output_extension) in output_extensions {
+            let output_extensions_node = get_content_mapper_syntax(
+                content_mapper_source_file,
+                Some(content_mapper_indices[j]),
+                "outputExtensions",
+            );
+            for extension in [source_extension, output_extension] {
+                let diagnostic = if extension.contains('/') || extension.contains('\\') {
+                    Some(new_compiler_diagnostic(
+                        &diagnostics::CONTENT_MAPPER_EXTENSION_0_MUST_NOT_CONTAIN_PATH_SEPARATORS,
+                        &[extension],
+                    ))
+                } else if !is_valid_extension(extension) {
+                    Some(new_compiler_diagnostic(
+                        &diagnostics::CONTENT_MAPPER_OUTPUT_EXTENSION_0_MUST_BE_NON_EMPTY_AND_BEGIN_WITH_A,
+                        &[extension],
+                    ))
+                } else {
+                    None
+                };
+                if let Some(diagnostic) = diagnostic {
+                    errors.push(set_content_mapper_diagnostic_location(
+                        diagnostic,
+                        content_mapper_source_file,
+                        output_extensions_node,
+                    ));
+                }
+            }
+            if !mapper.definition.extensions.iter().any(|extension| {
+                canonical_extension(extension) == canonical_extension(source_extension)
+            }) {
+                errors.push(set_content_mapper_diagnostic_location(
+                    new_compiler_diagnostic(
+                        &diagnostics::CONTENT_MAPPER_OUTPUT_EXTENSION_MAPPING_SOURCE_0_IS_NOT_REGISTERED_BY_THIS_CONTENT_MAPPER,
+                        &[source_extension],
+                    ),
+                    content_mapper_source_file,
+                    output_extensions_node,
+                ));
+            }
+        }
     }
     if !content_mappers.is_empty()
         && !parsed_config.options.as_ref().is_some_and(|o| o.run_external_code.is_true())
     {
         errors.push(set_content_mapper_diagnostic_location(
-            new_compiler_diagnostic(&diagnostics::Content_mappers_require_the_runExternalCode_command_line_flag_to_be_enabled, &[]),
+            new_compiler_diagnostic(&diagnostics::CONTENT_MAPPERS_REQUIRE_THE_RUN_EXTERNAL_CODE_COMMAND_LINE_FLAG_TO_BE_ENABLED, &[]),
             content_mapper_source_file,
             get_content_mappers_key_syntax(content_mapper_source_file),
         ));
@@ -2200,6 +2280,51 @@ fn parse_json_config_file_content_worker(
                 continue;
             }
             mapper.manifest = manifest;
+            let has_explicit_output_extensions = content_mappers_of_raw
+                .slice_value
+                .as_ref()
+                .and_then(|values| values.get(content_mapper_indices[j]))
+                .and_then(CompilerOptionsValue::as_object)
+                .is_some_and(|raw_mapper| raw_mapper.contains_key("outputExtensions"));
+            if !has_explicit_output_extensions {
+                mapper
+                    .definition
+                    .output_extensions
+                    .clone_from(&mapper.manifest.default_output_extensions);
+                mapper.definition.output_extensions_present =
+                    mapper.manifest.default_output_extensions_present;
+            }
+            for source_extension in &mapper.definition.extensions {
+                let Some(output_extension) = get_content_mapper_output_extension(
+                    &mapper.definition.output_extensions,
+                    source_extension,
+                    !host.fs().use_case_sensitive_file_names(),
+                ) else {
+                    continue;
+                };
+                let identity = source_extension == output_extension
+                    || !host.fs().use_case_sensitive_file_names()
+                        && tsrs_core::stringutil::equal_fold(source_extension, output_extension);
+                if !identity
+                    && !parsed_config
+                        .options
+                        .as_ref()
+                        .is_some_and(|options| options.rewrite_relative_import_extensions.is_true())
+                {
+                    errors.push(set_content_mapper_diagnostic_location(
+                        new_compiler_diagnostic(
+                            &diagnostics::CONTENT_MAPPER_OUTPUT_EXTENSION_MAPPING_FROM_0_TO_1_REQUIRES_REWRITE_RELATIVE_IMPORT_EXTENSIONS_TO_BE_ENABLED,
+                            &[source_extension, output_extension],
+                        ),
+                        content_mapper_source_file,
+                        get_content_mapper_syntax(
+                            content_mapper_source_file,
+                            Some(content_mapper_indices[j]),
+                            "",
+                        ),
+                    ));
+                }
+            }
             resolved_content_mappers.push(mapper);
         }
         content_mappers = resolved_content_mappers;
@@ -2230,7 +2355,7 @@ fn parse_json_config_file_content_worker(
                 config_file_specs.exclude_specs.clone().unwrap_or_default(),
             );
             errors.push(new_compiler_diagnostic(
-                &diagnostics::No_inputs_were_found_in_config_file_0_Specified_include_paths_were_1_and_exclude_paths_were_2,
+                &diagnostics::NO_INPUTS_WERE_FOUND_IN_CONFIG_FILE_0_SPECIFIED_INCLUDE_PATHS_WERE_1_AND_EXCLUDE_PATHS_WERE_2,
                 &[&config_file_name, &stringify_json(&include_specs), &stringify_json(&exclude_specs)],
             ));
         }
@@ -2253,7 +2378,7 @@ fn parse_json_config_file_content_worker(
                         source_file,
                         index,
                         "path",
-                        &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
+                        &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
                         &[&"reference.path", &"string"],
                     ));
                     continue;
@@ -2263,8 +2388,18 @@ fn parse_json_config_file_content_worker(
                         source_file,
                         index,
                         "path",
-                        &diagnostics::Compiler_option_0_cannot_be_given_an_empty_string,
+                        &diagnostics::COMPILER_OPTION_0_CANNOT_BE_GIVEN_AN_EMPTY_STRING,
                         &[&"reference.path"],
+                    ));
+                    continue;
+                }
+                if is_network_path_value(&ref_.reference.path, base_path) {
+                    errors.push(create_diagnostic_at_project_reference_property(
+                        source_file,
+                        index,
+                        "path",
+                        &diagnostics::NETWORK_PATH_0_IS_NOT_SUPPORTED,
+                        &[&ref_.reference.path],
                     ));
                     continue;
                 }
@@ -2273,7 +2408,7 @@ fn parse_json_config_file_content_worker(
                         source_file,
                         index,
                         "circular",
-                        &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
+                        &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
                         &[&"reference.circular", &"boolean"],
                     ));
                 }
@@ -2290,10 +2425,10 @@ fn parse_json_config_file_content_worker(
     let (file_names, literal_file_names_len) =
         get_file_names(&base_path_for_file_names, &mut errors);
     let mut compile_on_save = false;
-    if let CompilerOptionsValue::Object(raw) = &parsed_config.raw {
-        if let Some(CompilerOptionsValue::Bool(value)) = raw.get("compileOnSave") {
-            compile_on_save = *value;
-        }
+    if let CompilerOptionsValue::Object(raw) = &parsed_config.raw
+        && let Some(CompilerOptionsValue::Bool(value)) = raw.get("compileOnSave")
+    {
+        compile_on_save = *value;
     }
     let project_references = get_project_references(&base_path_for_file_names, &mut errors);
     ParsedCommandLine {
@@ -2304,7 +2439,6 @@ fn parse_json_config_file_content_worker(
             project_references_is_nil: project_references.is_none(),
             project_references: project_references.unwrap_or_default(),
             content_mappers: content_mappers.into(),
-            watch_options: None,
         },
         config_file: source_file,
         raw: parsed_config.raw,
@@ -2337,27 +2471,19 @@ fn should_report_no_input_files(
 fn validate_specs(
     specs: &[CompilerOptionsValue],
     disallow_trailing_recursion: bool,
+    base_path: &str,
     json_source_file: Option<P<SourceFile>>,
     spec_key: &str,
 ) -> (Vec<String>, Vec<P<Diagnostic>>) {
-    let create_diagnostic = |message: &'static Message, spec: &str| -> P<Diagnostic> {
-        let element = get_ts_config_prop_array_element_value(json_source_file, spec_key, spec);
-        create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
-            json_source_file,
-            element,
-            message,
-            &[&spec],
-        )
-    };
     let mut errors: Vec<P<Diagnostic>> = Vec::new();
     let mut final_specs: Vec<String> = Vec::new();
     for value in specs {
         let CompilerOptionsValue::String(spec) = value else {
             continue;
         };
-        let diag = spec_to_diagnostic(spec, disallow_trailing_recursion);
+        let diag = spec_to_diagnostic(spec, disallow_trailing_recursion, base_path);
         if let Some(diag) = diag {
-            errors.push(create_diagnostic(diag, spec));
+            errors.push(create_diagnostic_for_spec(json_source_file, spec_key, diag, spec));
         } else {
             final_specs.push(spec.clone());
         }
@@ -2365,16 +2491,37 @@ fn validate_specs(
     (final_specs, errors)
 }
 
-pub(crate) fn spec_to_diagnostic(
+fn create_diagnostic_for_spec(
+    json_source_file: Option<P<SourceFile>>,
+    spec_key: &str,
+    message: &'static Message,
+    spec: &str,
+) -> P<Diagnostic> {
+    let element = get_ts_config_prop_array_element_value(json_source_file, spec_key, spec);
+    create_diagnostic_for_node_in_source_file_or_compiler_diagnostic(
+        json_source_file,
+        element,
+        message,
+        &[&spec],
+    )
+}
+
+pub fn spec_to_diagnostic(
     spec: &str,
     disallow_trailing_recursion: bool,
+    base_path: &str,
 ) -> Option<&'static Message> {
+    // A '?' in a file spec is a wildcard, so an /??/ spec can match local
+    // directories. Only a normalized UNC/device root is unambiguously remote.
+    if tspath::get_normalized_absolute_path(spec, base_path).starts_with("//") {
+        return Some(&diagnostics::NETWORK_PATH_0_IS_NOT_SUPPORTED);
+    }
     if disallow_trailing_recursion && invalid_trailing_recursion(spec) {
-        return Some(&diagnostics::File_specification_cannot_end_in_a_recursive_directory_wildcard_Asterisk_Asterisk_Colon_0);
+        return Some(&diagnostics::FILE_SPECIFICATION_CANNOT_END_IN_A_RECURSIVE_DIRECTORY_WILDCARD_ASTERISK_ASTERISK_COLON_0);
     }
     if invalid_dot_dot_after_recursive_wildcard(spec) {
         return Some(
-            &diagnostics::File_specification_cannot_contain_a_parent_directory_that_appears_after_a_recursive_directory_wildcard_Asterisk_Asterisk_Colon_0,
+            &diagnostics::FILE_SPECIFICATION_CANNOT_CONTAIN_A_PARENT_DIRECTORY_THAT_APPEARS_AFTER_A_RECURSIVE_DIRECTORY_WILDCARD_ASTERISK_ASTERISK_COLON_0,
         );
     }
     None
@@ -2432,8 +2579,8 @@ pub fn create_diagnostic_at_reference_syntax(
     message: &'static Message,
     args: &[&dyn Display],
 ) -> Option<P<Diagnostic>> {
-    // Programs created through the API have references but no config file: the caller reports the diagnostic
-    // without a location (Go dereferences nil here).
+    // API-created programs can have references without a config file. Return no located diagnostic so the
+    // caller reports a compiler diagnostic without a location, as in Go.
     let source_file = config.config_file?.source_file;
     for_each_ts_config_prop_array(Some(source_file), "references", |property| {
         let initializer = property.initializer().unwrap();
@@ -2543,15 +2690,16 @@ fn get_content_mapper_syntax(
             return Some(initializer);
         };
         let element = elements[index];
-        if !sub_key.is_empty() && tsrs_ast::is_object_literal_expression(element) {
-            if let Some(node) = for_each_property_assignment(
+        if !sub_key.is_empty()
+            && tsrs_ast::is_object_literal_expression(element)
+            && let Some(node) = for_each_property_assignment(
                 Some(element),
                 sub_key,
                 |property| property.initializer(),
                 None,
-            ) {
-                return Some(node);
-            }
+            )
+        {
+            return Some(node);
         }
         Some(element)
     })
@@ -2629,17 +2777,15 @@ fn get_content_mapper_extension_syntax(
     ext: &str,
 ) -> Option<P<Node>> {
     let node = get_content_mapper_syntax(source_file, Some(index), "extensions");
-    if let Some(node) = node {
-        if tsrs_ast::is_array_literal_expression(node) {
-            if let Some(element) = node
-                .elements()
-                .iter()
-                .copied()
-                .find(|element| tsrs_ast::is_string_literal(*element) && element.text() == ext)
-            {
-                return Some(element);
-            }
-        }
+    if let Some(node) = node
+        && tsrs_ast::is_array_literal_expression(node)
+        && let Some(element) = node
+            .elements()
+            .iter()
+            .copied()
+            .find(|element| tsrs_ast::is_string_literal(*element) && element.text() == ext)
+    {
+        return Some(element);
     }
     node
 }
@@ -2671,8 +2817,8 @@ pub fn for_each_property_assignment<T>(
     mut callback: impl FnMut(P<Node>) -> Option<T>,
     key2: Option<&str>,
 ) -> Option<T> {
-    if let Some(object_literal) = object_literal {
-        if let Some(result) = object_literal
+    if let Some(object_literal) = object_literal
+        && let Some(result) = object_literal
             .as_object_literal_expression()
             .properties
             .nodes()
@@ -2685,17 +2831,15 @@ pub fn for_each_property_assignment<T>(
                 }
                 if let Some(prop_name) =
                     tsrs_ast::try_get_text_of_property_name(property.name().unwrap())
+                    && (prop_name == key || key2.is_some_and(|key2| key2 == prop_name))
                 {
-                    if prop_name == key || key2.is_some_and(|key2| key2 == prop_name) {
-                        return Some(callback(property));
-                    }
+                    return Some(callback(property));
                 }
 
                 None
             })
-        {
-            return result;
-        }
+    {
+        return result;
     }
     None
 }
@@ -2707,10 +2851,10 @@ fn get_ts_config_object_literal_expression(
         let statements = ts_config_source_file.as_node().statements();
         if !statements.is_empty() {
             let expression = statements[0].expression();
-            if let Some(expression) = expression {
-                if tsrs_ast::is_object_literal_expression(expression) {
-                    return Some(expression);
-                }
+            if let Some(expression) = expression
+                && tsrs_ast::is_object_literal_expression(expression)
+            {
+                return Some(expression);
             }
         }
     }
@@ -2875,7 +3019,7 @@ fn remove_wildcard_files_with_lower_priority_extension(
             return;
         }
         let lower_priority_path = key_mapper(&tspath::change_extension(file, ext));
-        wildcard_files.delete(&lower_priority_path);
+        wildcard_files.shift_remove(&lower_priority_path);
     }
 }
 
@@ -2886,7 +3030,7 @@ fn remove_wildcard_files_with_lower_priority_extension(
 // options is the Compiler options.
 // host is the host used to resolve files and directories.
 // extraExtensions are additional file extensions (e.g. from content mappers) to treat as supported.
-pub(crate) fn get_file_names_from_config_specs(
+pub fn get_file_names_from_config_specs(
     config_file_specs: &ConfigFileSpecs,
     base_path: &str, // considering this is the current directory
     options: Option<&CompilerOptions>,
@@ -2976,7 +3120,7 @@ pub(crate) fn get_file_names_from_config_specs(
                     if !literal_file_map.contains_key(&key)
                         && !wild_card_json_file_map.contains_key(&key)
                     {
-                        wild_card_json_file_map.set(key, file.clone());
+                        wild_card_json_file_map.insert(key, file.clone());
                     }
                 }
                 continue;
@@ -3015,11 +3159,11 @@ pub(crate) fn get_file_names_from_config_specs(
                 key_mappper,
             );
             if let Some(output) = declaration_output_of_mapped_file(&file, &mapped_extensions) {
-                wildcard_file_map.delete(&key_mappper(&output));
+                wildcard_file_map.shift_remove(&key_mappper(&output));
             }
             let key = key_mappper(&file);
             if !literal_file_map.contains_key(&key) && !wildcard_file_map.contains_key(&key) {
-                wildcard_file_map.set(key, file.clone());
+                wildcard_file_map.insert(key, file.clone());
             }
         }
     }
@@ -3052,7 +3196,7 @@ pub fn get_supported_extensions(
     let flat_builtins: Vec<&String> = builtins.iter().flatten().collect();
     let mut result: Vec<Vec<String>> = Vec::new();
     result.extend(extra_extensions.iter().filter_map(|ext| {
-        if !flat_builtins.contains(&ext) { Some(vec![ext.clone()]) } else { None }
+        if flat_builtins.contains(&ext) { None } else { Some(vec![ext.clone()]) }
     }));
     if result.is_empty() {
         return builtins;
@@ -3088,7 +3232,7 @@ pub fn get_parsed_command_line_of_config_file(
     config_file_name: &str,
     options: Option<&CompilerOptions>,
     options_raw: Option<&CompilerOptionsValue>,
-    sys: &'static dyn ParseConfigHost,
+    sys: &dyn ParseConfigHost,
     extended_config_cache: Option<&dyn ExtendedConfigCache>,
 ) -> (Option<ParsedCommandLine>, Vec<P<Diagnostic>>) {
     let config_file_name =
@@ -3113,7 +3257,7 @@ pub fn get_parsed_command_line_of_config_file_path(
     path: Path,
     options: Option<&CompilerOptions>,
     options_raw: Option<&CompilerOptionsValue>,
-    sys: &'static dyn ParseConfigHost,
+    sys: &dyn ParseConfigHost,
     extended_config_cache: Option<&dyn ExtendedConfigCache>,
 ) -> (Option<ParsedCommandLine>, Vec<P<Diagnostic>>) {
     let (config_file_text, errors) =
@@ -3222,15 +3366,12 @@ fn write_json(out: &mut String, value: &CompilerOptionsValue) {
         CompilerOptionsValue::ScriptTarget(v) => out.push_str(&v.value().to_string()),
         CompilerOptionsValue::JsxEmit(v) => out.push_str(&v.value().to_string()),
         CompilerOptionsValue::NewLineKind(v) => out.push_str(&v.value().to_string()),
-        CompilerOptionsValue::WatchFileKind(v) => out.push_str(&(*v as i32).to_string()),
-        CompilerOptionsValue::WatchDirectoryKind(v) => out.push_str(&(*v as i32).to_string()),
-        CompilerOptionsValue::PollingKind(v) => out.push_str(&(*v as i32).to_string()),
     }
 }
 
 // Go `locale.Parse` (golang.org/x/text/language.Parse) reports whether the string is a BCP 47 language
 // tag. This checks BCP 47 well-formedness (language, script, region, variants, extensions, private use).
-pub(crate) fn locale_parse(locale_str: &str) -> bool {
+pub fn locale_parse(locale_str: &str) -> bool {
     let subtags: Vec<&str> = locale_str.split(['-', '_']).collect();
     let is_alpha = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphabetic());
     let is_digit = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());

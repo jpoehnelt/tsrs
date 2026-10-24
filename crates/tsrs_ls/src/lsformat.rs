@@ -92,7 +92,7 @@ impl LanguageService {
                 continue;
             };
             candidates.extend(span_map.segments().into_iter().filter_map(|segment| {
-                if segment.kind != spanmap::Kind::Verbatim
+                if segment.kind != spanmap::Kind::VERBATIM
                     || !segment.features.intersects(Feature::Formatting)
                 {
                     return None;
@@ -364,7 +364,7 @@ impl LanguageService {
 // It is the caller's responsibility to call `astnav.GetTokenAtPosition` to compute a default `tokenAtPosition`,
 // or `astnav.FindPrecedingToken` to compute a default `precedingToken`.
 // format.go:257
-pub(crate) fn get_range_of_enclosing_comment(
+pub fn get_range_of_enclosing_comment(
     file: P<SourceFile>,
     position: u32,
     preceding_token: Option<P<Node>>,

@@ -1,5 +1,5 @@
 // Node API checker lane (mfs-cx/node-api-checker): port of the checker / symbol / type / signature
-// request handlers of the pinned tsgo API (microsoft/TypeScript b85298b6, tsc/internal/api/session.go +
+// request handlers of the tsgo API (originally based on microsoft/TypeScript b85298b6, tsc/internal/api/session.go +
 // proto.go). See checker/README.md for the contract, id ownership and the per-method coverage inventory.
 //
 // Core hook (docs/NODE_API.md, "checker hook"): `handle(session, method, params)` and
@@ -26,7 +26,7 @@ pub mod coverage_types;
 
 use std::sync::Arc;
 
-use tsrs_ast::{Node, SourceFile};
+use tsrs_ast::{Node, SourceFile, Symbol};
 use tsrs_compiler::Program;
 use tsrs_core::P;
 use tsrs_core::context::Context;
@@ -58,11 +58,7 @@ impl Drop for CheckerSnapshotState {
 }
 
 /// Core entry point. `None` only for methods this lane does not recognize.
-pub(crate) fn handle(
-    session: &Session,
-    method: &str,
-    params: &Value,
-) -> Option<ApiResult<Response>> {
+pub fn handle(session: &Session, method: &str, params: &Value) -> Option<ApiResult<Response>> {
     let host = SessionHost { session };
     let result = dispatch::handle(&host, method, params)?;
     Some(result.map_err(to_api_error).and_then(|response| match response {
@@ -75,6 +71,11 @@ pub(crate) fn handle(
             }
         }
     }))
+}
+
+/// Go `newFileSymbolResponse`, for core handlers that return a binder symbol from an ordinary cached AST.
+pub fn file_symbol_response(session: &Session, symbol: P<Symbol>) -> ApiResult<Value> {
+    setup::file_symbol_response(&SessionHost { session }, symbol).map_err(to_api_error)
 }
 
 fn to_api_error(e: CheckerError) -> ApiError {
@@ -129,6 +130,14 @@ impl CheckerHost for SessionHost<'_> {
         Ok(crate::sourcefiles::source_file_descriptor(file))
     }
 
+    fn source_file_descriptor_matches(
+        &self,
+        file: P<SourceFile>,
+        descriptor: &Value,
+    ) -> CheckerResult<bool> {
+        Ok(crate::sourcefiles::source_file_descriptor_matches(file, descriptor))
+    }
+
     fn source_file_node_id(&self, file: P<SourceFile>) -> CheckerResult<u64> {
         Ok(crate::sourcefiles::source_file_node_id(file))
     }
@@ -165,6 +174,13 @@ impl CheckerHost for SessionHost<'_> {
             &uri,
             None,
         ))
+    }
+
+    fn try_adopt_snapshot_in_background(&self, base: &Arc<Snapshot>, prepared: &Arc<Snapshot>) {
+        if let Some(project_session) = &self.session.project_session {
+            project_session
+                .try_adopt_snapshot_in_background(Arc::clone(base), Arc::clone(prepared));
+        }
     }
 }
 

@@ -1,7 +1,11 @@
-// Pinned method inventory: every `Method` constant in microsoft/TypeScript
-// tsc/internal/api/proto.go @ b85298b6a81f772d080b0455de0ca9d744cd6fd6 (172 entries, same order).
+// Method inventory: every `Method` constant in microsoft/TypeScript
+// tsc/internal/api/proto.go through c0ca4744c917430282a7de06c3e8f22d2cb87353 (177 entries, same order).
 // `status` is the honest implementation state in tsrs; it must only become `Supported` when a real
 // compiler-backed test exercises the method (docs/NODE_API.md keeps the matrix in sync).
+
+use std::sync::LazyLock;
+
+use rustc_hash::FxHashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owner {
@@ -25,11 +29,12 @@ pub struct MethodInfo {
     pub status: Status,
 }
 
-pub const METHODS: [MethodInfo; 172] = [
+pub const METHODS: [MethodInfo; 177] = [
     MethodInfo { name: "release", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "releaseSourceFile", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "retainSourceFile", owner: Owner::Core, status: Status::Partial },
     MethodInfo { name: "getCachedSourceFile", owner: Owner::Core, status: Status::Partial },
+    MethodInfo { name: "getSymbolOfDeclaration", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "batchRequests", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "initialize", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "createSnapshot", owner: Owner::Core, status: Status::Supported },
@@ -37,7 +42,7 @@ pub const METHODS: [MethodInfo; 172] = [
     MethodInfo {
         name: "getCurrentLanguageServerSnapshot",
         owner: Owner::Core,
-        status: Status::Partial,
+        status: Status::Supported,
     },
     MethodInfo { name: "createBuildOrchestrator", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "disposeBuildOrchestrator", owner: Owner::Core, status: Status::Supported },
@@ -271,6 +276,18 @@ pub const METHODS: [MethodInfo; 172] = [
         status: Status::Partial,
     },
     MethodInfo { name: "getTargetSymbol", owner: Owner::Checker, status: Status::Partial },
+    MethodInfo { name: "getMergedSymbol", owner: Owner::Checker, status: Status::Partial },
+    MethodInfo { name: "getSymbolOfNode", owner: Owner::Checker, status: Status::Partial },
+    MethodInfo {
+        name: "getSymbolOfDeclarationForChecker",
+        owner: Owner::Checker,
+        status: Status::Partial,
+    },
+    MethodInfo {
+        name: "getParentOfSymbolForChecker",
+        owner: Owner::Checker,
+        status: Status::Partial,
+    },
     MethodInfo {
         name: "getExportSymbolOfSymbolForChecker",
         owner: Owner::Checker,
@@ -295,6 +312,7 @@ pub const METHODS: [MethodInfo; 172] = [
     },
     MethodInfo { name: "getSignatureUsages", owner: Owner::Checker, status: Status::Partial },
     MethodInfo { name: "getCompletionsAtPosition", owner: Owner::Checker, status: Status::Partial },
+    MethodInfo { name: "formatNodeForInsertion", owner: Owner::Core, status: Status::Partial },
     MethodInfo { name: "getSyntacticDiagnostics", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "getBindDiagnostics", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "getSemanticDiagnostics", owner: Owner::Core, status: Status::Supported },
@@ -308,7 +326,6 @@ pub const METHODS: [MethodInfo; 172] = [
         status: Status::Supported,
     },
     MethodInfo { name: "printNode", owner: Owner::Core, status: Status::Partial },
-    MethodInfo { name: "formatNodeForInsertion", owner: Owner::Core, status: Status::Partial },
     MethodInfo { name: "emit", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "emitToString", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "getJavaScriptEmit", owner: Owner::Core, status: Status::Supported },
@@ -333,7 +350,15 @@ pub const METHODS: [MethodInfo; 172] = [
 ];
 
 pub fn method_info(name: &str) -> Option<&'static MethodInfo> {
-    METHODS.iter().find(|m| m.name == name)
+    // Every request looks its method up: hash it instead of comparing it with each name in turn.
+    static BY_NAME: LazyLock<FxHashMap<&'static str, &'static MethodInfo>> = LazyLock::new(|| {
+        let mut by_name = FxHashMap::default();
+        for m in &METHODS {
+            by_name.entry(m.name).or_insert(m);
+        }
+        by_name
+    });
+    BY_NAME.get(name).copied()
 }
 // Go `unmarshalers` (proto.go): the params type each method decodes into, for Go's error text
 // `failed to unmarshal *api.<Type>`. `None` = `noParams`.
@@ -343,6 +368,7 @@ pub const PARAMS_TYPES: &[(&str, Option<&str>)] = &[
     ("releaseSourceFile", Some("ReleaseSourceFileParams")),
     ("retainSourceFile", Some("RetainSourceFileParams")),
     ("getCachedSourceFile", Some("GetCachedSourceFileParams")),
+    ("getSymbolOfDeclaration", Some("GetSymbolOfDeclarationParams")),
     ("initialize", None),
     ("createSnapshot", Some("CreateSnapshotParams")),
     ("updateSnapshot", Some("UpdateSnapshotParams")),
@@ -470,6 +496,10 @@ pub const PARAMS_TYPES: &[(&str, Option<&str>)] = &[
     ("getAliasedSymbol", Some("CheckerSymbolParams")),
     ("getImmediateAliasedSymbol", Some("CheckerSymbolParams")),
     ("getTargetSymbol", Some("CheckerSymbolParams")),
+    ("getMergedSymbol", Some("CheckerSymbolParams")),
+    ("getSymbolOfNode", Some("CheckerNodeParams")),
+    ("getSymbolOfDeclarationForChecker", Some("CheckerNodeParams")),
+    ("getParentOfSymbolForChecker", Some("CheckerSymbolParams")),
     ("getExportSymbolOfSymbolForChecker", Some("CheckerSymbolParams")),
     ("getFullyQualifiedName", Some("CheckerSymbolParams")),
     ("getExportsOfModule", Some("CheckerSymbolParams")),
@@ -482,8 +512,8 @@ pub const PARAMS_TYPES: &[(&str, Option<&str>)] = &[
     ("getReferencedSymbolsForNode", Some("GetReferencedSymbolsForNodeParams")),
     ("getSignatureUsages", Some("GetSignatureUsagesParams")),
     ("getCompletionsAtPosition", Some("GetCompletionsAtPositionParams")),
-    ("printNode", Some("PrintNodeParams")),
     ("formatNodeForInsertion", Some("FormatNodeForInsertionParams")),
+    ("printNode", Some("PrintNodeParams")),
     ("emit", Some("EmitParams")),
     ("emitToString", Some("EmitParams")),
     ("getJavaScriptEmit", Some("SelectedFilesEmitParams")),
@@ -516,5 +546,14 @@ pub const PARAMS_TYPES: &[(&str, Option<&str>)] = &[
 ];
 
 pub fn params_type(method: &str) -> Option<&'static str> {
-    PARAMS_TYPES.iter().find(|(m, _)| *m == method).and_then(|(_, t)| *t)
+    // As `method_info`, the first entry for a method wins.
+    static BY_METHOD: LazyLock<FxHashMap<&'static str, Option<&'static str>>> =
+        LazyLock::new(|| {
+            let mut by_method = FxHashMap::default();
+            for &(m, t) in PARAMS_TYPES {
+                by_method.entry(m).or_insert(t);
+            }
+            by_method
+        });
+    BY_METHOD.get(method).copied().flatten()
 }

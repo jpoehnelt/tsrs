@@ -3,56 +3,56 @@ use printer::{EmitFlags, GeneratedIdentifierFlags};
 use tsrs_core::TextRange;
 use tsrs_core::collections::OrderedSet;
 
+use super::SuperAccessState;
 use super::async_::is_simple_parameter_list;
-use super::superAccessState;
 
 // Facts we track as we traverse the tree
 // forawait.go:12
-type forAwaitHierarchyFacts = u32;
+type ForAwaitHierarchyFacts = u32;
 
-const forAwaitHierarchyFactsNone: forAwaitHierarchyFacts = 0;
+const FOR_AWAIT_HIERARCHY_FACTS_NONE: ForAwaitHierarchyFacts = 0;
 
 //
 // Ancestor facts
 //
 
-const forAwaitHierarchyFactsHasLexicalThis: forAwaitHierarchyFacts = 1 << 0;
-const forAwaitHierarchyFactsIterationContainer: forAwaitHierarchyFacts = 1 << 1;
+const FOR_AWAIT_HIERARCHY_FACTS_HAS_LEXICAL_THIS: ForAwaitHierarchyFacts = 1 << 0;
+const FOR_AWAIT_HIERARCHY_FACTS_ITERATION_CONTAINER: ForAwaitHierarchyFacts = 1 << 1;
 
 //
 // Ancestor masks
 //
 
-const forAwaitHierarchyFactsAncestorFactsMask: forAwaitHierarchyFacts = (1 << 2) - 1;
+const FOR_AWAIT_HIERARCHY_FACTS_ANCESTOR_FACTS_MASK: ForAwaitHierarchyFacts = (1 << 2) - 1;
 
-const forAwaitHierarchyFactsSourceFileExcludes: forAwaitHierarchyFacts =
-    forAwaitHierarchyFactsIterationContainer;
-const forAwaitHierarchyFactsStrictModeSourceFileIncludes: forAwaitHierarchyFacts =
-    forAwaitHierarchyFactsNone;
+const FOR_AWAIT_HIERARCHY_FACTS_SOURCE_FILE_EXCLUDES: ForAwaitHierarchyFacts =
+    FOR_AWAIT_HIERARCHY_FACTS_ITERATION_CONTAINER;
+const FOR_AWAIT_HIERARCHY_FACTS_STRICT_MODE_SOURCE_FILE_INCLUDES: ForAwaitHierarchyFacts =
+    FOR_AWAIT_HIERARCHY_FACTS_NONE;
 
-const forAwaitHierarchyFactsClassOrFunctionIncludes: forAwaitHierarchyFacts =
-    forAwaitHierarchyFactsHasLexicalThis;
-const forAwaitHierarchyFactsClassOrFunctionExcludes: forAwaitHierarchyFacts =
-    forAwaitHierarchyFactsIterationContainer;
+const FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_INCLUDES: ForAwaitHierarchyFacts =
+    FOR_AWAIT_HIERARCHY_FACTS_HAS_LEXICAL_THIS;
+const FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_EXCLUDES: ForAwaitHierarchyFacts =
+    FOR_AWAIT_HIERARCHY_FACTS_ITERATION_CONTAINER;
 
-const forAwaitHierarchyFactsArrowFunctionIncludes: forAwaitHierarchyFacts =
-    forAwaitHierarchyFactsNone;
-const forAwaitHierarchyFactsArrowFunctionExcludes: forAwaitHierarchyFacts =
-    forAwaitHierarchyFactsClassOrFunctionExcludes;
+const FOR_AWAIT_HIERARCHY_FACTS_ARROW_FUNCTION_INCLUDES: ForAwaitHierarchyFacts =
+    FOR_AWAIT_HIERARCHY_FACTS_NONE;
+const FOR_AWAIT_HIERARCHY_FACTS_ARROW_FUNCTION_EXCLUDES: ForAwaitHierarchyFacts =
+    FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_EXCLUDES;
 
-const forAwaitHierarchyFactsIterationStatementIncludes: forAwaitHierarchyFacts =
-    forAwaitHierarchyFactsIterationContainer;
-const forAwaitHierarchyFactsIterationStatementExcludes: forAwaitHierarchyFacts =
-    forAwaitHierarchyFactsNone;
+const FOR_AWAIT_HIERARCHY_FACTS_ITERATION_STATEMENT_INCLUDES: ForAwaitHierarchyFacts =
+    FOR_AWAIT_HIERARCHY_FACTS_ITERATION_CONTAINER;
+const FOR_AWAIT_HIERARCHY_FACTS_ITERATION_STATEMENT_EXCLUDES: ForAwaitHierarchyFacts =
+    FOR_AWAIT_HIERARCHY_FACTS_NONE;
 
 // forawait.go:43
-pub struct forawaitTransformer {
+pub struct ForawaitTransformer {
     pub base: Transformer,
-    super_access_state: superAccessState,
+    super_access_state: SuperAccessState,
     pub compiler_options: P<CompilerOptions>,
 
     enclosing_function_flags: Cell<FunctionFlags>,
-    for_await_hierarchy_facts: Cell<forAwaitHierarchyFacts>,
+    for_await_hierarchy_facts: Cell<ForAwaitHierarchyFacts>,
     exported_variable_statement: Cell<bool>,
 
     fallback_node_visitor: OnceCell<NodeVisitor>,
@@ -65,12 +65,12 @@ pub struct forawaitTransformer {
     reason = "Transformer factories share an optional result so disabled transforms can return None."
 )]
 pub fn newforawait_transformer(opt: &TransformOptions) -> Option<P<Transformer>> {
-    let tx = P::new(forawaitTransformer {
+    let tx = P::new(ForawaitTransformer {
         base: Transformer::default(),
-        super_access_state: superAccessState::default(),
+        super_access_state: SuperAccessState::default(),
         compiler_options: opt.compiler_options,
         enclosing_function_flags: Cell::new(FunctionFlags::Normal),
-        for_await_hierarchy_facts: Cell::new(forAwaitHierarchyFactsNone),
+        for_await_hierarchy_facts: Cell::new(FOR_AWAIT_HIERARCHY_FACTS_NONE),
         exported_variable_statement: Cell::new(false),
         fallback_node_visitor: OnceCell::new(),
         no_async_modifier_visitor: OnceCell::new(),
@@ -95,7 +95,7 @@ pub fn newforawait_transformer(opt: &TransformOptions) -> Option<P<Transformer>>
     Some(result)
 }
 
-impl forawaitTransformer {
+impl ForawaitTransformer {
     fn emit_context(&self) -> P<EmitContext> {
         self.base.emit_context()
     }
@@ -108,7 +108,7 @@ impl forawaitTransformer {
         self.base.visitor()
     }
 
-    fn sas(&self) -> &superAccessState {
+    fn sas(&self) -> &SuperAccessState {
         &self.super_access_state
     }
 
@@ -120,8 +120,8 @@ impl forawaitTransformer {
     // forawait.go:73
     fn affects_subtree(
         &self,
-        exclude_facts: forAwaitHierarchyFacts,
-        include_facts: forAwaitHierarchyFacts,
+        exclude_facts: ForAwaitHierarchyFacts,
+        include_facts: ForAwaitHierarchyFacts,
     ) -> bool {
         self.for_await_hierarchy_facts.get()
             != ((self.for_await_hierarchy_facts.get() & !exclude_facts) | include_facts)
@@ -132,13 +132,13 @@ impl forawaitTransformer {
     // forawait.go:79
     fn enter_subtree(
         &self,
-        exclude_facts: forAwaitHierarchyFacts,
-        include_facts: forAwaitHierarchyFacts,
-    ) -> forAwaitHierarchyFacts {
+        exclude_facts: ForAwaitHierarchyFacts,
+        include_facts: ForAwaitHierarchyFacts,
+    ) -> ForAwaitHierarchyFacts {
         let ancestor_facts = self.for_await_hierarchy_facts.get();
         self.for_await_hierarchy_facts.set(
             ((self.for_await_hierarchy_facts.get() & !exclude_facts) | include_facts)
-                & forAwaitHierarchyFactsAncestorFactsMask,
+                & FOR_AWAIT_HIERARCHY_FACTS_ANCESTOR_FACTS_MASK,
         );
         ancestor_facts
     }
@@ -146,7 +146,7 @@ impl forawaitTransformer {
     // exitSubtree restores the HierarchyFacts for this node's ancestor after visiting this node's
     // subtree.
     // forawait.go:87
-    fn exit_subtree(&self, ancestor_facts: forAwaitHierarchyFacts) {
+    fn exit_subtree(&self, ancestor_facts: ForAwaitHierarchyFacts) {
         self.for_await_hierarchy_facts.set(ancestor_facts);
     }
 
@@ -161,10 +161,10 @@ impl forawaitTransformer {
     // forawait.go:95
     fn do_with_hierarchy_facts(
         &self,
-        cb: fn(&forawaitTransformer, P<Node>) -> Option<P<Node>>,
+        cb: fn(&ForawaitTransformer, P<Node>) -> Option<P<Node>>,
         node: P<Node>,
-        exclude_facts: forAwaitHierarchyFacts,
-        include_facts: forAwaitHierarchyFacts,
+        exclude_facts: ForAwaitHierarchyFacts,
+        include_facts: ForAwaitHierarchyFacts,
     ) -> Option<P<Node>> {
         if self.affects_subtree(exclude_facts, include_facts) {
             let ancestor_facts = self.enter_subtree(exclude_facts, include_facts);
@@ -217,67 +217,63 @@ impl forawaitTransformer {
             Kind::YieldExpression => Some(self.visit_yield_expression(node)),
             Kind::ReturnStatement => Some(self.visit_return_statement(node)),
             Kind::LabeledStatement => Some(self.visit_labeled_statement(node)),
-            Kind::DoStatement | Kind::WhileStatement | Kind::ForInStatement => self
-                .do_with_hierarchy_facts(
-                    forawaitTransformer::visit_default,
-                    node,
-                    forAwaitHierarchyFactsIterationStatementExcludes,
-                    forAwaitHierarchyFactsIterationStatementIncludes,
-                ),
-            Kind::ForOfStatement => Some(self.visit_for_of_statement(node, None)),
-            Kind::ForStatement => self.do_with_hierarchy_facts(
-                forawaitTransformer::visit_default,
+            Kind::DoStatement
+            | Kind::WhileStatement
+            | Kind::ForInStatement
+            | Kind::ForStatement => self.do_with_hierarchy_facts(
+                ForawaitTransformer::visit_default,
                 node,
-                forAwaitHierarchyFactsIterationStatementExcludes,
-                forAwaitHierarchyFactsIterationStatementIncludes,
+                FOR_AWAIT_HIERARCHY_FACTS_ITERATION_STATEMENT_EXCLUDES,
+                FOR_AWAIT_HIERARCHY_FACTS_ITERATION_STATEMENT_INCLUDES,
             ),
+            Kind::ForOfStatement => Some(self.visit_for_of_statement(node, None)),
             Kind::Constructor => self.do_with_hierarchy_facts(
-                forawaitTransformer::visit_constructor_declaration,
+                ForawaitTransformer::visit_constructor_declaration,
                 node,
-                forAwaitHierarchyFactsClassOrFunctionExcludes,
-                forAwaitHierarchyFactsClassOrFunctionIncludes,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_EXCLUDES,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_INCLUDES,
             ),
             Kind::MethodDeclaration => self.do_with_hierarchy_facts(
-                forawaitTransformer::visit_method_declaration,
+                ForawaitTransformer::visit_method_declaration,
                 node,
-                forAwaitHierarchyFactsClassOrFunctionExcludes,
-                forAwaitHierarchyFactsClassOrFunctionIncludes,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_EXCLUDES,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_INCLUDES,
             ),
             Kind::GetAccessor => self.do_with_hierarchy_facts(
-                forawaitTransformer::visit_get_accessor_declaration,
+                ForawaitTransformer::visit_get_accessor_declaration,
                 node,
-                forAwaitHierarchyFactsClassOrFunctionExcludes,
-                forAwaitHierarchyFactsClassOrFunctionIncludes,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_EXCLUDES,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_INCLUDES,
             ),
             Kind::SetAccessor => self.do_with_hierarchy_facts(
-                forawaitTransformer::visit_set_accessor_declaration,
+                ForawaitTransformer::visit_set_accessor_declaration,
                 node,
-                forAwaitHierarchyFactsClassOrFunctionExcludes,
-                forAwaitHierarchyFactsClassOrFunctionIncludes,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_EXCLUDES,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_INCLUDES,
             ),
             Kind::FunctionDeclaration => self.do_with_hierarchy_facts(
-                forawaitTransformer::visit_function_declaration,
+                ForawaitTransformer::visit_function_declaration,
                 node,
-                forAwaitHierarchyFactsClassOrFunctionExcludes,
-                forAwaitHierarchyFactsClassOrFunctionIncludes,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_EXCLUDES,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_INCLUDES,
             ),
             Kind::FunctionExpression => self.do_with_hierarchy_facts(
-                forawaitTransformer::visit_function_expression,
+                ForawaitTransformer::visit_function_expression,
                 node,
-                forAwaitHierarchyFactsClassOrFunctionExcludes,
-                forAwaitHierarchyFactsClassOrFunctionIncludes,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_EXCLUDES,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_INCLUDES,
             ),
             Kind::ArrowFunction => self.do_with_hierarchy_facts(
-                forawaitTransformer::visit_arrow_function,
+                ForawaitTransformer::visit_arrow_function,
                 node,
-                forAwaitHierarchyFactsArrowFunctionExcludes,
-                forAwaitHierarchyFactsArrowFunctionIncludes,
+                FOR_AWAIT_HIERARCHY_FACTS_ARROW_FUNCTION_EXCLUDES,
+                FOR_AWAIT_HIERARCHY_FACTS_ARROW_FUNCTION_INCLUDES,
             ),
             Kind::ClassDeclaration | Kind::ClassExpression => self.do_with_hierarchy_facts(
-                forawaitTransformer::visit_default,
+                ForawaitTransformer::visit_default,
                 node,
-                forAwaitHierarchyFactsClassOrFunctionExcludes,
-                forAwaitHierarchyFactsClassOrFunctionIncludes,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_EXCLUDES,
+                FOR_AWAIT_HIERARCHY_FACTS_CLASS_OR_FUNCTION_INCLUDES,
             ),
             _ => self.visitor().visit_each_child(Some(node)),
         }
@@ -381,8 +377,8 @@ impl forawaitTransformer {
     // forawait.go:319
     fn visit_source_file(&self, node: P<Node>) -> P<Node> {
         let ancestor_facts = self.enter_subtree(
-            forAwaitHierarchyFactsSourceFileExcludes,
-            forAwaitHierarchyFactsStrictModeSourceFileIncludes,
+            FOR_AWAIT_HIERARCHY_FACTS_SOURCE_FILE_EXCLUDES,
+            FOR_AWAIT_HIERARCHY_FACTS_STRICT_MODE_SOURCE_FILE_INCLUDES,
         );
         self.exported_variable_statement.set(false);
         let visited = self.visitor().visit_each_child(Some(node)).unwrap();
@@ -399,8 +395,8 @@ impl forawaitTransformer {
         outermost_labeled_statement: Option<P<Node>>,
     ) -> P<Node> {
         let ancestor_facts = self.enter_subtree(
-            forAwaitHierarchyFactsIterationStatementExcludes,
-            forAwaitHierarchyFactsIterationStatementIncludes,
+            FOR_AWAIT_HIERARCHY_FACTS_ITERATION_STATEMENT_EXCLUDES,
+            FOR_AWAIT_HIERARCHY_FACTS_ITERATION_STATEMENT_INCLUDES,
         );
         let result = if node.as_for_in_or_of_statement().await_modifier.is_some() {
             self.transform_for_await_of_statement(node, outermost_labeled_statement, ancestor_facts)
@@ -474,7 +470,7 @@ impl forawaitTransformer {
         &self,
         node: P<Node>,
         outermost_labeled_statement: Option<P<Node>>,
-        ancestor_facts: forAwaitHierarchyFacts,
+        ancestor_facts: ForAwaitHierarchyFacts,
     ) -> P<Node> {
         let f = self.factory();
         let ec = self.emit_context();
@@ -531,7 +527,7 @@ impl forawaitTransformer {
         ec.add_variable_declaration(return_method);
 
         // if we are enclosed in an outer loop ensure we reset 'errorRecord' per each iteration
-        let initializer = if ancestor_facts & forAwaitHierarchyFactsIterationContainer != 0 {
+        let initializer = if ancestor_facts & FOR_AWAIT_HIERARCHY_FACTS_ITERATION_CONTAINER != 0 {
             f.inline_expressions(&[
                 f.new_assignment_expression(error_record, f.new_void_zero_expression()),
                 call_values,
@@ -1021,7 +1017,7 @@ impl forawaitTransformer {
 
         let return_statement = f.new_return_statement(Some(f.new_async_generator_helper(
             generator_func,
-            self.for_await_hierarchy_facts.get() & forAwaitHierarchyFactsHasLexicalThis != 0,
+            self.for_await_hierarchy_facts.get() & FOR_AWAIT_HIERARCHY_FACTS_HAS_LEXICAL_THIS != 0,
         )));
 
         ec.start_variable_environment();

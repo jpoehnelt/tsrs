@@ -7,8 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
-use tsrs_core::collections::OrderedMap;
-use tsrs_core::json::Value;
+use tsrs_core::json::{JsonMap, Value};
 
 use crate::jsonrpc::{self, CODE_INTERNAL_ERROR, ID, ResponseError};
 use crate::{
@@ -35,13 +34,13 @@ pub struct AsyncConn {
 
     // For server→client requests
     seq: AtomicU64,
-    pending_mu: Mutex<pendingCalls>,
+    pending_mu: Mutex<PendingCalls>,
     write_mu: Mutex<()>,
     // Go's `handlers sync.WaitGroup`: Run starts the handler threads in a std::thread::scope, which waits for them.
 }
 
 // The state Go guards with pendingMu.
-struct pendingCalls {
+struct PendingCalls {
     pending: FxHashMap<ID, SyncSender<Message>>,
     terminal: Option<Error>,
     has_cause: bool,
@@ -73,7 +72,7 @@ pub fn new_async_conn_with_protocol(
         protocol,
         handler,
         seq: AtomicU64::new(0),
-        pending_mu: Mutex::new(pendingCalls {
+        pending_mu: Mutex::new(PendingCalls {
             pending: FxHashMap::default(),
             terminal: None,
             has_cause: false,
@@ -108,12 +107,11 @@ impl Conn for AsyncConn {
                         let started = thread::Builder::new()
                             .name(HANDLER_THREAD.to_string())
                             .spawn_scoped(s, move || {
-                                if let Err(request_err) = self.handle_request(&msg) {
-                                    if self.record_request_error(request_err, request_errors) {
-                                        if let Some(rwc) = &self.rwc {
-                                            let _ = rwc.close();
-                                        }
-                                    }
+                                if let Err(request_err) = self.handle_request(&msg)
+                                    && self.record_request_error(request_err, request_errors)
+                                    && let Some(rwc) = &self.rwc
+                                {
+                                    let _ = rwc.close();
                                 }
                             });
                         if let Err(err) = started {
@@ -362,7 +360,7 @@ impl AsyncConn {
     }
 }
 
-impl pendingCalls {
+impl PendingCalls {
     // conn_async.go:134
     fn record_terminal_error_locked(&mut self, terminal_err: Option<&Error>) -> bool {
         if self.terminal.is_none() {
@@ -413,10 +411,10 @@ fn panic_value(payload: &(dyn Any + Send)) -> &str {
 // timing.go:119 serverTimingSnapshot(c.timing), with the nil collector the port always has: timing.go:128
 // disabledServerTimingInfo, serverTimingInfo{Enabled: false, RecentRequests: []serverRequestTiming{}}.
 fn disabled_server_timing_info() -> Value {
-    let mut totals = OrderedMap::default();
+    let mut totals = JsonMap::new();
     totals.insert("requestCount".to_string(), Value::Number(0.0));
     totals.insert("totalProcessingTimeMs".to_string(), Value::Number(0.0));
-    let mut info = OrderedMap::default();
+    let mut info = JsonMap::new();
     info.insert("enabled".to_string(), Value::Bool(false));
     info.insert("totals".to_string(), Value::Object(totals));
     info.insert("recentRequests".to_string(), Value::Array(Vec::new()));

@@ -7,10 +7,12 @@
 // tests/fixtures/go_json_oracle.json and go_syntax_oracle.json).
 //
 // The scan is iterative (no recursion), allocates at most one key set per open object, and rejects
-// nesting deeper than jsontext's limit (10000).
+// nesting deeper than jsontext's limit (10000). `decode` runs the same scan and also builds the value, so a
+// request is read once.
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt::Write as _;
+use tsrs_core::json::{JsonMap, Key, Value, exact_integer_value};
 
 pub const MAX_DEPTH: usize = 10000;
 
@@ -33,12 +35,52 @@ enum Expect {
     AfterValue,
 }
 
+/// Which JSON pointer an error inside a string reports.
+#[derive(Clone, Copy)]
+enum At {
+    Value,
+    Container,
+}
+
 struct Scanner<'a> {
     b: &'a [u8],
     i: usize,
     stack: Vec<Frame>,
     /// Offset of the last `,` while a name or value is expected after it.
     comma: Option<usize>,
+    /// Set by `decode`: the value being built.
+    build: Option<Build>,
+}
+
+/// A strictly valid JSON document read by `decode`.
+pub struct Decoded {
+    pub value: Value,
+    /// The literal of each number whose f64 may differ from it (a fraction, an exponent or more than 15
+    /// digits), by JSON pointer. Every other number is a plain integer that its f64 holds exactly.
+    pub lexemes: FxHashMap<String, String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DecodeError {
+    /// What `validate` reports.
+    Invalid(String),
+    /// The document is valid but a number does not fit an f64: `json::unmarshal`'s error.
+    OutOfRange(String),
+}
+
+#[derive(Default)]
+struct Build {
+    /// The open containers, parallel to `Scanner::stack`.
+    open: Vec<Partial>,
+    root: Option<Value>,
+    lexemes: FxHashMap<String, String>,
+    /// End offset of the first number out of f64 range.
+    out_of_range: Option<usize>,
+}
+
+enum Partial {
+    Object(JsonMap),
+    Array(Vec<Value>),
 }
 
 fn escape_token(t: &str) -> String {
@@ -99,6 +141,45 @@ impl Scanner<'_> {
         self.pointer_upto(self.stack.len(), false)
     }
 
+    fn pointer(&self, at: At) -> String {
+        match at {
+            At::Value => self.value_ptr(),
+            At::Container => self.container_ptr(),
+        }
+    }
+
+    /// Adds a finished value to the innermost open container (or makes it the document) when decoding.
+    fn emit(&mut self, value: impl FnOnce() -> Value) {
+        let Some(build) = &mut self.build else { return };
+        match (self.stack.last_mut(), build.open.last_mut()) {
+            (None, _) => build.root = Some(value()),
+            (Some(Frame::Object { current, .. }), Some(Partial::Object(members))) => {
+                members.insert(current.take().unwrap_or_default(), value());
+            }
+            (Some(Frame::Array { .. }), Some(Partial::Array(items))) => items.push(value()),
+            _ => unreachable!("decode containers follow the scan stack"),
+        }
+    }
+
+    fn open(&mut self, frame: Frame) {
+        if let Some(build) = &mut self.build {
+            build.open.push(match frame {
+                Frame::Object { .. } => Partial::Object(JsonMap::new()),
+                Frame::Array { .. } => Partial::Array(Vec::new()),
+            });
+        }
+        self.stack.push(frame);
+    }
+
+    fn close(&mut self) {
+        self.stack.pop();
+        let Some(partial) = self.build.as_mut().and_then(|b| b.open.pop()) else { return };
+        self.emit(|| match partial {
+            Partial::Object(members) => Value::Object(members),
+            Partial::Array(items) => Value::Array(items),
+        });
+    }
+
     /// Pointer of the innermost container's parent container.
     fn parent_ptr(&self) -> String {
         self.pointer_upto(self.stack.len().saturating_sub(1), false)
@@ -149,13 +230,22 @@ impl Scanner<'_> {
         u32::from_str_radix(std::str::from_utf8(s).ok()?, 16).ok()
     }
 
-    /// Reads a string starting at the opening quote; returns its decoded value. `pointer` locates it.
-    fn string(&mut self, pointer: &str) -> Result<String, String> {
+    /// Reads a string starting at the opening quote; returns its decoded value. `at` locates it in errors.
+    fn string(&mut self, at: At) -> Result<String, String> {
         self.i += 1;
-        let mut out = String::new();
+        // Fast path: printable ASCII up to the closing quote is the string itself.
+        let rest = &self.b[self.i..];
+        let plain =
+            rest.iter().position(|&c| c == b'"' || c == b'\\' || !(0x20..0x80).contains(&c));
+        if let Some(len) = plain.filter(|&len| rest[len] == b'"') {
+            let text = std::str::from_utf8(&rest[..len]).unwrap_or_default().to_string();
+            self.i += len + 1;
+            return Ok(text);
+        }
+        let mut out = String::with_capacity(plain.unwrap_or(0));
         loop {
             let Some(&c) = self.b.get(self.i) else {
-                return Err(Self::eof(pointer, self.b.len()));
+                return Err(Self::eof(&self.pointer(at), self.b.len()));
             };
             match c {
                 b'"' => {
@@ -169,7 +259,7 @@ impl Scanner<'_> {
                             .into_owned()
                     };
                     let Some(&e) = self.b.get(self.i + 1) else {
-                        return Err(Self::eof(pointer, start));
+                        return Err(Self::eof(&self.pointer(at), start));
                     };
                     let simple = match e {
                         b'"' => Some('"'),
@@ -190,26 +280,26 @@ impl Scanner<'_> {
                     if e != b'u' {
                         return Err(Self::err(
                             &format!("invalid escape sequence `{}` in string", window(self, 2)),
-                            pointer,
+                            &self.pointer(at),
                             start,
                         ));
                     }
                     if self.b.len() < start + 6
                         && self.b[start + 2..].iter().all(u8::is_ascii_hexdigit)
                     {
-                        return Err(Self::eof(pointer, start));
+                        return Err(Self::eof(&self.pointer(at), start));
                     }
                     let Some(u) = self.hex4(start + 2) else {
                         return Err(Self::err(
                             &format!("invalid escape sequence `{}` in string", window(self, 6)),
-                            pointer,
+                            &self.pointer(at),
                             start,
                         ));
                     };
                     let surrogate = |s: &Self| {
                         Scanner::<'_>::err(
                             &format!("invalid surrogate pair `{}` in string", window(s, 12)),
-                            pointer,
+                            &s.pointer(at),
                             start,
                         )
                     };
@@ -238,7 +328,7 @@ impl Scanner<'_> {
                     return Err(self.invalid_char(
                         self.i,
                         "in string (expecting non-control character)",
-                        pointer,
+                        &self.pointer(at),
                     ));
                 }
                 c if c < 0x80 => {
@@ -262,7 +352,7 @@ impl Scanner<'_> {
                             out.push_str(s);
                             self.i += len;
                         }
-                        None => return Err(Self::err("invalid UTF-8", pointer, self.i)),
+                        None => return Err(Self::err("invalid UTF-8", &self.pointer(at), self.i)),
                     }
                 }
             }
@@ -270,15 +360,14 @@ impl Scanner<'_> {
     }
 
     fn literal(&mut self, lit: &'static [u8], name: &str) -> Result<(), String> {
-        let ptr = self.value_ptr();
         if let Some(result) = lit.iter().enumerate().find_map(|(k, &want)| {
             match self.b.get(self.i + k) {
-                None => return Some(Err(Self::eof(&ptr, self.b.len()))),
+                None => return Some(Err(Self::eof(&self.value_ptr(), self.b.len()))),
                 Some(&got) if got != want => {
                     return Some(Err(self.invalid_char(
                         self.i + k,
                         &format!("in literal {name} (expecting {})", quote_char(want as char)),
-                        &ptr,
+                        &self.value_ptr(),
                     )));
                 }
                 _ => {}
@@ -294,14 +383,13 @@ impl Scanner<'_> {
 
     /// -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
     fn number(&mut self) -> Result<(), String> {
-        let ptr = self.value_ptr();
         let start = self.i;
         let b = self.b;
         let mut j = self.i;
         let digit_expected = |s: &Self, j: usize| -> String {
             match b.get(j) {
-                None => Scanner::<'_>::eof(&ptr, start),
-                Some(_) => s.invalid_char(j, "in number (expecting digit)", &ptr),
+                None => Scanner::<'_>::eof(&s.value_ptr(), start),
+                Some(_) => s.invalid_char(j, "in number (expecting digit)", &s.value_ptr()),
             }
         };
         if b.get(j) == Some(&b'-') {
@@ -332,7 +420,28 @@ impl Scanner<'_> {
             j += b.iter().skip(j).take_while(|b| b.is_ascii_digit()).count();
         }
         self.i = j;
+        if self.build.is_some() {
+            self.emit_number(start, j);
+        }
         Ok(())
+    }
+
+    fn emit_number(&mut self, start: usize, end: usize) {
+        // Valid number syntax is ASCII.
+        let text = std::str::from_utf8(&self.b[start..end]).unwrap_or_default();
+        if let Some(n) = exact_integer_value(text) {
+            self.emit(|| Value::Number(n));
+            return;
+        }
+        let pointer = self.value_ptr();
+        let n = text.parse::<f64>().ok().filter(|f| f.is_finite());
+        if let Some(build) = &mut self.build {
+            build.lexemes.insert(pointer, text.to_string());
+            if n.is_none() {
+                build.out_of_range.get_or_insert(end);
+            }
+        }
+        self.emit(|| n.map_or(Value::Null, Value::Number));
     }
 
     /// Reads one value at `self.i` (already past whitespace). Containers are pushed and left open.
@@ -345,27 +454,36 @@ impl Scanner<'_> {
                 }
                 self.i += 1;
                 if c == b'{' {
-                    self.stack.push(Frame::Object { keys: FxHashSet::default(), current: None });
+                    self.open(Frame::Object { keys: FxHashSet::default(), current: None });
                     Ok(Expect::FirstName)
                 } else {
-                    self.stack.push(Frame::Array { index: 0 });
+                    self.open(Frame::Array { index: 0 });
                     self.skip_ws();
                     if self.b.get(self.i) == Some(&b']') {
                         self.i += 1;
-                        self.stack.pop();
+                        self.close();
                         return Ok(Expect::AfterValue);
                     }
                     Ok(Expect::Value)
                 }
             }
             b'"' => {
-                let ptr = self.value_ptr();
-                self.string(&ptr)?;
+                let text = self.string(At::Value)?;
+                self.emit(|| Value::String(text));
                 Ok(Expect::AfterValue)
             }
-            b't' => self.literal(b"true", "true").map(|()| Expect::AfterValue),
-            b'f' => self.literal(b"false", "false").map(|()| Expect::AfterValue),
-            b'n' => self.literal(b"null", "null").map(|()| Expect::AfterValue),
+            b't' => self.literal(b"true", "true").map(|()| {
+                self.emit(|| Value::Bool(true));
+                Expect::AfterValue
+            }),
+            b'f' => self.literal(b"false", "false").map(|()| {
+                self.emit(|| Value::Bool(false));
+                Expect::AfterValue
+            }),
+            b'n' => self.literal(b"null", "null").map(|()| {
+                self.emit(|| Value::Null);
+                Expect::AfterValue
+            }),
             b'-' | b'0'..=b'9' => self.number().map(|()| Expect::AfterValue),
             _ => Err(self.invalid_char(self.i, "at start of value", &self.value_ptr())),
         }
@@ -415,7 +533,7 @@ impl Scanner<'_> {
                     }
                     if c == b'}' {
                         self.i += 1;
-                        self.stack.pop();
+                        self.close();
                         expect = Expect::AfterValue;
                         continue;
                     }
@@ -431,18 +549,22 @@ impl Scanner<'_> {
                         }
                         return Err(self.invalid_char(self.i, "at start of value", &ptr));
                     }
-                    let ptr = self.container_ptr();
-                    let name = self.string(&ptr)?;
+                    let name = self.string(At::Container)?;
+                    // Decoding finds earlier members in the object being built; validating keeps a key set.
+                    let decoded_duplicate = match self.build.as_ref().and_then(|b| b.open.last()) {
+                        Some(Partial::Object(members)) => Some(members.contains_key(&name)),
+                        _ => None,
+                    };
                     let Some(Frame::Object { keys, current }) = self.stack.last_mut() else {
                         unreachable!()
                     };
-                    if !keys.insert(name.clone()) {
+                    if decoded_duplicate.unwrap_or_else(|| !keys.insert(name.clone())) {
                         return Err(Self::err(
                             &format!(
                                 "duplicate object member name {}",
                                 serde_json::to_string(&name).unwrap()
                             ),
-                            &ptr,
+                            &self.container_ptr(),
                             0,
                         ));
                     }
@@ -450,15 +572,14 @@ impl Scanner<'_> {
                     expect = Expect::Colon;
                 }
                 Expect::Colon => {
-                    let ptr = self.value_ptr();
                     if at_end {
-                        return Err(Self::eof(&ptr, self.i));
+                        return Err(Self::eof(&self.value_ptr(), self.i));
                     }
                     if self.b[self.i] != b':' {
                         return Err(self.invalid_char(
                             self.i,
                             "after object name (expecting ':')",
-                            &ptr,
+                            &self.value_ptr(),
                         ));
                     }
                     self.i += 1;
@@ -489,7 +610,7 @@ impl Scanner<'_> {
                         }
                         (Frame::Object { .. }, b'}') | (Frame::Array { .. }, b']') => {
                             self.i += 1;
-                            self.stack.pop();
+                            self.close();
                         }
                         (Frame::Object { .. }, b']') => {
                             return Err(self.invalid_char(
@@ -521,5 +642,291 @@ impl Scanner<'_> {
 
 /// Validates one JSON document with jsontext's strictness (see module docs).
 pub fn validate(input: &[u8]) -> Result<(), String> {
-    Scanner { b: input, i: 0, stack: Vec::new(), comma: None }.run()
+    Scanner { b: input, i: 0, stack: Vec::new(), comma: None, build: None }.run()
+}
+
+/// `validate`, then `json::unmarshal`, in one scan: the same errors, in the same order.
+pub fn decode(input: &[u8]) -> Result<Decoded, DecodeError> {
+    decode_with_names(input, |_| None)
+}
+
+/// `decode`, taking member names from `names` where it has them (a request's protocol field names), so
+/// those members borrow their names instead of allocating them.
+pub fn decode_with_names(
+    input: &[u8],
+    names: fn(&str) -> Option<&'static str>,
+) -> Result<Decoded, DecodeError> {
+    if let Some(value) = fast_decode(input, names) {
+        return Ok(Decoded { value, lexemes: FxHashMap::default() });
+    }
+    decode_scan(input)
+}
+
+/// `decode` by the full scan.
+fn decode_scan(input: &[u8]) -> Result<Decoded, DecodeError> {
+    let mut scanner =
+        Scanner { b: input, i: 0, stack: Vec::new(), comma: None, build: Some(Build::default()) };
+    scanner.run().map_err(DecodeError::Invalid)?;
+    let build = scanner.build.unwrap_or_default();
+    if let Some(offset) = build.out_of_range {
+        return Err(DecodeError::OutOfRange(format!(
+            "jsontext: number out of range at offset {offset}"
+        )));
+    }
+    Ok(Decoded { value: build.root.unwrap_or_default(), lexemes: build.lexemes })
+}
+
+/// Containers nested deeper than this leave the document to the full scan.
+const FAST_MAX_DEPTH: usize = 64;
+
+/// `decode` for the common request document, or `None` to leave it to the full scan: every string is
+/// printable ASCII without escapes, every number is an integer of at most 15 digits (exact in an f64, so it
+/// needs no literal), and containers nest at most `FAST_MAX_DEPTH` deep. Whatever it accepts the full scan
+/// accepts with the same value; it never reports an error itself, so error texts all come from the scan.
+fn fast_decode(input: &[u8], names: fn(&str) -> Option<&'static str>) -> Option<Value> {
+    let text = std::str::from_utf8(input).ok()?;
+    let mut parser = FastParser {
+        s: text,
+        b: input,
+        i: 0,
+        names,
+        // Room for a request's members, so the stack does not grow on every request.
+        members: Vec::with_capacity(16),
+        items: Vec::new(),
+    };
+    parser.ws();
+    let value = parser.value(0)?;
+    parser.ws();
+    (parser.i == input.len()).then_some(value)
+}
+
+struct FastParser<'a> {
+    s: &'a str,
+    b: &'a [u8],
+    i: usize,
+    names: fn(&str) -> Option<&'static str>,
+    /// The members of the objects being read, innermost last: each container is collected here and moved out
+    /// at its exact size when it closes.
+    members: Vec<(Key, Value)>,
+    /// The same for arrays.
+    items: Vec<Value>,
+}
+
+impl FastParser<'_> {
+    fn ws(&mut self) {
+        while matches!(self.b.get(self.i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            self.i += 1;
+        }
+    }
+
+    fn eat(&mut self, c: u8) -> Option<()> {
+        (self.b.get(self.i) == Some(&c)).then(|| self.i += 1)
+    }
+
+    fn value(&mut self, depth: usize) -> Option<Value> {
+        match *self.b.get(self.i)? {
+            b'{' => self.object(depth),
+            b'[' => self.array(depth),
+            b'"' => self.string().map(Value::String),
+            b't' => self.literal("true", Value::Bool(true)),
+            b'f' => self.literal("false", Value::Bool(false)),
+            b'n' => self.literal("null", Value::Null),
+            b'-' | b'0'..=b'9' => self.number(),
+            _ => None,
+        }
+    }
+
+    fn object(&mut self, depth: usize) -> Option<Value> {
+        if depth >= FAST_MAX_DEPTH {
+            return None;
+        }
+        self.i += 1;
+        self.ws();
+        if self.eat(b'}').is_some() {
+            return Some(Value::Object(JsonMap::new()));
+        }
+        let base = self.members.len();
+        loop {
+            self.ws();
+            let key = self.member_name()?;
+            self.ws();
+            self.eat(b':')?;
+            self.ws();
+            let value = self.value(depth + 1)?;
+            self.members.push((key, value));
+            self.ws();
+            match *self.b.get(self.i)? {
+                b',' => self.i += 1,
+                b'}' => {
+                    self.i += 1;
+                    // A duplicate member name is an error: the full scan reports it.
+                    return JsonMap::from_distinct(self.members.split_off(base)).map(Value::Object);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn array(&mut self, depth: usize) -> Option<Value> {
+        if depth >= FAST_MAX_DEPTH {
+            return None;
+        }
+        self.i += 1;
+        self.ws();
+        if self.eat(b']').is_some() {
+            return Some(Value::Array(Vec::new()));
+        }
+        let base = self.items.len();
+        loop {
+            self.ws();
+            let item = self.value(depth + 1)?;
+            self.items.push(item);
+            self.ws();
+            match *self.b.get(self.i)? {
+                b',' => self.i += 1,
+                b']' => {
+                    self.i += 1;
+                    return Some(Value::Array(self.items.split_off(base)));
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// A string of printable ASCII without escapes.
+    fn string(&mut self) -> Option<String> {
+        self.text().map(str::to_string)
+    }
+
+    fn member_name(&mut self) -> Option<Key> {
+        let names = self.names;
+        let name = self.text()?;
+        Some(names(name).map_or_else(|| Key::Owned(name.to_string()), Key::Borrowed))
+    }
+
+    /// The contents of a string of printable ASCII without escapes.
+    fn text(&mut self) -> Option<&str> {
+        if self.b.get(self.i) != Some(&b'"') {
+            return None;
+        }
+        let start = self.i + 1;
+        let len = tsrs_core::json::plain_ascii_len(&self.b[start..]);
+        if self.b.get(start + len) != Some(&b'"') {
+            return None;
+        }
+        self.i = start + len + 1;
+        self.s.get(start..start + len)
+    }
+
+    fn literal(&mut self, word: &str, value: Value) -> Option<Value> {
+        if !self.b[self.i..].starts_with(word.as_bytes()) {
+            return None;
+        }
+        self.i += word.len();
+        Some(value)
+    }
+
+    /// `-?(0|[1-9][0-9]*)` of at most 15 digits, not followed by a fraction or an exponent.
+    fn number(&mut self) -> Option<Value> {
+        let start = self.i;
+        if self.b[self.i] == b'-' {
+            self.i += 1;
+        }
+        let digits = self.b[self.i..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if digits == 0 || (digits > 1 && self.b[self.i] == b'0') {
+            return None;
+        }
+        self.i += digits;
+        if matches!(self.b.get(self.i), Some(b'.' | b'e' | b'E')) {
+            return None;
+        }
+        exact_integer_value(&self.s[start..self.i]).map(Value::Number)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_scan, fast_decode};
+
+    const SEEDS: &[&str] = &[
+        r#"{"snapshot":1,"project":"/p/tsconfig.json","symbol":{"kind":0,"file":{"fileName":"/p/a.ts","path":"/p/a.ts","contentHash":"2bf6352bdccdb064eede8738b1391b80","parseOptionsKey":"0","scriptKind":3,"nodeId":"95"},"id":10}}"#,
+        r#"{"snapshot":2,"project":"/p/tsconfig.json","types":[1,2,3],"flags":-7,"ok":true,"no":false,"z":null}"#,
+        r#" [ {"a" : [ [] , {} , 0 , -0 , 123456789012345 ] } ] "#,
+        r#"{"a":{"b":{"c":{"d":[null,true,false,"x"]}}}}"#,
+    ];
+
+    /// Mutations of request-shaped documents: wherever the fast path accepts, the full scan accepts with
+    /// the same value (compared as marshaled text, which keeps member order) and no recorded literals.
+    #[test]
+    fn fast_path_accepts_only_what_the_scan_accepts_identically() {
+        let marshal = |v: &tsrs_core::json::Value| tsrs_core::json::marshal(v).unwrap();
+        for seed in SEEDS {
+            let fast = fast_decode(seed.as_bytes(), |_| None)
+                .unwrap_or_else(|| panic!("fast path declined {seed}"));
+            assert_eq!(marshal(&fast), marshal(&decode_scan(seed.as_bytes()).ok().unwrap().value));
+        }
+        let alphabet = br#"{}[]":,-0123456789.eE+tfnrulsa \/u"#;
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+        let (mut accepted, mut cases) = (0, 0);
+        for round in 0..40_000 {
+            let mut doc = SEEDS[round % SEEDS.len()].as_bytes().to_vec();
+            for _ in 0..=next(3) {
+                let at = next(doc.len() + 1);
+                let c = alphabet[next(alphabet.len())];
+                match next(4) {
+                    0 if at < doc.len() => {
+                        doc.remove(at);
+                    }
+                    1 if at < doc.len() => doc[at] = c,
+                    2 if at < doc.len() => {
+                        // Repeat a stretch, which duplicates member names and values.
+                        let end = (at + 1 + next(24)).min(doc.len());
+                        let stretch = doc[at..end].to_vec();
+                        doc.splice(at..at, stretch);
+                    }
+                    _ => doc.insert(at, c),
+                }
+            }
+            cases += 1;
+            // Some member names are borrowed and some allocated, as with a request's field names.
+            let names =
+                |name: &str| ["snapshot", "project", "file", "a"].into_iter().find(|n| *n == name);
+            let Some(fast) = fast_decode(&doc, names) else { continue };
+            accepted += 1;
+            let shown = String::from_utf8_lossy(&doc);
+            let full = decode_scan(&doc).unwrap_or_else(|_| panic!("fast path accepted {shown}"));
+            assert!(full.lexemes.is_empty(), "{shown}");
+            assert_eq!(marshal(&fast), marshal(&full.value), "{shown}");
+        }
+        // Enough mutants stay valid for this to test acceptance, not only rejection.
+        assert!(accepted * 20 > cases, "{accepted} of {cases}");
+    }
+
+    #[test]
+    fn fast_path_leaves_what_it_does_not_handle_to_the_scan() {
+        for doc in [
+            "",
+            r#"{"a":"\u0041"}"#,
+            r#"{"a":"é"}"#,
+            r#"{"a":1.5}"#,
+            r#"{"a":1e3}"#,
+            r#"{"a":1234567890123456}"#,
+            r#"{"a":1,"a":2}"#,
+            r#"{"a":01}"#,
+            "[1,]",
+            r#"{"a":1}x"#,
+        ] {
+            assert!(fast_decode(doc.as_bytes(), |_| None).is_none(), "{doc}");
+        }
+        let deep = format!("{}{}", "[".repeat(65), "]".repeat(65));
+        assert!(fast_decode(deep.as_bytes(), |_| None).is_none());
+        let ok = format!("{}{}", "[".repeat(64), "]".repeat(64));
+        assert!(fast_decode(ok.as_bytes(), |_| None).is_some());
+    }
 }

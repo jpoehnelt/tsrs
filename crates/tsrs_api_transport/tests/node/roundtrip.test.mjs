@@ -3,7 +3,7 @@
 // Run: TS_REF=<ts-ref> SERVER=<transport_test_server> node --conditions=@typescript/source --test <this file>
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -324,12 +324,15 @@ describe("async client (JSON-RPC, pinned vscode-jsonrpc client)", () => {
     });
 
     test("unix socket transport (--pipe)", { skip: process.platform === "win32" }, async () => {
-        const pipe = join(tmp, "api.sock");
-        const child = spawn(SERVER, ["--api", "--async", "--cwd", tmp, "--pipe", pipe], { stdio: ["ignore", "pipe", "inherit"] });
+        const pipeDir = join(tmp, "api-pipe");
+        const pipe = join(pipeDir, "socket");
+        const child = spawn(SERVER, ["--api", "--async", "--cwd", tmp, "--pipe", pipeDir], { stdio: ["ignore", "pipe", "inherit"] });
         let stdout = "";
         child.stdout.on("data", d => stdout += d);
         const exited = new Promise(resolve => child.once("exit", code => resolve(code)));
         for (let i = 0; i < 200 && !existsSync(pipe); i++) await new Promise(r => setTimeout(r, 10));
+        assert.equal(statSync(pipeDir).mode & 0o777, 0o700);
+        assert.equal(statSync(pipe).mode & 0o777, 0o600);
         const c = new AsyncClient({ pipe });
         try {
             assert.equal(await c.apiRequest("ping", null), "pong");
@@ -341,5 +344,6 @@ describe("async client (JSON-RPC, pinned vscode-jsonrpc client)", () => {
         assert.equal(await exited, 0);
         assert.equal(stdout, "", "socket mode must not write to stdout");
         assert.equal(existsSync(pipe), false, "socket file is removed on exit");
+        assert.equal(existsSync(pipeDir), false, "private socket directory is removed on exit");
     });
 });

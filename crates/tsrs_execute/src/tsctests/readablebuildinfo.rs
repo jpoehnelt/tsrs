@@ -1,16 +1,15 @@
 // Port of execute/tsctests/readablebuildinfo.go (only the marshaling direction is used by the harness).
 
-use tsrs_core::collections::OrderedMap;
-use tsrs_core::json::Value;
+use tsrs_core::json::{JsonMap, Value};
 use tsrs_incremental::{
     BuildInfo, BuildInfoDiagnostic, BuildInfoDiagnosticsOfFile, BuildInfoFileId, FileEmitKind,
     get_file_emit_kind,
 };
 
 #[derive(Default)]
-struct obj(OrderedMap<String, Value>);
+struct Obj(JsonMap);
 
-impl obj {
+impl Obj {
     fn set(&mut self, k: &str, v: Value) {
         self.0.insert(k.to_string(), v);
     }
@@ -48,12 +47,12 @@ fn map_nonempty<T>(v: &[T], f: impl Fn(&T) -> Value) -> Option<Vec<Value>> {
     if v.is_empty() { None } else { Some(v.iter().map(f).collect()) }
 }
 
-struct readable<'a> {
+struct Readable<'a> {
     build_info: &'a BuildInfo,
     file_ids_list: Vec<Vec<String>>,
 }
 
-impl readable<'_> {
+impl Readable<'_> {
     fn to_file_path(&self, file_id: BuildInfoFileId) -> String {
         self.build_info.file_names[file_id as usize - 1].clone()
     }
@@ -62,7 +61,7 @@ impl readable<'_> {
         diagnostics
             .iter()
             .map(|d| {
-                let mut o = obj::default();
+                let mut o = Obj::default();
                 if d.file != 0 {
                     o.str("file", &self.to_file_path(d.file));
                 }
@@ -89,7 +88,7 @@ impl readable<'_> {
                 o.bool("reportsDeprecated", d.reports_deprecated);
                 o.bool("skippedOnNoEmit", d.skipped_on_no_emit);
                 if let Some(info) = &d.repopulate_info {
-                    let mut r = obj::default();
+                    let mut r = Obj::default();
                     r.set("kind", Value::Number(info.kind as i32 as f64));
                     r.str("moduleReference", &info.module_reference);
                     r.int("mode", info.mode.value() as i64);
@@ -110,7 +109,7 @@ impl readable<'_> {
 }
 
 // readablebuildinfo.go:375
-pub(crate) fn to_readable_file_emit_kind(file_emit_kind: FileEmitKind) -> String {
+pub fn to_readable_file_emit_kind(file_emit_kind: FileEmitKind) -> String {
     let mut builder = String::new();
     let mut add_flags = |flags: &str| {
         if !builder.is_empty() {
@@ -149,14 +148,14 @@ pub(crate) fn to_readable_file_emit_kind(file_emit_kind: FileEmitKind) -> String
 }
 
 // readablebuildinfo.go:240
-pub(crate) fn to_readable_build_info(build_info: &BuildInfo, build_info_text: &str) -> String {
+pub fn to_readable_build_info(build_info: &BuildInfo, build_info_text: &str) -> String {
     let file_ids_list: Vec<Vec<String>> = build_info
         .file_ids_list
         .iter()
         .map(|ids| ids.iter().map(|&id| build_info.file_names[id as usize - 1].clone()).collect())
         .collect();
-    let r = readable { build_info, file_ids_list };
-    let mut o = obj::default();
+    let r = Readable { build_info, file_ids_list };
+    let mut o = Obj::default();
     o.str("version", &build_info.version);
     o.bool("errors", build_info.errors);
     o.bool("checkPending", build_info.check_pending);
@@ -171,7 +170,7 @@ pub(crate) fn to_readable_build_info(build_info: &BuildInfo, build_info_text: &s
             } else {
                 (original.start..=original.end).map(|i| r.to_file_path(i)).collect()
             };
-            let mut ro = obj::default();
+            let mut ro = Obj::default();
             if !files.is_empty() {
                 ro.set("files", strings(&files));
             }
@@ -196,7 +195,7 @@ pub(crate) fn to_readable_build_info(build_info: &BuildInfo, build_info_text: &s
             .enumerate()
             .map(|(index, original)| {
                 let file_info = original.get_file_info();
-                let mut fo = obj::default();
+                let mut fo = Obj::default();
                 fo.str("fileName", &r.to_file_path(index as BuildInfoFileId + 1));
                 fo.str("version", file_info.version());
                 fo.str("signature", file_info.signature());
@@ -216,7 +215,7 @@ pub(crate) fn to_readable_build_info(build_info: &BuildInfo, build_info_text: &s
         o.set("options", Value::Object(options.clone()));
     }
     if !build_info.referenced_map.is_empty() {
-        let mut m = OrderedMap::default();
+        let mut m = JsonMap::new();
         m.extend(build_info.referenced_map.iter().map(|entry| {
             (
                 r.to_file_path(entry.file_id),
@@ -271,7 +270,7 @@ pub(crate) fn to_readable_build_info(build_info: &BuildInfo, build_info_text: &s
     o.list(
         "emitSignatures",
         map_nonempty(&build_info.emit_signatures, |signature| {
-            let mut so = obj::default();
+            let mut so = Obj::default();
             so.str("file", &r.to_file_path(signature.file_id));
             so.str("signature", &signature.signature);
             so.bool("differsOnlyInDtsMap", signature.differs_only_in_dts_map);

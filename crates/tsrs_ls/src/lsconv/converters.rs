@@ -107,7 +107,7 @@ impl Script for P<SourceFile> {
 
 // The Go functions that return the `Script` interface return either the script they were given or an
 // `originalTextScript`.
-pub(crate) enum AnyScript<'a> {
+pub enum AnyScript<'a> {
     Script(&'a dyn Script),
     Original(OriginalTextScript<'a>),
 }
@@ -623,16 +623,7 @@ pub fn file_name_to_document_uri(file_name: &str) -> lsproto::DocumentUri {
         return lsproto::DocumentUri(file_name.to_string());
     }
     if tspath::is_dynamic_file_name(file_name) {
-        let Some((scheme, rest)) = file_name[2..].split_once('/') else {
-            panic!("invalid file name: {file_name}");
-        };
-        let Some((authority, path)) = rest.split_once('/') else {
-            panic!("invalid file name: {file_name}");
-        };
-        if authority == "ts-nul-authority" {
-            return lsproto::DocumentUri(format!("{scheme}:{path}"));
-        }
-        return lsproto::DocumentUri(format!("{scheme}://{authority}/{path}"));
+        return lsproto::DocumentUri::dynamic_file_name_to_document_uri(file_name);
     }
 
     let (mut volume, file_name) = match tspath::split_volume_path(file_name) {
@@ -879,14 +870,14 @@ pub fn diagnostic_to_lsp_push(
 // converters.go:482
 static STYLE_CHECK_DIAGNOSTICS: LazyLock<FxHashSet<i32>> = LazyLock::new(|| {
     [
-        diagnostics::X_0_is_declared_but_never_used.code(),
-        diagnostics::X_0_is_declared_but_its_value_is_never_read.code(),
-        diagnostics::Property_0_is_declared_but_its_value_is_never_read.code(),
-        diagnostics::All_imports_in_import_declaration_are_unused.code(),
-        diagnostics::Unreachable_code_detected.code(),
-        diagnostics::Unused_label.code(),
-        diagnostics::Fallthrough_case_in_switch.code(),
-        diagnostics::Not_all_code_paths_return_a_value.code(),
+        diagnostics::X_0_IS_DECLARED_BUT_NEVER_USED.code(),
+        diagnostics::X_0_IS_DECLARED_BUT_ITS_VALUE_IS_NEVER_READ.code(),
+        diagnostics::PROPERTY_0_IS_DECLARED_BUT_ITS_VALUE_IS_NEVER_READ.code(),
+        diagnostics::ALL_IMPORTS_IN_IMPORT_DECLARATION_ARE_UNUSED.code(),
+        diagnostics::UNREACHABLE_CODE_DETECTED.code(),
+        diagnostics::UNUSED_LABEL.code(),
+        diagnostics::FALLTHROUGH_CASE_IN_SWITCH.code(),
+        diagnostics::NOT_ALL_CODE_PATHS_RETURN_A_VALUE.code(),
     ]
     .into_iter()
     .collect()
@@ -903,10 +894,10 @@ fn diagnostic_to_lsp(
     let mut severity = diagnostic_severity(diagnostic.category());
 
     if opts.report_style_checks_as_warnings
-        && severity == lsproto::DiagnosticSeverity::Error
+        && severity == lsproto::DiagnosticSeverity::ERROR
         && STYLE_CHECK_DIAGNOSTICS.contains(&diagnostic.code())
     {
-        severity = lsproto::DiagnosticSeverity::Warning;
+        severity = lsproto::DiagnosticSeverity::WARNING;
     }
 
     let mut related_information: Vec<lsproto::DiagnosticRelatedInformation> = Vec::new();
@@ -941,14 +932,14 @@ fn diagnostic_to_lsp(
     {
         tags.reserve(2);
         if diagnostic.reports_unnecessary()
-            && opts.tag_value_set.contains(&lsproto::DiagnosticTag::Unnecessary)
+            && opts.tag_value_set.contains(&lsproto::DiagnosticTag::UNNECESSARY)
         {
-            tags.push(lsproto::DiagnosticTag::Unnecessary);
+            tags.push(lsproto::DiagnosticTag::UNNECESSARY);
         }
         if diagnostic.reports_deprecated()
-            && opts.tag_value_set.contains(&lsproto::DiagnosticTag::Deprecated)
+            && opts.tag_value_set.contains(&lsproto::DiagnosticTag::DEPRECATED)
         {
-            tags.push(lsproto::DiagnosticTag::Deprecated);
+            tags.push(lsproto::DiagnosticTag::DEPRECATED);
         }
     }
 
@@ -1030,7 +1021,7 @@ fn diagnostic_script_and_range(
 // originalTextScript presents a content-mapped file's original (untransformed) text as a Script, so that
 // ranges already mapped into that text convert to the correct line/character positions.
 // converters.go:596
-pub(crate) struct OriginalTextScript<'a> {
+pub struct OriginalTextScript<'a> {
     file_name: &'a str,
     text: &'a str,
 }
@@ -1062,10 +1053,10 @@ impl Script for OriginalTextScript<'_> {
 // converters.go:608
 fn diagnostic_severity(category: Category) -> lsproto::DiagnosticSeverity {
     match category {
-        Category::Suggestion => lsproto::DiagnosticSeverity::Hint,
-        Category::Message => lsproto::DiagnosticSeverity::Information,
-        Category::Warning => lsproto::DiagnosticSeverity::Warning,
-        Category::Error => lsproto::DiagnosticSeverity::Error,
+        Category::Suggestion => lsproto::DiagnosticSeverity::HINT,
+        Category::Message => lsproto::DiagnosticSeverity::INFORMATION,
+        Category::Warning => lsproto::DiagnosticSeverity::WARNING,
+        Category::Error => lsproto::DiagnosticSeverity::ERROR,
     }
 }
 

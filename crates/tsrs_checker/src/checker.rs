@@ -156,6 +156,8 @@ pub enum CachedTypeKind {
     DecoratorContextStatic,
     DecoratorContextPrivate,
     DecoratorContextPrivateStatic,
+    SimplifiedConditionalTypeForReading,
+    SimplifiedConditionalTypeForWriting,
 }
 
 // CachedTypeKey
@@ -194,11 +196,11 @@ pub struct CachedSignatureKey {
     pub key: CacheHashKey, // Type list key or one of the special keys below
 }
 
-pub const SignatureKeyErased: CacheHashKey = CacheHashKey::hash_string_128("-");
-pub const SignatureKeyCanonical: CacheHashKey = CacheHashKey::hash_string_128("*");
-pub const SignatureKeyBase: CacheHashKey = CacheHashKey::hash_string_128("#");
-pub const SignatureKeyInner: CacheHashKey = CacheHashKey::hash_string_128("<");
-pub const SignatureKeyOuter: CacheHashKey = CacheHashKey::hash_string_128(">");
+pub const SIGNATURE_KEY_ERASED: CacheHashKey = CacheHashKey::hash_string_128("-");
+pub const SIGNATURE_KEY_CANONICAL: CacheHashKey = CacheHashKey::hash_string_128("*");
+pub const SIGNATURE_KEY_BASE: CacheHashKey = CacheHashKey::hash_string_128("#");
+pub const SIGNATURE_KEY_INNER: CacheHashKey = CacheHashKey::hash_string_128("<");
+pub const SIGNATURE_KEY_OUTER: CacheHashKey = CacheHashKey::hash_string_128(">");
 
 // StringMappingKey
 
@@ -448,10 +450,10 @@ impl InferenceContext {
     // `recycle` frees them with it (notes/mem-scoped-arenas.md).
     pub fn set_return_mapper(&self, mapper: Option<P<TypeMapper>>) {
         if mapper.is_some() || self.rare().is_some() {
-            if let Some(m) = mapper {
-                if self.escaped() {
-                    escape_mapper(m);
-                }
+            if let Some(m) = mapper
+                && self.escaped()
+            {
+                escape_mapper(m);
             }
             self.rare_for_write().return_mapper.set(mapper);
         }
@@ -461,10 +463,10 @@ impl InferenceContext {
     }
     pub fn set_outer_return_mapper(&self, mapper: Option<P<TypeMapper>>) {
         if mapper.is_some() || self.rare().is_some() {
-            if let Some(m) = mapper {
-                if self.escaped() {
-                    escape_mapper(m);
-                }
+            if let Some(m) = mapper
+                && self.escaped()
+            {
+                escape_mapper(m);
             }
             self.rare_for_write().outer_return_mapper.set(mapper);
         }
@@ -522,20 +524,20 @@ impl InferenceContext {
             // outer return mapper `createOuterReturnMapper` cached here (the mapper of another clone, merged after
             // the return mapper of that time). Only this context refers to them unless they escaped.
             let return_mapper = rare.return_mapper.get();
-            if let Some(o) = rare.outer_return_mapper.get() {
-                if !o.escaped() {
-                    match o.data() {
-                        TypeMapperData::Merged { m1, m2 } => {
-                            // SAFETY: made by `createOuterReturnMapper` for this context only.
-                            unsafe { tsrs_core::free!(o) };
-                            InferenceContext::recycle_held_mapper(m2);
-                            if Some(m1) != return_mapper {
-                                // A replaced return mapper: `o` was its last holder.
-                                InferenceContext::recycle_held_mapper(m1);
-                            }
+            if let Some(o) = rare.outer_return_mapper.get()
+                && !o.escaped()
+            {
+                match o.data() {
+                    TypeMapperData::Merged { m1, m2 } => {
+                        // SAFETY: made by `createOuterReturnMapper` for this context only.
+                        unsafe { tsrs_core::free!(o) };
+                        InferenceContext::recycle_held_mapper(m2);
+                        if Some(m1) != return_mapper {
+                            // A replaced return mapper: `o` was its last holder.
+                            InferenceContext::recycle_held_mapper(m1);
                         }
-                        _ => InferenceContext::recycle_held_mapper(o),
                     }
+                    _ => InferenceContext::recycle_held_mapper(o),
                 }
             }
             if let Some(r) = return_mapper {
@@ -630,81 +632,103 @@ pub struct InferenceInfo {
 }
 
 #[cfg(target_pointer_width = "64")]
+// Four pointer-sized fields plus eight bytes of priority, arity and flags.
 const _: () = assert!(
-    std::mem::size_of::<InferenceInfo>() == if tsrs_core::COMPRESSED_PTRS { 28 } else { 48 }
+    std::mem::size_of::<InferenceInfo>() == if tsrs_core::COMPRESSED_PTRS { 24 } else { 40 }
 );
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(std::mem::size_of::<InferenceInfo>() == 28);
+const _: () = assert!(std::mem::size_of::<InferenceInfo>() == 24);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum InferencePriorityRepr {
     Circularity,
-    // Store bits + 1 so zero remains the niche for `Circularity` and the wrapper stays four bytes.
-    Bits(std::num::NonZeroU32),
+    // Store (bits << 1) | 1 so zero remains the niche for `Circularity` and finite OR operates
+    // directly on the encoding. The constants and their OR combinations use only bits 0..=11.
+    Bits(std::num::NonZeroU16),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, Eq, Debug)]
 pub struct InferencePriority(InferencePriorityRepr);
 
-#[expect(non_upper_case_globals, reason = "names match the upstream inference priorities")]
 impl InferencePriority {
-    pub const Circularity: Self = Self(InferencePriorityRepr::Circularity);
-    pub const None: Self = Self::from_bits(0);
-    pub const NakedTypeVariable: Self = Self::from_bits(1 << 0); // Naked type variable in union or intersection type
-    pub const SpeculativeTuple: Self = Self::from_bits(1 << 1); // Speculative tuple inference
-    pub const SubstituteSource: Self = Self::from_bits(1 << 2); // Source of inference originated within a substitution type's substitute
-    pub const HomomorphicMappedType: Self = Self::from_bits(1 << 3); // Reverse inference for homomorphic mapped type
-    pub const PartialHomomorphicMappedType: Self = Self::from_bits(1 << 4); // Partial reverse inference for homomorphic mapped type
-    pub const MappedTypeConstraint: Self = Self::from_bits(1 << 5); // Reverse inference for mapped type
-    pub const ContravariantConditional: Self = Self::from_bits(1 << 6); // Conditional type in contravariant position
-    pub const ReturnType: Self = Self::from_bits(1 << 7); // Inference made from return type of generic function
-    pub const LiteralKeyof: Self = Self::from_bits(1 << 8); // Inference made from a string literal to a keyof T
+    pub const CIRCULARITY: Self = Self(InferencePriorityRepr::Circularity);
+    pub const NONE: Self = Self::from_bits(0);
+    pub const NAKED_TYPE_VARIABLE: Self = Self::from_bits(1 << 0); // Naked type variable in union or intersection type
+    pub const SPECULATIVE_TUPLE: Self = Self::from_bits(1 << 1); // Speculative tuple inference
+    pub const SUBSTITUTE_SOURCE: Self = Self::from_bits(1 << 2); // Source of inference originated within a substitution type's substitute
+    pub const HOMOMORPHIC_MAPPED_TYPE: Self = Self::from_bits(1 << 3); // Reverse inference for homomorphic mapped type
+    pub const PARTIAL_HOMOMORPHIC_MAPPED_TYPE: Self = Self::from_bits(1 << 4); // Partial reverse inference for homomorphic mapped type
+    pub const MAPPED_TYPE_CONSTRAINT: Self = Self::from_bits(1 << 5); // Reverse inference for mapped type
+    pub const CONTRAVARIANT_CONDITIONAL: Self = Self::from_bits(1 << 6); // Conditional type in contravariant position
+    pub const RETURN_TYPE: Self = Self::from_bits(1 << 7); // Inference made from return type of generic function
+    pub const LITERAL_KEYOF: Self = Self::from_bits(1 << 8); // Inference made from a string literal to a keyof T
     // These priorities imply that the resulting type should be a combination of all candidates.
-    pub const PriorityImpliesCombination: Self = Self::from_bits((1 << 7) | (1 << 5) | (1 << 8));
-    pub const NoConstraints: Self = Self::from_bits(1 << 9); // Don't infer from constraints of instantiable types
-    pub const AlwaysStrict: Self = Self::from_bits(1 << 10); // Always use strict rules for contravariant inferences
-    pub const MaxValue: Self = Self::from_bits(1 << 11); // Seed for inference priority tracking
+    pub const PRIORITY_IMPLIES_COMBINATION: Self = Self::from_bits((1 << 7) | (1 << 5) | (1 << 8));
+    pub const NO_CONSTRAINTS: Self = Self::from_bits(1 << 9); // Don't infer from constraints of instantiable types
+    pub const ALWAYS_STRICT: Self = Self::from_bits(1 << 10); // Always use strict rules for contravariant inferences
+    pub const MAX_VALUE: Self = Self::from_bits(1 << 11); // Seed for inference priority tracking
 
-    const fn from_bits(bits: u32) -> Self {
-        // SAFETY: every priority bit is below `MaxValue`, so adding one cannot overflow or produce zero.
-        Self(InferencePriorityRepr::Bits(unsafe { std::num::NonZeroU32::new_unchecked(bits + 1) }))
+    const fn from_bits(bits: u16) -> Self {
+        assert!(bits <= u16::MAX >> 1, "inference priority exceeds u16 storage");
+        Self(InferencePriorityRepr::Bits(
+            std::num::NonZeroU16::new((bits << 1) | 1)
+                .expect("encoded inference priority is nonzero"),
+        ))
     }
 
-    const fn bits(self) -> Option<u32> {
+    const fn bits(self) -> Option<u16> {
         match self.0 {
             InferencePriorityRepr::Circularity => None,
-            InferencePriorityRepr::Bits(bits) => Some(bits.get() - 1),
+            InferencePriorityRepr::Bits(bits) => Some(bits.get() >> 1),
+        }
+    }
+
+    // Circularity sorts first; each finite priority keeps its order in the odd encoding.
+    // This safe match also gives equality a single value to compare instead of separate variants.
+    #[inline]
+    const fn order_key(self) -> u16 {
+        match self.0 {
+            InferencePriorityRepr::Circularity => 0,
+            InferencePriorityRepr::Bits(bits) => bits.get(),
         }
     }
 
     pub fn intersects(self, other: Self) -> bool {
-        match (self.bits(), other.bits()) {
-            (Some(left), Some(right)) => left & right != 0,
-            _ => false,
-        }
+        // The low bit marks finite values, not a flag. Circularity's zero key intersects nothing.
+        self.order_key() & other.order_key() & !1 != 0
     }
 
     pub(crate) fn memo_bits(self) -> u32 {
-        self.bits().unwrap_or(u32::MAX)
+        self.bits().map_or(u32::MAX, u32::from)
     }
 }
 
 impl Default for InferencePriority {
     fn default() -> Self {
-        Self::None
+        Self::NONE
     }
 }
 
-const _: () = assert!(std::mem::size_of::<InferencePriority>() == 4);
+const _: () = assert!(std::mem::size_of::<InferencePriority>() == 2);
+
+impl PartialEq for InferencePriority {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.order_key() == other.order_key()
+    }
+}
+
+impl std::hash::Hash for InferencePriority {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.0, state);
+    }
+}
 
 impl Ord for InferencePriority {
+    #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match (self.bits(), other.bits()) {
-            (None, None) => std::cmp::Ordering::Equal,
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (Some(left), Some(right)) => left.cmp(&right),
-        }
+        self.order_key().cmp(&other.order_key())
     }
 }
 
@@ -718,9 +742,54 @@ impl std::ops::BitOr for InferencePriority {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
-        match (self.bits(), rhs.bits()) {
-            (Some(left), Some(right)) => Self::from_bits(left | right),
-            _ => Self::Circularity,
+        match (self.0, rhs.0) {
+            (InferencePriorityRepr::Bits(left), InferencePriorityRepr::Bits(right)) => {
+                Self(InferencePriorityRepr::Bits(left | right))
+            }
+            _ => Self::CIRCULARITY,
+        }
+    }
+}
+
+#[cfg(test)]
+mod inference_priority_tests {
+    use super::InferencePriority;
+
+    #[test]
+    fn reachable_priorities_match_integer_semantics() {
+        // Circularity keeps its sentinel behavior; finite flags follow the integer operations below.
+        let circularity = InferencePriority::CIRCULARITY;
+        assert_eq!(InferencePriority::default().memo_bits(), 0);
+        assert_eq!(circularity.memo_bits(), u32::MAX);
+        assert_eq!(circularity.cmp(&circularity), std::cmp::Ordering::Equal);
+        assert_eq!(circularity.min(circularity), circularity);
+        assert_eq!(circularity | circularity, circularity);
+        assert!(!circularity.intersects(circularity));
+        assert_eq!(InferencePriority::from_bits(0x7fff).memo_bits(), 0x7fff);
+        for bits in [0x8000, u16::MAX] {
+            assert!(std::panic::catch_unwind(|| InferencePriority::from_bits(bits)).is_err());
+        }
+        // All OR combinations of the twelve public flag bits, including MaxValue.
+        for left_bits in 0..4096u16 {
+            let left = InferencePriority::from_bits(left_bits);
+            assert_eq!(left.memo_bits(), u32::from(left_bits));
+            assert_eq!(circularity.cmp(&left), (-1i32).cmp(&i32::from(left_bits)));
+            assert_eq!(left.cmp(&circularity), i32::from(left_bits).cmp(&-1));
+            assert_ne!(left, circularity);
+            assert_eq!(left.min(circularity), circularity);
+            assert_eq!(circularity.min(left), circularity);
+            assert_eq!(left | circularity, circularity);
+            assert_eq!(circularity | left, circularity);
+            assert!(!left.intersects(circularity));
+            assert!(!circularity.intersects(left));
+            for right_bits in 0..4096u16 {
+                let right = InferencePriority::from_bits(right_bits);
+                assert_eq!((left | right).memo_bits(), u32::from(left_bits | right_bits));
+                assert_eq!(left.cmp(&right), i32::from(left_bits).cmp(&i32::from(right_bits)));
+                assert_eq!(left == right, left_bits == right_bits);
+                assert_eq!(left.min(right).memo_bits(), u32::from(left_bits.min(right_bits)));
+                assert_eq!(left.intersects(right), left_bits & right_bits != 0);
+            }
         }
     }
 }
@@ -768,7 +837,7 @@ pub enum IntrinsicTypeKind {
     NoInfer,
 }
 
-pub static intrinsicTypeKinds: LazyLock<FxHashMap<&'static str, IntrinsicTypeKind>> =
+pub static INTRINSIC_TYPE_KINDS: LazyLock<FxHashMap<&'static str, IntrinsicTypeKind>> =
     LazyLock::new(|| {
         FxHashMap::from_iter([
             ("Uppercase", IntrinsicTypeKind::Uppercase),
@@ -1034,7 +1103,7 @@ impl IterationTypesResolver {
             return c.get_awaited_type_ex(
                 t,
                 error_node,
-                Some(&diagnostics::Type_of_await_operand_must_either_be_a_valid_promise_or_must_not_contain_a_callable_then_member),
+                Some(&diagnostics::TYPE_OF_AWAIT_OPERAND_MUST_EITHER_BE_A_VALID_PROMISE_OR_MUST_NOT_CONTAIN_A_CALLABLE_THEN_MEMBER),
                 &[],
             );
         }
@@ -1058,14 +1127,14 @@ pub struct VarianceStackEntry {
     pub type_parameters: &'static [P<Type>],
 }
 
-pub const maxSerializationLevel: u32 = 2;
+pub const MAX_SERIALIZATION_LEVEL: u32 = 2;
 
 // Checker
 
-static nextCheckerID: AtomicU32 = AtomicU32::new(0);
+static NEXT_CHECKER_ID: AtomicU32 = AtomicU32::new(0);
 
 /// Go `symbolTableID` (symbolaccessibility.go); the `stKind*` constants live with the printer port.
-pub type symbolTableID = u64;
+pub type SymbolTableID = u64;
 
 pub struct Checker {
     pub id: u32,
@@ -1149,14 +1218,12 @@ pub struct Checker {
     pub template_literal_types: PackedMap<CacheHashKey, P<Type>>,
     pub string_mapping_types: FxHashMap<StringMappingKey, P<Type>>,
     pub unique_es_symbol_types: FxHashMap<P<Symbol>, P<Type>>,
-    pub this_expando_kinds: FxHashMap<P<Symbol>, thisAssignmentDeclarationKind>,
+    pub this_expando_kinds: FxHashMap<P<Symbol>, ThisAssignmentDeclarationKind>,
     pub this_expando_locations: FxHashMap<P<Symbol>, Option<P<Node>>>,
     pub subtype_reduction_cache: FxHashMap<CacheHashKey, &'static [P<Type>]>,
     pub cached_types: FxHashMap<CachedTypeKey, P<Type>>,
     pub cached_signatures: PackedMap<CachedSignatureKey, P<Signature>>,
-    pub undefined_properties: FxHashMap<String, P<Symbol>>,
-    // tsrs: the canonical (history-independent) form of `undefined_properties` (get_undefined_property).
-    pub undefined_properties_by_prop: FxHashMap<P<Symbol>, P<Symbol>>,
+    pub undefined_properties: FxHashMap<P<Symbol>, P<Symbol>>,
     pub narrowed_types: FxHashMap<NarrowedTypeKey, P<Type>>,
     pub assignment_reduced_types: FxHashMap<AssignmentReducedKey, P<Type>>,
     pub discriminated_contextual_types: FxHashMap<DiscriminatedContextualTypeKey, P<Type>>,
@@ -1167,6 +1234,7 @@ pub struct Checker {
     pub iteration_types_cache: FxHashMap<IterationTypesKey, IterationTypes>,
     pub marker_types: Set<P<Type>>,
     pub resolving_explicit_type_of_symbol: Set<P<Symbol>>,
+    pub constructor_or_function_checked: Set<P<Symbol>>,
     pub undefined_symbol: P<Symbol>,
     pub arguments_symbol: P<Symbol>,
     pub require_symbol: P<Symbol>,
@@ -1178,7 +1246,7 @@ pub struct Checker {
     /// resolver's string, alive and unchanged as long as the program): `resolve_external_module`.
     pub(crate) resolved_module_source_files: FxHashMap<(usize, usize), Option<P<SourceFile>>>,
     pub global_this_symbol: P<Symbol>,
-    pub symbol_table_alias_cache: FxHashMap<symbolTableID, &'static [P<Symbol>]>,
+    pub symbol_table_alias_cache: FxHashMap<SymbolTableID, &'static [P<Symbol>]>,
     pub class_expression_name_tables: FxHashMap<NodeId, P<SymbolTable>>,
     /// Go `resolveName = c.createNameResolver().Resolve`; call through `resolve_name`.
     pub name_resolver: P<NameResolver<Checker>>,
@@ -1193,11 +1261,12 @@ pub struct Checker {
     pub diagnostics: ast::DiagnosticsCollection,
     pub suggestion_diagnostics: ast::DiagnosticsCollection,
     pub merged_symbols: crate::merged_symbols::MergedSymbols,
+    pub merged_exports_checked: Set<P<Symbol>>,
     pub factory: ast::NodeFactory,
     pub node_links: LinkStore<Node, NodeLinks>,
-    pub signature_links: KeyedLinkStore<Node, SignatureLinks>,
+    pub signature_links: NodeValueLinkStore<SignatureLinks>,
     pub symbol_node_links: NodeLinkStore<SymbolNodeLinks>,
-    pub type_node_links: KeyedLinkStore<Node, TypeNodeLinks>,
+    pub type_node_links: NodeValueLinkStore<TypeNodeLinks>,
     pub enum_member_links: LinkStore<Node, EnumMemberLinks>,
     pub assertion_links: LinkStore<Node, AssertionLinks>,
     pub array_literal_links: LinkStore<Node, ArrayLiteralLinks>,
@@ -1241,6 +1310,9 @@ pub struct Checker {
     /// `tsrs_core::lazymembers::enabled()` (default on; `--noLazyMembers` / `TSRS_LAZY_MEMBERS=0`): no lazy
     /// table is created when false.
     pub lazy_members: bool,
+    /// Counter for mapped types whose members are being resolved (see `resolve_mapped_type_members`).
+    /// Used to avoid shortcuts that would bypass the empty-members guard on recursive resolution.
+    pub(crate) mapped_types_resolving: u32,
     /// `TSRS_DEEP_NESTED=shadow`: every deeply-nested test on a relater stack is also made without the
     /// stack's kept recursion identities, and the kept identities are recomputed; any difference panics
     /// (`relater_1.rs`).
@@ -1481,6 +1553,7 @@ pub struct Checker {
     pub get_global_promise_type_cache: Option<P<Type>>,
     pub get_global_promise_type_checked_cache: Option<P<Type>>,
     pub get_global_promise_like_type_cache: Option<P<Type>>,
+    pub get_global_abstract_module_source_type_cache: Option<P<Type>>,
     #[expect(
         clippy::option_option,
         reason = "The outer option records whether a result is available; the inner option records an absent value."
@@ -1560,8 +1633,11 @@ pub struct Checker {
     pub type_to_string_nodebuilder: Option<P<NodeBuilder>>,
     /// tsrs-only: accessible-chain cache entries keyed by a node in the current emit scratch region
     /// (`forget_scratch_keyed_caches`, notes/mem-emit-regions.md).
-    pub scratch_keyed_chain_cache: Vec<(P<Symbol>, accessibleChainCacheKey)>,
-    pub emit_resolver: Option<P<EmitResolver>>, // Go `emitResolver` + `emitResolverOnce`: None until `get_emit_resolver`
+    pub scratch_keyed_chain_cache: Vec<(P<Symbol>, AccessibleChainCacheKey)>,
+    pub emit_resolver_links: P<EmitResolverLinks>,
+    /// Rust-only context-independent helper for checker paths that still call resolver methods.
+    /// File emit uses a fresh `EmitResolver` bound to its own scratch `EmitContext`.
+    pub emit_resolver: Option<P<EmitResolver>>,
     /// Shared graph (`tsrs_core::sharedgraph`): this checker's values for lazy fields of frozen objects.
     pub overlay: Box<tsrs_core::sharedgraph::Overlay>,
     /// Shared graph: this checker is the seed whose graph will be frozen (symbol ids are assigned eagerly).
@@ -1579,7 +1655,7 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
     let compiler_options = program.options();
     let dummy_type =
         Type::alloc(TypeFlags::None, ObjectFlags::None, TypeId(0), IntrinsicType::default());
-    let dummy_symbol = P::new(Symbol::default());
+    let dummy_symbol = Symbol::new(SymbolFlags::None, "");
     let dummy_mapper = new_simple_type_mapper(dummy_type, dummy_type);
     let dummy_signature = P::new(Signature::default());
     let dummy_index_info = P::new(IndexInfo::default());
@@ -1587,14 +1663,14 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
     let dummy_iteration_resolver = P::new(IterationTypesResolver {
         is_async: false,
         iterator_symbol_name: "",
-        must_have_a_next_method_diagnostic: &diagnostics::An_iterator_must_have_a_next_method,
-        must_be_a_method_diagnostic: &diagnostics::The_0_property_of_an_iterator_must_be_a_method,
-        must_have_a_value_diagnostic: &diagnostics::The_type_returned_by_the_0_method_of_an_iterator_must_have_a_value_property,
+        must_have_a_next_method_diagnostic: &diagnostics::AN_ITERATOR_MUST_HAVE_A_NEXT_METHOD,
+        must_be_a_method_diagnostic: &diagnostics::THE_0_PROPERTY_OF_AN_ITERATOR_MUST_BE_A_METHOD,
+        must_have_a_value_diagnostic: &diagnostics::THE_TYPE_RETURNED_BY_THE_0_METHOD_OF_AN_ITERATOR_MUST_HAVE_A_VALUE_PROPERTY,
     });
 
     let files = program.source_files();
     let mut c = Box::new(Checker {
-        id: nextCheckerID.fetch_add(1, Ordering::Relaxed) + 1,
+        id: NEXT_CHECKER_ID.fetch_add(1, Ordering::Relaxed) + 1,
         program,
         compiler_options,
         files,
@@ -1669,7 +1745,6 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
         cached_types: FxHashMap::default(),
         cached_signatures: PackedMap::default(),
         undefined_properties: FxHashMap::default(),
-        undefined_properties_by_prop: FxHashMap::default(),
         narrowed_types: FxHashMap::default(),
         assignment_reduced_types: FxHashMap::default(),
         discriminated_contextual_types: FxHashMap::default(),
@@ -1680,6 +1755,7 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
         iteration_types_cache: FxHashMap::default(),
         marker_types: Set::new(),
         resolving_explicit_type_of_symbol: Set::new(),
+        constructor_or_function_checked: Set::new(),
         undefined_symbol: dummy_symbol,
         arguments_symbol: dummy_symbol,
         require_symbol: dummy_symbol,
@@ -1701,11 +1777,12 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
         diagnostics: ast::DiagnosticsCollection::default(),
         suggestion_diagnostics: ast::DiagnosticsCollection::default(),
         merged_symbols: crate::merged_symbols::MergedSymbols::default(),
+        merged_exports_checked: Set::new(),
         factory: ast::NodeFactory::default(),
         node_links: LinkStore::default(),
-        signature_links: KeyedLinkStore::default(),
+        signature_links: NodeValueLinkStore::default(),
         symbol_node_links: NodeLinkStore::default(),
-        type_node_links: KeyedLinkStore::default(),
+        type_node_links: NodeValueLinkStore::default(),
         enum_member_links: LinkStore::default(),
         assertion_links: LinkStore::default(),
         array_literal_links: LinkStore::default(),
@@ -1738,6 +1815,7 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
         object_type_instantiations: crate::basedmap::Based::default(),
         lazy_mapped_tables: crate::basedmap::Based::default(),
         lazy_members: tsrs_core::lazymembers::enabled(),
+        mapped_types_resolving: 0,
         deep_nested_shadow: std::env::var("TSRS_DEEP_NESTED").is_ok_and(|v| v == "shadow"),
         lazy_tuples: tsrs_core::lazymembers::lazy_tuples(),
         #[cfg(feature = "site-counts")]
@@ -1911,6 +1989,7 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
         get_global_promise_type_cache: None,
         get_global_promise_type_checked_cache: None,
         get_global_promise_like_type_cache: None,
+        get_global_abstract_module_source_type_cache: None,
         get_global_promise_constructor_symbol_cache: None,
         get_global_promise_constructor_symbol_or_nil_cache: None,
         get_global_omit_symbol_cache: None,
@@ -1968,6 +2047,7 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
         unassigned_type: dummy_type,
         type_to_string_nodebuilder: None,
         scratch_keyed_chain_cache: Vec::new(),
+        emit_resolver_links: P::new(EmitResolverLinks::default()),
         emit_resolver: None,
         overlay: Box::default(),
         seed_mode: false,
@@ -1979,7 +2059,7 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
     c.unknown_symbol = c.new_symbol(SymbolFlags::Property, "unknown");
     c.global_this_symbol = c.new_symbol_ex(SymbolFlags::Module, "globalThis", CheckFlags::Readonly);
     c.global_this_symbol.set_exports(Some(c.globals));
-    c.globals.set(c.global_this_symbol.name.get(), c.global_this_symbol);
+    c.globals.set(c.global_this_symbol.name(), c.global_this_symbol);
     c.name_resolver = c.create_name_resolver();
     c.name_resolver_for_suggestion = c.create_name_resolver_for_suggestion();
     c.any_type = c.new_intrinsic_type(TypeFlags::Any, "any");
@@ -2053,7 +2133,8 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
     c.empty_object_type = c.new_anonymous_type(None /*symbol*/, None, &[], &[], &[]);
     c.empty_jsx_object_type = c.new_anonymous_type(None /*symbol*/, None, &[], &[], &[]);
     c.empty_fresh_jsx_object_type = c.new_anonymous_type(None /*symbol*/, None, &[], &[], &[]);
-    let type_literal_symbol = c.new_symbol(SymbolFlags::TypeLiteral, ast::InternalSymbolNameType);
+    let type_literal_symbol =
+        c.new_symbol(SymbolFlags::TypeLiteral, ast::INTERNAL_SYMBOL_NAME_TYPE);
     c.empty_type_literal_type =
         c.new_anonymous_type(Some(type_literal_symbol), None, &[], &[], &[]);
     c.unknown_empty_object_type = c.new_anonymous_type(None /*symbol*/, None, &[], &[], &[]);
@@ -2114,7 +2195,7 @@ pub fn new_checker(program: &'static dyn Program) -> Box<Checker> {
     c.empty_string_type = c.get_string_literal_type("");
     c.zero_type = c.get_number_literal_type(Number(0.0));
     c.zero_big_int_type = c.get_big_int_literal_type(PseudoBigInt::default());
-    let mut typeof_names: Vec<&'static str> = typeofNEFacts.keys().copied().collect();
+    let mut typeof_names: Vec<&'static str> = TYPEOF_NE_FACTS.keys().copied().collect();
     typeof_names.sort_unstable();
     let typeof_types: Vec<P<Type>> =
         typeof_names.iter().map(|name| c.get_string_literal_type(name)).collect();
@@ -2136,7 +2217,7 @@ impl Checker {
         base.assert_freezable();
         let mut c = Box::new(Checker {
             // Relaxed: the counter only hands out distinct ids (as in new_checker).
-            id: nextCheckerID.fetch_add(1, Ordering::Relaxed) + 1,
+            id: NEXT_CHECKER_ID.fetch_add(1, Ordering::Relaxed) + 1,
             program: base.program,
             compiler_options: base.compiler_options,
             files: base.files,
@@ -2206,7 +2287,6 @@ impl Checker {
             cached_types: base.cached_types.clone(),
             cached_signatures: base.cached_signatures.clone(),
             undefined_properties: base.undefined_properties.clone(),
-            undefined_properties_by_prop: base.undefined_properties_by_prop.clone(),
             narrowed_types: base.narrowed_types.clone(),
             assignment_reduced_types: base.assignment_reduced_types.clone(),
             discriminated_contextual_types: base.discriminated_contextual_types.clone(),
@@ -2217,6 +2297,7 @@ impl Checker {
             iteration_types_cache: base.iteration_types_cache.clone(),
             marker_types: base.marker_types.clone(),
             resolving_explicit_type_of_symbol: base.resolving_explicit_type_of_symbol.clone(),
+            constructor_or_function_checked: base.constructor_or_function_checked.clone(),
             undefined_symbol: base.undefined_symbol,
             arguments_symbol: base.arguments_symbol,
             require_symbol: base.require_symbol,
@@ -2238,6 +2319,7 @@ impl Checker {
             diagnostics: base.diagnostics.clone(),
             suggestion_diagnostics: base.suggestion_diagnostics.clone(),
             merged_symbols: base.merged_symbols.clone(),
+            merged_exports_checked: base.merged_exports_checked.clone(),
             factory: ast::NodeFactory::default(),
             node_links: base.node_links.fork(),
             signature_links: base.signature_links.fork(),
@@ -2279,6 +2361,7 @@ impl Checker {
             ),
             lazy_mapped_tables: crate::basedmap::Based::over(&base.lazy_mapped_tables),
             lazy_members: base.lazy_members,
+            mapped_types_resolving: base.mapped_types_resolving,
             deep_nested_shadow: base.deep_nested_shadow,
             lazy_tuples: base.lazy_tuples,
             #[cfg(feature = "site-counts")]
@@ -2461,6 +2544,8 @@ impl Checker {
             get_global_promise_type_cache: base.get_global_promise_type_cache,
             get_global_promise_type_checked_cache: base.get_global_promise_type_checked_cache,
             get_global_promise_like_type_cache: base.get_global_promise_like_type_cache,
+            get_global_abstract_module_source_type_cache: base
+                .get_global_abstract_module_source_type_cache,
             get_global_promise_constructor_symbol_cache: base
                 .get_global_promise_constructor_symbol_cache,
             get_global_promise_constructor_symbol_or_nil_cache: base
@@ -2537,6 +2622,7 @@ impl Checker {
             unassigned_type: base.unassigned_type,
             type_to_string_nodebuilder: None,
             scratch_keyed_chain_cache: Vec::new(),
+            emit_resolver_links: P::new(EmitResolverLinks::default()),
             emit_resolver: None,
             overlay: Box::default(),
             seed_mode: false,
@@ -2803,7 +2889,7 @@ impl Checker {
         let s = self.get_global_symbol(
             "NaN",
             SymbolFlags::Value,
-            if false { Some(&diagnostics::Cannot_find_global_value_0) } else { None },
+            if false { Some(&diagnostics::CANNOT_FIND_GLOBAL_VALUE_0) } else { None },
         );
         self.get_global_nan_symbol_or_nil_cache = Some(s);
         s
@@ -2839,7 +2925,7 @@ impl Checker {
         let s = self.get_global_symbol(
             "Symbol",
             SymbolFlags::Value,
-            if false { Some(&diagnostics::Cannot_find_global_value_0) } else { None },
+            if false { Some(&diagnostics::CANNOT_FIND_GLOBAL_VALUE_0) } else { None },
         );
         self.get_global_es_symbol_constructor_symbol_or_nil_cache = Some(s);
         s
@@ -2854,7 +2940,7 @@ impl Checker {
         let s = self.get_global_symbol(
             "SymbolConstructor",
             SymbolFlags::Type,
-            if false { Some(&diagnostics::Cannot_find_global_type_0) } else { None },
+            if false { Some(&diagnostics::CANNOT_FIND_GLOBAL_TYPE_0) } else { None },
         );
         self.get_global_es_symbol_constructor_type_symbol_or_nil_cache = Some(s);
         s
@@ -2910,6 +2996,19 @@ impl Checker {
         t
     }
 
+    pub(crate) fn get_global_abstract_module_source_type(&mut self) -> P<Type> {
+        if let Some(t) = self.get_global_abstract_module_source_type_cache {
+            return t;
+        }
+        let t = self.get_global_type(
+            "AbstractModuleSource",
+            0,    /*arity*/
+            true, /*reportErrors*/
+        );
+        self.get_global_abstract_module_source_type_cache = Some(t);
+        t
+    }
+
     pub(crate) fn get_global_promise_constructor_symbol(&mut self) -> Option<P<Symbol>> {
         if let Some(s) = self.get_global_promise_constructor_symbol_cache {
             return s;
@@ -2917,7 +3016,7 @@ impl Checker {
         let s = self.get_global_symbol(
             "Promise",
             SymbolFlags::Value,
-            if true { Some(&diagnostics::Cannot_find_global_value_0) } else { None },
+            if true { Some(&diagnostics::CANNOT_FIND_GLOBAL_VALUE_0) } else { None },
         );
         self.get_global_promise_constructor_symbol_cache = Some(s);
         s
@@ -2930,7 +3029,7 @@ impl Checker {
         let s = self.get_global_symbol(
             "Promise",
             SymbolFlags::Value,
-            if false { Some(&diagnostics::Cannot_find_global_value_0) } else { None },
+            if false { Some(&diagnostics::CANNOT_FIND_GLOBAL_VALUE_0) } else { None },
         );
         self.get_global_promise_constructor_symbol_or_nil_cache = Some(s);
         s
@@ -3278,7 +3377,7 @@ pub enum UnusedKind {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct constructorAccessibilityError {
+pub struct ConstructorAccessibilityError {
     pub kind: ModifierFlags,
     pub declaring_class: P<Type>,
 }
@@ -3343,21 +3442,21 @@ impl CacheHashKey {
 }
 
 /// Go `keyBuilder`; its methods are in `checker_09.rs`.
-pub struct keyBuilder {
+pub struct KeyBuilder {
     pub inline_length: usize,
     pub overflow_buffer: Option<Vec<u8>>, // Go nil slice = no overflow yet
     pub inline_buffer: [u8; 192],
 }
 
-impl Default for keyBuilder {
+impl Default for KeyBuilder {
     fn default() -> Self {
-        keyBuilder { inline_length: 0, overflow_buffer: None, inline_buffer: [0; 192] }
+        KeyBuilder { inline_length: 0, overflow_buffer: None, inline_buffer: [0; 192] }
     }
 }
 
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
-pub enum thisAssignmentDeclarationKind {
+pub enum ThisAssignmentDeclarationKind {
     #[default]
     None, // not (all) this.property assignments
     Typed,       // typed; use the type annotation
@@ -3396,8 +3495,8 @@ bitflags! {
 // Limits on the size of a template literal type produced by getTemplateLiteralType. Recursive instantiations
 // such as `Recur<any, `${S}_${S}`>` double the text (or the number of placeholders) on every iteration and
 // exhaust memory long before the tail recursion limit in getConditionalType is reached (see #63271).
-pub const maxTemplateLiteralTypeLength: usize = 50_000_000;
-pub const maxTemplateLiteralTypeSpans: usize = 100_000;
+pub const MAX_TEMPLATE_LITERAL_TYPE_LENGTH: usize = 50_000_000;
+pub const MAX_TEMPLATE_LITERAL_TYPE_SPANS: usize = 100_000;
 
 /// Go `ObjectLiteralDiscriminator`; the `c` field is dropped (methods take `c: &mut Checker`).
 #[derive(Default)]

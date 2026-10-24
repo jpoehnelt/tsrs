@@ -1,18 +1,20 @@
 // session.go handleCreateBuildOrchestrator / handleDisposeBuildOrchestrator / handleBuild /
 // handleBuildReferences / handleCleanBuild / handleCleanReferences.
 //
-// The build orchestrator lives in tsrs_execute (crates/tsrs_execute/src/build). The CLI injects it with
-// `Session::set_build_backend` (tsrs_cli's `CliBuildBackend`) so the API reuses it in-process instead of spawning
-// `tsrs -b` per call; sessions without a backend report the build methods as unsupported.
+// Every API session installs the in-process tsrs_execute build backend, including sessions attached to the
+// language server. `Session::set_build_backend` can replace it for an embedding host.
 
 use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tsrs_ast::Diagnostic;
 use tsrs_core::json::Value;
 use tsrs_core::{BuildOptions, CompilerOptions, P};
-use tsrs_tsoptions::gojson;
+use tsrs_execute::build::{Options, new_orchestrator};
+use tsrs_execute::tsc::System;
+use tsrs_tsoptions::{ParseConfigHost, gojson};
 use tsrs_vfs::FS;
 
 use crate::diagnostics::diagnostic_responses;
@@ -186,5 +188,140 @@ impl Session {
             o.backend.build(project, only_references)
         };
         Ok(outcome_response(outcome, clean))
+    }
+}
+
+/// Go `apiBuildSystem`: output is discarded, the filesystem is the session's host filesystem.
+struct ApiBuildSystem {
+    fs: Arc<dyn FS>,
+    default_library_path: String,
+    current_directory: String,
+    start: Instant,
+}
+
+impl System for ApiBuildSystem {
+    fn fs(&self) -> Arc<dyn FS> {
+        Arc::clone(&self.fs)
+    }
+    fn default_library_path(&self) -> &str {
+        &self.default_library_path
+    }
+    fn get_current_directory(&self) -> &str {
+        &self.current_directory
+    }
+    fn write(&self, _text: &str) {}
+    fn flush(&self) {}
+    fn write_output_is_tty(&self) -> bool {
+        false
+    }
+    fn get_environment_variable(&self, _name: &str) -> Option<String> {
+        None
+    }
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn since_start(&self) -> Duration {
+        self.start.elapsed()
+    }
+    // session.go:1919
+    fn spawn(
+        &self,
+        _command: &[String],
+        _dir: &str,
+        _stderr: Option<Box<dyn std::io::Write + Send>>,
+    ) -> Result<tsrs_execute::tsc::ReadWriteCloser, String> {
+        Err("spawning processes is not supported by the API build orchestrator".to_string())
+    }
+}
+
+impl ParseConfigHost for ApiBuildSystem {
+    fn fs(&self) -> &dyn FS {
+        &*self.fs
+    }
+    fn get_current_directory(&self) -> &str {
+        &self.current_directory
+    }
+}
+
+pub(crate) struct ExecuteBuildBackend;
+
+/// One API build orchestrator handle. Go keeps one `build.Orchestrator`: `Build` rechecks every project in the
+/// build order (statuses, configs, mtimes, caches) and regenerates the graph; `Clean` uses the graph of the last
+/// build ("cleans the last built configuration"). Here each build gets a fresh CLI orchestrator (the state Go's
+/// recheck leaves) whose allocations live in collectable regions; it is kept for later cleans and freed when the
+/// next build replaces it or the handle is disposed, so memory stays bounded by one build.
+struct ExecuteOrchestrator {
+    sys: &'static ApiBuildSystem,
+    command: P<tsrs_tsoptions::ParsedBuildCommandLine>,
+    orchestrator: Option<ApiOrchestratorOwner>,
+}
+
+// Owns one API-mode orchestrator and its regions. A successful build keeps this owner until the next successful
+// build or disposal, so its diagnostics remain alive while the API serializes the response and cleans use its graph.
+struct ApiOrchestratorOwner(&'static tsrs_execute::build::Orchestrator);
+
+impl Drop for ApiOrchestratorOwner {
+    fn drop(&mut self) {
+        // SAFETY: `fresh` creates and enables this orchestrator exclusively for one serialized API handle.
+        // Its build/clean call has returned or unwound (joining scoped workers), and no result outlives the owner.
+        unsafe { tsrs_execute::build::free_api_orchestrator(self.0) };
+    }
+}
+
+impl ExecuteOrchestrator {
+    fn fresh(&self) -> ApiOrchestratorOwner {
+        let o = new_orchestrator(Options { sys: self.sys, command: self.command, testing: None });
+        o.enable_api_mode();
+        ApiOrchestratorOwner(o)
+    }
+}
+
+impl BuildBackend for ExecuteBuildBackend {
+    fn create(&self, request: BuildRequest) -> Box<dyn BuildOrchestrator> {
+        // `&'static` system and command line: the CLI build module requires them (one small leak per orchestrator).
+        let sys: &'static ApiBuildSystem = Box::leak(Box::new(ApiBuildSystem {
+            fs: request.fs,
+            default_library_path: request.default_library_path,
+            current_directory: request.current_directory,
+            start: Instant::now(),
+        }));
+        let mut command = tsrs_tsoptions::parse_build_command_line(&request.root_names, sys);
+        if let Some(options) = request.compiler_options {
+            command.compiler_options = options;
+        }
+        if let Some(options) = request.build_options {
+            command.build_options = options;
+        }
+        // API builds allocate in per-task regions (ExecuteOrchestrator); program construction and checking must stay on
+        // the task's thread so their allocations land there, not in the compiler worker pool's thread arenas.
+        command.compiler_options.single_threaded = tsrs_core::Tristate::True;
+        Box::new(ExecuteOrchestrator { sys, command: P::new(command), orchestrator: None })
+    }
+}
+
+fn outcome(result: tsrs_execute::build::OrchestratorResult) -> BuildOutcome {
+    BuildOutcome {
+        status: result.status.unwrap_or(tsrs_execute::tsc::ExitStatus::Success) as i32,
+        diagnostics: result.errors.unwrap_or_default(),
+        projects: result.statistics.projects,
+        projects_built: result.statistics.projects_built,
+        timestamp_updates: result.statistics.timestamp_updates,
+        files_deleted: result.files_to_delete.unwrap_or_default(),
+    }
+}
+
+impl BuildOrchestrator for ExecuteOrchestrator {
+    fn build(&mut self, project: &str, only_references: bool) -> BuildOutcome {
+        let o = self.fresh();
+        let result = outcome(o.0.build_for_api(project, only_references));
+        self.orchestrator = Some(o);
+        result
+    }
+    fn clean(&mut self, project: &str, only_references: bool) -> BuildOutcome {
+        if self.orchestrator.is_none() {
+            self.orchestrator = Some(self.fresh());
+        }
+        let o = self.orchestrator.as_ref().unwrap();
+        outcome(o.0.clean_for_api(project, only_references))
     }
 }

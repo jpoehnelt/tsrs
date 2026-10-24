@@ -1,6 +1,5 @@
 mod snapshot;
 
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,10 +24,35 @@ pub fn project_config(name: &str) -> &'static str {
     }
 }
 
+fn workspace_directory() -> String {
+    // cargo-codspeed runs from the package directory. The walltime binary is built on a different
+    // runner, so CARGO_MANIFEST_DIR points to a path that does not exist when it executes.
+    let cwd = std::env::current_dir().expect("current directory");
+    let workspace = cwd
+        .ancestors()
+        .find(|path| path.join("bench/projects.json").is_file())
+        .expect("workspace directory");
+    tspath::normalize_slashes(&workspace.to_string_lossy())
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Compilation {
     status: ExitStatus,
     output: String,
+}
+
+impl Compilation {
+    pub fn assert_completed(&self) {
+        assert!(
+            matches!(
+                self.status,
+                ExitStatus::Success
+                    | ExitStatus::DiagnosticsPresentOutputsSkipped
+                    | ExitStatus::DiagnosticsPresentOutputsGenerated
+            ),
+            "benchmark compilation failed: {self:?}"
+        );
+    }
 }
 
 pub struct PreparedProject {
@@ -41,12 +65,7 @@ pub struct PreparedProject {
 
 impl PreparedProject {
     pub fn load(name: &str) -> Self {
-        // cargo-codspeed runs from the package directory, while project setup runs from the workspace.
-        let cwd = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .expect("workspace directory");
-        let cwd = tspath::normalize_slashes(&cwd.to_string_lossy());
+        let cwd = workspace_directory();
         let config = tspath::combine_paths(&cwd, &[project_config(name)]);
         Self::capture(
             cwd,
@@ -59,7 +78,7 @@ impl PreparedProject {
     fn capture(cwd: String, config: &str, lib_path: String, fs: Arc<dyn FS>) -> Self {
         assert!(
             fs.file_exists(config),
-            "missing benchmark config {config:?}; run bench/run.py --setup-only first"
+            "missing benchmark config {config:?}; run node bench/bench.mjs prepare first"
         );
         let recording = Arc::new(RecordingFs::new(fs));
         let args: Vec<String> = [
@@ -82,15 +101,7 @@ impl PreparedProject {
         .collect();
         let sys = BenchmarkSystem::new(&cwd, &lib_path, Arc::clone(&recording) as Arc<dyn FS>);
         let expected = sys.compile(args.clone());
-        assert!(
-            matches!(
-                expected.status,
-                ExitStatus::Success
-                    | ExitStatus::DiagnosticsPresent_OutputsSkipped
-                    | ExitStatus::DiagnosticsPresent_OutputsGenerated
-            ),
-            "benchmark capture failed: {expected:?}"
-        );
+        expected.assert_completed();
         let fs = Arc::new(recording.freeze());
         Self { cwd, lib_path, args, fs, expected }
     }
@@ -107,6 +118,36 @@ impl PreparedProject {
     }
 }
 
+/// Disk-backed compilation with the CLI's default checker count, for walltime and peak memory.
+/// Call once in a fresh process so earlier compilations cannot inflate its physical-memory peak.
+pub fn default_invocation(name: &str) -> (&'static BenchmarkSystem, Vec<String>) {
+    let cwd = workspace_directory();
+    let config = tspath::combine_paths(&cwd, &[project_config(name)]);
+    let fs = Arc::new(bundled::wrap_fs(osvfs::fs()));
+    assert!(
+        fs.file_exists(&config),
+        "missing benchmark config {config:?}; run pnpm bench prepare first"
+    );
+    let args = [
+        "-p",
+        &config,
+        "--noEmit",
+        "--incremental",
+        "false",
+        "--pretty",
+        "false",
+        "--diagnostics",
+        "false",
+        "--extendedDiagnostics",
+        "false",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let sys = BenchmarkSystem::new(&cwd, &bundled::default_lib_path(), fs);
+    (sys, args)
+}
+
 pub struct BenchmarkSystem {
     fs: Arc<dyn FS>,
     cwd: String,
@@ -116,8 +157,7 @@ pub struct BenchmarkSystem {
 }
 
 impl BenchmarkSystem {
-    // The command-line driver keeps its System and program objects for the process lifetime. Each
-    // benchmark process handles one project: one capture, five warmups, and one measured compilation.
+    // The command-line driver keeps its System and program objects for the process lifetime.
     fn new(cwd: &str, lib_path: &str, fs: Arc<dyn FS>) -> &'static Self {
         Box::leak(Box::new(Self {
             fs,

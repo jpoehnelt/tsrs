@@ -153,6 +153,15 @@ pub fn source_file_hash(file: &SourceFile) -> String {
     format!("{:016x}{:016x}", (h >> 64) as u64, h as u64)
 }
 
+/// `source_file_hash` written into `out` without allocating.
+pub fn source_file_hash_into<'a>(file: &SourceFile, out: &'a mut [u8; 32]) -> &'a str {
+    let h = file.hash.get();
+    for (i, digit) in out.iter_mut().enumerate() {
+        *digit = b"0123456789abcdef"[((h >> (124 - 4 * i)) & 0xf) as usize];
+    }
+    std::str::from_utf8(out).unwrap_or_default()
+}
+
 /// Go `SetSourceFileLease`.
 pub fn set_source_file_lease(data: &mut [u8], lease: u64) {
     data[HEADER_OFFSET_SOURCE_FILE_LEASE..HEADER_OFFSET_SOURCE_FILE_LEASE + 8]
@@ -239,10 +248,10 @@ fn walk_children<W: Walker + 'static>(
         visit_modifiers: Some({
             let visit_list = Rc::clone(&visit_list);
             Rc::new(move |mods: Option<P<ModifierList>>, v: &mut NodeVisitor| {
-                if let Some(m) = mods {
-                    if !m.list.nodes().is_empty() {
-                        visit_list(&m.list, v);
-                    }
+                if let Some(m) = mods
+                    && !m.list.nodes().is_empty()
+                {
+                    visit_list(&m.list, v);
                 }
                 mods
             })
@@ -332,10 +341,10 @@ impl Walker for EncodeState {
             node.flags().bits(),
         ];
         append_u32s(&mut self.nodes, &values);
-        if let Some(map) = &mut self.node_index_map {
-            if let Some(slot) = map.get_mut(&node) {
-                *slot = self.node_count;
-            }
+        if let Some(map) = &mut self.node_index_map
+            && let Some(slot) = map.get_mut(&node)
+        {
+            *slot = self.node_count;
         }
         self.descend()
     }

@@ -90,10 +90,10 @@ impl Checker {
                 let mut spread_type = None;
                 // We can call checkExpressionCached because spread expressions never have a contextual type.
                 if ast::is_spread_element(arg) {
-                    if !self.flow_loop_stack.is_empty() {
-                        spread_type = Some(self.check_expression(arg.expression().unwrap()));
-                    } else {
+                    if self.flow_loop_stack.is_empty() {
                         spread_type = Some(self.check_expression_cached(arg.expression().unwrap()));
+                    } else {
+                        spread_type = Some(self.check_expression(arg.expression().unwrap()));
                     }
                 }
                 if let Some(spread_type) = spread_type.filter(|&t| is_tuple_type(t)) {
@@ -132,14 +132,14 @@ impl Checker {
 }
 
 // checker.go:30601
-pub(crate) fn is_spread_argument(arg: P<Node>) -> bool {
+pub fn is_spread_argument(arg: P<Node>) -> bool {
     ast::is_spread_element(arg)
         || ast::is_synthetic_expression(arg) && arg.as_synthetic_expression().is_spread
 }
 
 // Go `node.AsSyntheticExpression().Type.(*Type)`. The Go `any` field holds the checker type as a `&'static P<Type>`;
 // `create_synthetic_expression` is the only writer.
-pub(crate) fn synthetic_expression_type(node: P<Node>) -> P<Type> {
+pub fn synthetic_expression_type(node: P<Node>) -> P<Type> {
     *node
         .as_synthetic_expression()
         .type_
@@ -217,8 +217,9 @@ impl Checker {
     ) -> Option<P<Signature>> {
         let node = decorator.parent().unwrap();
         let links = self.signature_links.get(node);
-        if links.decorator_signature.get().is_none() {
-            links.decorator_signature.set(Some(self.any_signature));
+        let decorator_signature = links.decorator_signature(node);
+        if decorator_signature.get().is_none() {
+            decorator_signature.set(Some(self.any_signature));
             match node.kind() {
                 Kind::ClassDeclaration | Kind::ClassExpression => {
                     // For a class decorator, the `target` is the type of the class (e.g. the
@@ -229,7 +230,7 @@ impl Checker {
                     let void_type = self.void_type;
                     let return_type = self.get_union_type(&[target_type, void_type]);
                     let sig = self.new_call_signature(&[], None, &[target_param], return_type);
-                    links.decorator_signature.set(Some(sig));
+                    decorator_signature.set(Some(sig));
                 }
                 Kind::Parameter => 'case: {
                     let parent = node.parent().unwrap();
@@ -272,7 +273,7 @@ impl Checker {
                         &[target_param, key_param, index_param],
                         void_type,
                     );
-                    links.decorator_signature.set(Some(sig));
+                    decorator_signature.set(Some(sig));
                 }
                 Kind::MethodDeclaration
                 | Kind::GetAccessor
@@ -306,22 +307,22 @@ impl Checker {
                             &[target_param, key_param, descriptor_param],
                             union,
                         );
-                        links.decorator_signature.set(Some(sig));
+                        decorator_signature.set(Some(sig));
                     } else {
                         let void_type = self.void_type;
                         let union = self.get_union_type(&[return_type, void_type]);
                         let sig =
                             self.new_call_signature(&[], None, &[target_param, key_param], union);
-                        links.decorator_signature.set(Some(sig));
+                        decorator_signature.set(Some(sig));
                     }
                 }
                 _ => {}
             }
         }
-        if links.decorator_signature.get() == Some(self.any_signature) {
+        if decorator_signature.get() == Some(self.any_signature) {
             return None;
         }
-        links.decorator_signature.get()
+        decorator_signature.get()
     }
 
     // checker.go:30718
@@ -411,8 +412,9 @@ impl Checker {
         // `undefined` then the "output type" is the "input type").
         let node = decorator.parent().unwrap();
         let links = self.signature_links.get(node);
-        if links.decorator_signature.get().is_none() {
-            links.decorator_signature.set(Some(self.any_signature));
+        let decorator_signature = links.decorator_signature(node);
+        if decorator_signature.get().is_none() {
+            decorator_signature.set(Some(self.any_signature));
             match node.kind() {
                 Kind::ClassDeclaration | Kind::ClassExpression => {
                     // Class decorators have a `context` of `ClassDecoratorContext<Class>`, where the `Class` type
@@ -425,7 +427,7 @@ impl Checker {
                         context_type,
                         target_type,
                     );
-                    links.decorator_signature.set(Some(sig));
+                    decorator_signature.set(Some(sig));
                 }
                 Kind::MethodDeclaration | Kind::GetAccessor | Kind::SetAccessor => 'case: {
                     if !ast::is_class_like(node.parent().unwrap()) {
@@ -475,7 +477,7 @@ impl Checker {
                         context_type,
                         target_type,
                     );
-                    links.decorator_signature.set(Some(sig));
+                    decorator_signature.set(Some(sig));
                 }
                 Kind::PropertyDeclaration => 'case: {
                     if !ast::is_class_like(node.parent().unwrap()) {
@@ -522,15 +524,15 @@ impl Checker {
                         context_type,
                         return_type,
                     );
-                    links.decorator_signature.set(Some(sig));
+                    decorator_signature.set(Some(sig));
                 }
                 _ => {}
             }
         }
-        if links.decorator_signature.get() == Some(self.any_signature) {
+        if decorator_signature.get() == Some(self.any_signature) {
             return None;
         }
-        links.decorator_signature.get()
+        decorator_signature.get()
     }
 
     // checker.go:30896
@@ -1091,7 +1093,7 @@ impl Checker {
 
     // checker.go:31152
     pub(crate) fn is_circular_mapped_property(&mut self, symbol: P<Symbol>) -> bool {
-        if symbol.check_flags.get().intersects(CheckFlags::Mapped) {
+        if symbol.check_flags().intersects(CheckFlags::Mapped) {
             let links = self.value_symbol_links.get(symbol);
             return links.resolved_type.get().is_none()
                 && self
@@ -1135,37 +1137,36 @@ impl Checker {
         };
         let instantiated_type =
             self.instantiate_contextual_type(contextual_type, node, context_flags);
-        if let Some(instantiated_type) = instantiated_type {
-            if !(context_flags.intersects(ContextFlags::NoConstraints)
+        if let Some(instantiated_type) = instantiated_type
+            && !(context_flags.intersects(ContextFlags::NoConstraints)
                 && instantiated_type.flags().intersects(TypeFlags::TypeVariable))
+        {
+            let apparent_type = self
+                .map_type_ex(
+                    instantiated_type,
+                    |c, t| {
+                        if t.object_flags().intersects(ObjectFlags::Mapped) {
+                            return Some(t);
+                        }
+                        Some(c.get_apparent_type(t))
+                    },
+                    true,
+                )
+                .unwrap();
+            if apparent_type.flags().intersects(TypeFlags::Union)
+                && ast::is_object_literal_expression(node)
             {
-                let apparent_type = self
-                    .map_type_ex(
-                        instantiated_type,
-                        |c, t| {
-                            if t.object_flags().intersects(ObjectFlags::Mapped) {
-                                return Some(t);
-                            }
-                            Some(c.get_apparent_type(t))
-                        },
-                        true,
-                    )
-                    .unwrap();
-                if apparent_type.flags().intersects(TypeFlags::Union)
-                    && ast::is_object_literal_expression(node)
-                {
-                    return Some(
-                        self.discriminate_contextual_type_by_object_members(node, apparent_type),
-                    );
-                } else if apparent_type.flags().intersects(TypeFlags::Union)
-                    && ast::is_jsx_attributes(node)
-                {
-                    return Some(
-                        self.discriminate_contextual_type_by_jsx_attributes(node, apparent_type),
-                    );
-                }
-                return Some(apparent_type);
+                return Some(
+                    self.discriminate_contextual_type_by_object_members(node, apparent_type),
+                );
+            } else if apparent_type.flags().intersects(TypeFlags::Union)
+                && ast::is_jsx_attributes(node)
+            {
+                return Some(
+                    self.discriminate_contextual_type_by_jsx_attributes(node, apparent_type),
+                );
             }
+            return Some(apparent_type);
         }
         None
     }
@@ -1334,47 +1335,47 @@ impl Checker {
         node: P<Node>,
         context_flags: ContextFlags,
     ) -> Option<P<Type>> {
-        if let Some(contextual_type) = contextual_type {
-            if self.maybe_type_of_kind(contextual_type, TypeFlags::Instantiable) {
-                let inference_context = self.get_inference_context(node);
-                // If no inferences have been made, and none of the type parameters for which we are inferring
-                // specify default types, nothing is gained from instantiating as type parameters would just be
-                // replaced with their constraints similar to the apparent type.
-                if let Some(inference_context) = inference_context {
-                    if context_flags.intersects(ContextFlags::Signature)
-                        && inference_context
-                            .inferences
-                            .get()
-                            .iter()
-                            .any(|&info| has_inference_candidates_or_default(info))
-                    {
-                        // For contextual signatures we incorporate all inferences made so far, e.g. from return
-                        // types as well as arguments to the left in a function call.
-                        let t = self.instantiate_instantiable_types(
-                            contextual_type,
-                            inference_context.non_fixing_mapper().unwrap(),
-                        );
-                        if !t.flags().intersects(TypeFlags::AnyOrUnknown) {
-                            return Some(t);
-                        }
+        if let Some(contextual_type) = contextual_type
+            && self.maybe_type_of_kind(contextual_type, TypeFlags::Instantiable)
+        {
+            let inference_context = self.get_inference_context(node);
+            // If no inferences have been made, and none of the type parameters for which we are inferring
+            // specify default types, nothing is gained from instantiating as type parameters would just be
+            // replaced with their constraints similar to the apparent type.
+            if let Some(inference_context) = inference_context {
+                if context_flags.intersects(ContextFlags::Signature)
+                    && inference_context
+                        .inferences
+                        .get()
+                        .iter()
+                        .any(|&info| has_inference_candidates_or_default(info))
+                {
+                    // For contextual signatures we incorporate all inferences made so far, e.g. from return
+                    // types as well as arguments to the left in a function call.
+                    let t = self.instantiate_instantiable_types(
+                        contextual_type,
+                        inference_context.non_fixing_mapper().unwrap(),
+                    );
+                    if !t.flags().intersects(TypeFlags::AnyOrUnknown) {
+                        return Some(t);
                     }
-                    if let Some(return_mapper) = inference_context.return_mapper() {
-                        // For other purposes (e.g. determining whether to produce literal types) we only
-                        // incorporate inferences made from the return type in a function call. We remove
-                        // the 'boolean' type from the contextual type such that contextually typed boolean
-                        // literals actually end up widening to 'boolean' (see #48363).
-                        let t = self.instantiate_instantiable_types(contextual_type, return_mapper);
-                        if !t.flags().intersects(TypeFlags::AnyOrUnknown) {
-                            if t.flags().intersects(TypeFlags::Union)
-                                && contains_type(self, t.types(), self.regular_false_type)
-                                && contains_type(self, t.types(), self.regular_true_type)
-                            {
-                                return Some(self.filter_type(t, |c, t| {
-                                    t != c.regular_false_type && t != c.regular_true_type
-                                }));
-                            }
-                            return Some(t);
+                }
+                if let Some(return_mapper) = inference_context.return_mapper() {
+                    // For other purposes (e.g. determining whether to produce literal types) we only
+                    // incorporate inferences made from the return type in a function call. We remove
+                    // the 'boolean' type from the contextual type such that contextually typed boolean
+                    // literals actually end up widening to 'boolean' (see #48363).
+                    let t = self.instantiate_instantiable_types(contextual_type, return_mapper);
+                    if !t.flags().intersects(TypeFlags::AnyOrUnknown) {
+                        if t.flags().intersects(TypeFlags::Union)
+                            && contains_type(self, t.types(), self.regular_false_type)
+                            && contains_type(self, t.types(), self.regular_true_type)
+                        {
+                            return Some(self.filter_type(t, |c, t| {
+                                t != c.regular_false_type && t != c.regular_true_type
+                            }));
                         }
+                        return Some(t);
                     }
                 }
             }
@@ -1742,7 +1743,7 @@ impl Checker {
 }
 
 // checker.go:31625
-pub(crate) fn is_zero_big_int(t: P<Type>) -> bool {
+pub fn is_zero_big_int(t: P<Type>) -> bool {
     get_big_int_literal_value(t) == jsnum::PseudoBigInt::default()
 }
 
@@ -1961,7 +1962,7 @@ impl Checker {
         if t.flags().intersects(TypeFlags::Union) {
             if self.awaited_type_stack.contains(&t) {
                 if error_node.is_some() {
-                    self.error(error_node, &diagnostics::Type_is_referenced_directly_or_indirectly_in_the_fulfillment_callback_of_its_own_then_method, &[]);
+                    self.error(error_node, &diagnostics::TYPE_IS_REFERENCED_DIRECTLY_OR_INDIRECTLY_IN_THE_FULFILLMENT_CALLBACK_OF_ITS_OWN_THEN_METHOD, &[]);
                 }
                 return None;
             }
@@ -2028,7 +2029,7 @@ impl Checker {
                 //  }
                 //
                 if error_node.is_some() {
-                    self.error(error_node, &diagnostics::Type_is_referenced_directly_or_indirectly_in_the_fulfillment_callback_of_its_own_then_method, &[]);
+                    self.error(error_node, &diagnostics::TYPE_IS_REFERENCED_DIRECTLY_OR_INDIRECTLY_IN_THE_FULFILLMENT_CALLBACK_OF_ITS_OWN_THEN_METHOD, &[]);
                 }
                 return None;
             }
@@ -2067,7 +2068,7 @@ impl Checker {
                 if let Some(this_type_for_error) = this_type_for_error {
                     let t_str = self.type_to_string_exported(t);
                     let this_str = self.type_to_string_exported(this_type_for_error);
-                    diagnostic = Some(new_diagnostic_for_node(Some(error_node), Some(&diagnostics::The_this_context_of_type_0_is_not_assignable_to_method_s_this_of_type_1), &[&t_str, &this_str]));
+                    diagnostic = Some(new_diagnostic_for_node(Some(error_node), Some(&diagnostics::THE_THIS_CONTEXT_OF_TYPE_0_IS_NOT_ASSIGNABLE_TO_METHOD_S_THIS_OF_TYPE_1), &[&t_str, &this_str]));
                 }
                 self.add_diagnostic(new_diagnostic_chain_for_node(
                     diagnostic,
@@ -2236,7 +2237,7 @@ impl Checker {
         // parameter type 'T extends string | undefined' with a contextual type 'string', we substitute
         // 'string | undefined' to give control flow analysis the opportunity to narrow to type 'string'.
         let substitute_constraints = !check_mode.intersects(CheckMode::Inferential)
-            && some_type(self, t, super::checker::Checker::is_generic_type_with_union_constraint)
+            && self.some_generic_type_with_union_constraint(t)
             && (self.is_constraint_position(t, reference)
                 || self.has_contextual_type_with_no_generic_types(reference, check_mode));
         if substitute_constraints {
@@ -2256,8 +2257,7 @@ impl Checker {
         if Self::is_no_infer_type(t) {
             t = t.as_substitution_type().base_type.get().unwrap();
         }
-        let position_read =
-            some_type(self, t, super::checker::Checker::is_generic_type_with_union_constraint);
+        let position_read = self.some_generic_type_with_union_constraint(t);
         let substitute_constraints = position_read
             && (self.is_constraint_position(t, reference)
                 || self.has_contextual_type_with_no_generic_types(reference, CheckMode::Normal));
@@ -2292,6 +2292,34 @@ impl Checker {
                     );
                     self.is_generic_index_type(index_type)
                 })
+    }
+
+    /// tsrs: `someType(t, isGenericTypeWithUnionConstraint)` for the declared type of a reference. The walk asks
+    /// every constituent of a union whether it is instantiable (2.6M constituent calls per check of the
+    /// Compiler-Unions benchmark, nearly all on unions of plain object types). A union whose
+    /// `couldContainTypeVariables` memo is computed and false answers false without the walk: the memo is true
+    /// whenever a constituent is instantiable, except for a non-generic top-level alias, whose constituents cannot
+    /// name a type variable and whose instantiable constituents are therefore pattern literal types, each its own
+    /// base constraint. The memo is read, never computed here (computing it resolves type arguments), like the
+    /// same test in `checker_07.rs`.
+    #[inline]
+    pub(crate) fn some_generic_type_with_union_constraint(&mut self, t: P<Type>) -> bool {
+        if t.flags().intersects(TypeFlags::Union)
+            && t.object_flags_lazy()
+                & (ObjectFlags::CouldContainTypeVariablesComputed
+                    | ObjectFlags::CouldContainTypeVariables)
+                == ObjectFlags::CouldContainTypeVariablesComputed
+        {
+            if cfg!(debug_assertions) {
+                let walked = some_type(self, t, Self::is_generic_type_with_union_constraint);
+                assert!(
+                    !walked,
+                    "a union without type variables has a constituent with a union constraint"
+                );
+            }
+            return false;
+        }
+        some_type(self, t, Self::is_generic_type_with_union_constraint)
     }
 
     // checker.go:32008
@@ -2483,8 +2511,8 @@ impl Checker {
                     node.pos().expect_source("parsed nodes have source positions"),
                     false,
                 );
-                if ast::is_function_like(func) {
-                    if let Some(result) = func.parameters().iter().find_map(|&param| {
+                if ast::is_function_like(func)
+                    && let Some(result) = func.parameters().iter().find_map(|&param| {
                         if ast::is_identifier(param.name().unwrap())
                             && param.name().unwrap().text() == node.text()
                         {
@@ -2492,9 +2520,9 @@ impl Checker {
                         } else {
                             None
                         }
-                    }) {
-                        return result;
-                    }
+                    })
+                {
+                    return result;
                 }
             }
         }
@@ -2531,7 +2559,7 @@ impl Checker {
                 // fallthrough (case ast.KindThisType)
                 self.get_type_from_this_type_node(node).symbol()
             }
-            Kind::SuperKeyword => self.check_expression(node).symbol(),
+            Kind::SuperKeyword | Kind::MetaProperty => self.check_expression(node).symbol(),
             Kind::ConstructorKeyword => {
                 // constructor keyword for an overload, should take us to the definition if it exist
                 let constructor_declaration = parent;
@@ -2619,9 +2647,7 @@ impl Checker {
                 None
             }
             Kind::ImportKeyword | Kind::NewKeyword => {
-                if node.kind() == Kind::ImportKeyword
-                    && ast::is_meta_property(parent)
-                    && parent.text() == "defer"
+                if node.kind() == Kind::ImportKeyword && ast::is_import_phase_meta_property(parent)
                 {
                     return None;
                 }
@@ -2636,16 +2662,15 @@ impl Checker {
                     let t = self.get_type_of_expression(parent.as_binary_expression().right());
                     let has_instance_method_type =
                         self.get_symbol_has_instance_method_of_object_type(t);
-                    if let Some(has_instance_method_type) = has_instance_method_type {
-                        if has_instance_method_type.symbol().is_some() {
-                            return has_instance_method_type.symbol();
-                        }
+                    if let Some(has_instance_method_type) = has_instance_method_type
+                        && has_instance_method_type.symbol().is_some()
+                    {
+                        return has_instance_method_type.symbol();
                     }
                     return t.symbol();
                 }
                 None
             }
-            Kind::MetaProperty => self.check_expression(node).symbol(),
             Kind::JsxNamespacedName => {
                 if ast::is_jsx_tag_name(node) && is_jsx_intrinsic_tag_name(node) {
                     let symbol = self.get_intrinsic_tag_symbol(parent);
@@ -2795,19 +2820,19 @@ impl Checker {
                     true, /*dontResolveAlias*/
                     location,
                 );
-                if result.is_none() && is_jsdoc {
-                    if let Some(container) =
+                if result.is_none()
+                    && is_jsdoc
+                    && let Some(container) =
                         ast::find_ancestor(name, ast::is_class_or_interface_like)
-                    {
-                        let symbol = self.get_symbol_of_declaration(container).unwrap();
-                        // Handle unqualified references to class static members and class or interface instance members
-                        let exports = self.get_exports_of_symbol(symbol);
-                        let found = self.get_symbol(exports, name.text(), meaning);
-                        result = found.map(|s| self.get_merged_symbol(s));
-                        if result.is_none() {
-                            let declared_type = self.get_declared_type_of_symbol(symbol);
-                            result = self.get_property_of_type(declared_type, name.text());
-                        }
+                {
+                    let symbol = self.get_symbol_of_declaration(container).unwrap();
+                    // Handle unqualified references to class static members and class or interface instance members
+                    let exports = self.get_exports_of_symbol(symbol);
+                    let found = self.get_symbol(exports, name.text(), meaning);
+                    result = found.map(|s| self.get_merged_symbol(s));
+                    if result.is_none() {
+                        let declared_type = self.get_declared_type_of_symbol(symbol);
+                        result = self.get_property_of_type(declared_type, name.text());
                     }
                 }
                 return result;
@@ -2913,20 +2938,20 @@ impl Checker {
             return self.get_regular_type_of_expression(node);
         }
 
-        if let Some(class_type) = class_type {
-            if !is_implements {
-                // A SyntaxKind.ExpressionWithTypeArguments is considered a type node, except when it occurs in the
-                // extends clause of a class. We handle that case here.
-                let base_type = first_or_nil(self.get_base_types(class_type));
-                if let Some(base_type) = base_type {
-                    return self.get_type_with_this_argument(
-                        base_type,
-                        class_type.as_interface_type().this_type.get(),
-                        false, /*needApparentType*/
-                    );
-                }
-                return self.error_type;
+        if let Some(class_type) = class_type
+            && !is_implements
+        {
+            // A SyntaxKind.ExpressionWithTypeArguments is considered a type node, except when it occurs in the
+            // extends clause of a class. We handle that case here.
+            let base_type = first_or_nil(self.get_base_types(class_type));
+            if let Some(base_type) = base_type {
+                return self.get_type_with_this_argument(
+                    base_type,
+                    class_type.as_interface_type().this_type.get(),
+                    false, /*needApparentType*/
+                );
             }
+            return self.error_type;
         }
 
         if ast::is_type_declaration(node) {
@@ -3085,38 +3110,37 @@ impl Checker {
         t: P<Type>,
         key_type: P<Type>,
     ) -> Option<P<Symbol>> {
-        if let Some(info) = self.get_applicable_index_info(t, key_type) {
-            if info != self.any_base_type_index_info {
-                if info.index_symbol.get().is_none() {
-                    let mut declarations = Vec::new();
-                    if let Some(declaration) = info.declaration.get() {
-                        declarations = vec![declaration];
-                    } else {
-                        declarations.extend(
-                            self.get_index_infos_of_type(t).iter().copied().filter_map(|info| {
-                                info.declaration.get().filter(|&_declaration| {
-                                    self.is_applicable_index_type(
-                                        key_type,
-                                        info.key_type.get().unwrap(),
-                                    )
-                                })
-                            }),
-                        );
-                    }
-                    if !declarations.is_empty() {
-                        let symbol =
-                            self.new_symbol(SymbolFlags::Property, InternalSymbolNameIndex);
-                        symbol.check_flags.set(symbol.check_flags.get() | CheckFlags::IndexSymbol);
-                        symbol.set_value_declaration(Some(declarations[0]));
-                        symbol.set_declarations(&declarations);
-                        symbol.set_parent(t.symbol());
-                        let links = self.value_symbol_links.get(symbol);
-                        links.resolved_type.set(info.value_type.get());
-                        info.index_symbol.set(Some(symbol));
-                    }
+        if let Some(info) = self.get_applicable_index_info(t, key_type)
+            && info != self.any_base_type_index_info
+        {
+            if info.index_symbol.get().is_none() {
+                let mut declarations = Vec::new();
+                if let Some(declaration) = info.declaration.get() {
+                    declarations = vec![declaration];
+                } else {
+                    declarations.extend(
+                        self.get_index_infos_of_type(t).iter().copied().filter_map(|info| {
+                            info.declaration.get().filter(|&_declaration| {
+                                self.is_applicable_index_type(
+                                    key_type,
+                                    info.key_type.get().unwrap(),
+                                )
+                            })
+                        }),
+                    );
                 }
-                return info.index_symbol.get();
+                if !declarations.is_empty() {
+                    let symbol = self.new_symbol(SymbolFlags::Property, INTERNAL_SYMBOL_NAME_INDEX);
+                    symbol.set_check_flags(symbol.check_flags() | CheckFlags::IndexSymbol);
+                    symbol.set_value_declaration(Some(declarations[0]));
+                    symbol.set_declarations(&declarations);
+                    symbol.set_parent(t.symbol());
+                    let links = self.value_symbol_links.get(symbol);
+                    links.resolved_type.set(info.value_type.get());
+                    info.index_symbol.set(Some(symbol));
+                }
             }
+            return info.index_symbol.get();
         }
         None
     }
@@ -3133,14 +3157,6 @@ impl Checker {
 
     // checker.go:32615
     pub(crate) fn contains_arguments_reference(&mut self, node: P<Node>) -> bool {
-        let Some(body) = node.body() else {
-            return false;
-        };
-
-        if let Some(&contains_arguments) = self.cached_arguments_referenced.get(&node) {
-            return contains_arguments;
-        }
-
         fn visit(c: &mut Checker, node: Option<P<Node>>) -> bool {
             let Some(node) = node else {
                 return false;
@@ -3173,6 +3189,14 @@ impl Checker {
             node.for_each_child(&mut |child| visit(c, Some(child)))
         }
 
+        let Some(body) = node.body() else {
+            return false;
+        };
+
+        if let Some(&contains_arguments) = self.cached_arguments_referenced.get(&node) {
+            return contains_arguments;
+        }
+
         let contains_arguments = visit(self, Some(body));
         self.cached_arguments_referenced.insert(node, contains_arguments);
         contains_arguments
@@ -3190,9 +3214,14 @@ impl Checker {
     // checker.go:32656
     pub fn get_emit_resolver(&mut self) -> P<EmitResolver> {
         if self.emit_resolver.is_none() {
-            self.emit_resolver = Some(new_emit_resolver(self));
+            self.emit_resolver = Some(new_emit_resolver(self, tsrs_printer::new_emit_context()));
         }
         self.emit_resolver.unwrap()
+    }
+
+    // checker.go:32710 (source 41). The caller owns the emit context and this resolver's lifetime.
+    pub fn new_emit_resolver(&self, emit_context: P<EmitContext>) -> P<EmitResolver> {
+        new_emit_resolver(self, emit_context)
     }
 
     /// tsrs-only: called when a file's emit transform ends in a scratch region (notes/mem-emit-regions.md). Forgets
@@ -3201,9 +3230,7 @@ impl Checker {
     /// never hit again there either: the referenced-import links of synthesized JSX factory names (every key of
     /// `EmitResolver::jsx_links` is one), and accessible-chain cache entries whose scope is a synthesized node.
     pub fn forget_scratch_keyed_caches(&mut self) {
-        if let Some(resolver) = self.emit_resolver {
-            resolver.jsx_links.clear();
-        }
+        self.emit_resolver_links.jsx_links.clear();
         for (symbol, key) in std::mem::take(&mut self.scratch_keyed_chain_cache) {
             let links = self.symbol_container_links.get(symbol);
             let mut cache = links.accessible_chain_cache.borrow_mut();

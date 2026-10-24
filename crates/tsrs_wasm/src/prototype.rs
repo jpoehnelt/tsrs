@@ -107,7 +107,7 @@ fn call(request: &Value, extension: Option<RequestExtension>) -> ApiResult<Value
                 .map_err(|_| ApiError::invalid_request("character too large"))?,
         };
         let mut caps = lsp::ResolvedClientCapabilities::default();
-        caps.text_document.hover.content_format = vec![lsp::MarkupKind::Markdown];
+        caps.text_document.hover.content_format = vec![lsp::MarkupKind::MARKDOWN];
         let ctx = lsp::with_client_capabilities(&Context::background(), Arc::new(caps));
         let hover = ls
             .provide_hover(
@@ -153,11 +153,6 @@ fn decode<T: Json>(value: &Value) -> ApiResult<T> {
     T::from_json(value).map_err(|error| ApiError::invalid_request(error.to_string()))
 }
 fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
-    let p = Params(params);
-    p.object()?;
-    let data = s.snapshot_data(p.u64("snapshot")?)?;
-    let project = p.str("project")?;
-    let file = p.str("file")?;
     struct Prepared(Option<Arc<tsrs_project::Snapshot>>);
     impl Drop for Prepared {
         fn drop(&mut self) {
@@ -166,6 +161,11 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
             }
         }
     }
+    let p = Params(params);
+    p.object()?;
+    let data = s.snapshot_data(p.u64("snapshot")?)?;
+    let project = p.str("project")?;
+    let file = p.str("file")?;
     let operation = p.str("operation")?;
     let request = p.get("request");
     let requires_auto_imports = match operation {
@@ -214,7 +214,7 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
         ls.set_read_only_files(&decode::<Vec<String>>(p.get("readOnlyFiles"))?);
     }
     let mut caps = lsp::ResolvedClientCapabilities::default();
-    caps.text_document.hover.content_format = vec![lsp::MarkupKind::Markdown];
+    caps.text_document.hover.content_format = vec![lsp::MarkupKind::MARKDOWN];
     caps.text_document.definition.link_support = true;
     caps.text_document.document_symbol.hierarchical_document_symbol_support = true;
     let ctx = lsp::with_client_capabilities(&Context::background(), Arc::new(caps));
@@ -228,9 +228,9 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
                 let mut value = v.to_json();
                 if let Value::Object(fields) = &mut value {
                     let (documentation, tags) = ls.quick_info_documentation(&ctx, &params);
-                    fields.insert("documentation".into(), Value::String(documentation));
+                    fields.insert("documentation", Value::String(documentation));
                     fields.insert(
-                        "tags".into(),
+                        "tags",
                         Value::Array(
                             tags.into_iter()
                                 .map(|tag| {
@@ -259,7 +259,7 @@ fn editor(s: &Session, params: &Value) -> ApiResult<Value> {
         "references" => ls.provide_references(&ctx, &decode(request)?, None).map(|v| v.to_json()),
         "rename" => ls.provide_rename(&ctx, &decode(request)?, None).map(|v| v.to_json()),
         "renameInfo" => {
-            let info = ls.get_rename_info(&ctx, "__myfunction_rename__", &uri, position()?);
+            let info = ls.get_rename_info(&ctx, "__embedded_rename__", &uri, position()?);
             Ok(Obj::new()
                 .set("canRename", Value::Bool(info.can_rename))
                 .set("localizedErrorMessage", Value::String(info.localized_error_message))

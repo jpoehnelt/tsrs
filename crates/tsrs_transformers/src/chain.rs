@@ -3,12 +3,12 @@
 use crate::*;
 
 // chain.go:10
-pub struct chainedTransformer {
+pub struct ChainedTransformer {
     pub base: Transformer,
     pub components: Vec<P<Transformer>>,
 }
 
-impl chainedTransformer {
+impl ChainedTransformer {
     // chain.go:15
     fn visit(&self, node: P<Node>) -> P<Node> {
         assert!(
@@ -33,6 +33,8 @@ pub struct TransformOptions {
     pub resolver: ReferenceResolverRef,
     pub emit_resolver: Option<Resolver>,
     pub get_emit_module_format_of_file: Rc<dyn Fn(P<SourceFile>) -> ModuleKind>,
+    pub content_mapper_extension_rewrites: Vec<tspath::ExtensionRewrite>,
+    pub use_case_sensitive_file_names: bool,
 }
 
 // chain.go:34
@@ -64,7 +66,7 @@ pub fn chain(
             _ => {}
         }
         let ch =
-            P::new(chainedTransformer { base: Transformer::default(), components: constructed });
+            P::new(ChainedTransformer { base: Transformer::default(), components: constructed });
         Some(ch.get().base.new_transformer(
             Rc::new(move |_: &mut NodeVisitor, n: P<Node>| Some(ch.visit(n))),
             Some(opt.context),

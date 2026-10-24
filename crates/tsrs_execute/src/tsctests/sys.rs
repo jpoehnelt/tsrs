@@ -15,8 +15,8 @@ use tsrs_vfs::{Entries, FS, FileInfo, FileMode};
 use super::readablebuildinfo::to_readable_build_info;
 use crate::tsc::{CommandLineTesting, MTimesCache, SyncWriter, System};
 
-pub(crate) const FAKE_TS_VERSION: &str = "FakeTSVersion";
-pub(crate) const FAKE_TIME_STAMP: &str = "HH:MM:SS AM";
+pub const FAKE_TS_VERSION: &str = "FakeTSVersion";
+pub const FAKE_TIME_STAMP: &str = "HH:MM:SS AM";
 
 const LIST_FILE_START: &str = "!!! List files start";
 const LIST_FILE_END: &str = "!!! List files end";
@@ -30,7 +30,7 @@ const TRACE_START: &str = "!!! Trace start";
 const TRACE_END: &str = "!!! Trace end";
 
 // sys.go TestClock
-pub(crate) struct TestClock {
+pub struct TestClock {
     start: SystemTime,
     now: Mutex<Option<SystemTime>>,
 }
@@ -49,13 +49,13 @@ impl TestClock {
 }
 
 // fs.go testFs
-pub(crate) struct testFs {
+pub struct TestFs {
     pub(crate) fs: Arc<IoVFS<MapFS>>,
     pub(crate) default_libs: Mutex<Option<FxHashSet<String>>>,
     pub(crate) written_files: Mutex<FxHashSet<String>>,
 }
 
-impl testFs {
+impl TestFs {
     fn remove_ignore_lib_path(&self, path: &str) {
         if let Some(libs) = self.default_libs.lock().unwrap().as_mut() {
             libs.remove(path);
@@ -66,11 +66,11 @@ impl testFs {
         let mut contents = self.fs.read_file(path)?;
         if tspath::file_extension_is(path, tspath::EXTENSION_TS_BUILD_INFO) {
             // read buildinfo and modify version
-            if let Ok(mut build_info) = tsrs_incremental::BuildInfo::unmarshal(&contents) {
-                if build_info.version == FAKE_TS_VERSION {
-                    build_info.version = tsrs_core::version().to_string();
-                    contents = build_info.marshal();
-                }
+            if let Ok(mut build_info) = tsrs_incremental::BuildInfo::unmarshal(&contents)
+                && build_info.version == FAKE_TS_VERSION
+            {
+                build_info.version = tsrs_core::version().to_string();
+                contents = build_info.marshal();
             }
         }
         Some(contents)
@@ -99,7 +99,7 @@ impl testFs {
     }
 }
 
-impl FS for testFs {
+impl FS for TestFs {
     fn use_case_sensitive_file_names(&self) -> bool {
         self.fs.use_case_sensitive_file_names()
     }
@@ -153,14 +153,14 @@ struct Snapshot {
     default_libs: FxHashSet<String>,
 }
 
-pub(crate) struct TestSys {
+pub struct TestSys {
     pub(crate) current_write: Mutex<String>,
     program_baselines: Mutex<String>,
     program_include_baselines: Mutex<String>,
     tracer: Mutex<FxHashMap<Path, bool>>, // TracerForBaselining.packageJsonCache
     serialized_diff: Mutex<Option<Snapshot>>,
 
-    pub(crate) fs: Arc<testFs>,
+    pub(crate) fs: Arc<TestFs>,
     pub(crate) default_library_path: String,
     pub(crate) cwd: String,
     pub(crate) env: FxHashMap<String, String>,
@@ -186,7 +186,7 @@ impl TestSys {
             program_include_baselines: Mutex::new(String::new()),
             tracer: Mutex::new(FxHashMap::default()),
             serialized_diff: Mutex::new(None),
-            fs: Arc::new(testFs {
+            fs: Arc::new(TestFs {
                 fs,
                 default_libs: Mutex::new(default_libs),
                 written_files: Mutex::new(FxHashSet::default()),
@@ -259,7 +259,7 @@ impl TestSys {
     pub(crate) fn get_output(&self, for_comparing: bool) -> String {
         let text = self.current_write.lock().unwrap().clone();
         let lines: Vec<&str> = text.split('\n').collect();
-        let mut o = outputSanitizer { for_comparing, lines, index: 0, output_lines: Vec::new() };
+        let mut o = OutputSanitizer { for_comparing, lines, index: 0, output_lines: Vec::new() };
         o.transform_lines()
     }
 
@@ -442,10 +442,10 @@ fn add_fs_entry_diff(
     match (old, new) {
         (None, Some(new)) => {
             if !current_libs.is_some_and(|l| l.contains(path)) {
-                if !new.symlink_target.is_empty() {
-                    diffs.insert(path.to_string(), format!("-> {} *new*", new.symlink_target));
-                } else {
+                if new.symlink_target.is_empty() {
                     diffs.insert(path.to_string(), format!("*new* \n{}", new.content));
+                } else {
+                    diffs.insert(path.to_string(), format!("-> {} *new*", new.symlink_target));
                 }
             }
         }
@@ -471,7 +471,7 @@ fn add_fs_entry_diff(
 }
 
 // fsbaselineutil SanitizeInternalSymbolName: \uFFFD@name@123 -> \uFFFD@name@<symbolId>
-pub(crate) fn sanitize_internal_symbol_name(s: &str) -> String {
+pub fn sanitize_internal_symbol_name(s: &str) -> String {
     if !s.contains("\u{FFFD}@") {
         return s.to_string();
     }
@@ -500,18 +500,18 @@ pub(crate) fn sanitize_internal_symbol_name(s: &str) -> String {
     out
 }
 
-struct outputSanitizer<'a> {
+struct OutputSanitizer<'a> {
     for_comparing: bool,
     lines: Vec<&'a str>,
     index: usize,
     output_lines: Vec<String>,
 }
 
-impl outputSanitizer<'_> {
+impl OutputSanitizer<'_> {
     fn add_output_line(&mut self, s: &str) {
         let s = s.replace(&format!("'{}'", tsrs_core::version()), &format!("'{FAKE_TS_VERSION}'"));
         let english_version = format!("Version {}", tsrs_core::version());
-        let s = s.replace(&english_version, &format!("Version {FAKE_TS_VERSION}"));
+        let s = sanitize_version(&s, &english_version, &format!("Version {FAKE_TS_VERSION}"));
         self.output_lines.push(sanitize_internal_symbol_name(&s));
     }
 
@@ -587,9 +587,64 @@ impl outputSanitizer<'_> {
     }
 }
 
+fn sanitize_version(s: &str, version: &str, replacement: &str) -> String {
+    if let Some((before, after)) = s.split_once(version)
+        && after.starts_with("  ")
+    {
+        // Preserve the padded field width when replacing the version in the help header.
+        let suffix = after.trim_start_matches(' ');
+        let width = version.len() + after.len() - suffix.len();
+        return format!("{before}{replacement:<width$}{suffix}").replace(version, replacement);
+    }
+    s.replace(version, replacement)
+}
+
+#[test]
+fn output_sanitizer_version_padding() {
+    let version = format!("Version {}", tsrs_core::version());
+    let fake_version = format!("Version {FAKE_TS_VERSION}");
+    let header = "tsc: The TypeScript Compiler - ";
+    let header_with_version = format!("{header}{version}");
+    let header_with_fake_version = format!("{header}{fake_version}");
+    let cases = [
+        ("version", version.clone(), fake_version.clone()),
+        (
+            "version in prose",
+            format!("{version} is installed"),
+            format!("{fake_version} is installed"),
+        ),
+        (
+            "repeated versions",
+            format!("{version}, {version}"),
+            format!("{fake_version}, {fake_version}"),
+        ),
+        ("header without logo", header_with_version.clone(), header_with_fake_version.clone()),
+        (
+            "header with logo",
+            format!("{header_with_version:<115}\x1b[44m     \x1b[39;49m"),
+            format!("{header_with_fake_version:<115}\x1b[44m     \x1b[39;49m"),
+        ),
+        (
+            "narrow header with logo",
+            format!("{header_with_version:<75}\x1b[44m     \x1b[39;49m"),
+            format!("{header_with_fake_version:<75}\x1b[44m     \x1b[39;49m"),
+        ),
+    ];
+    for (name, input, expected) in cases {
+        let mut sanitizer = OutputSanitizer {
+            for_comparing: false,
+            lines: Vec::new(),
+            index: 0,
+            output_lines: Vec::new(),
+        };
+        sanitizer.add_output_line(&input);
+        assert_eq!(sanitizer.output_lines.join("\n"), expected, "{name}");
+    }
+}
+
 impl System for TestSys {
     fn fs(&self) -> Arc<dyn FS> {
-        Arc::<testFs>::clone(&self.fs)
+        Arc::<TestFs>::clone(&self.fs)
     }
     fn default_library_path(&self) -> &str {
         &self.default_library_path
@@ -673,13 +728,12 @@ impl CommandLineTesting for TestSys {
         let Some(result) = result else { return };
         for file in &result.emitted_files {
             let mod_time = self.map_fs().get_mod_time(file);
-            if let Some(serialized) = self.serialized_diff.lock().unwrap().as_ref() {
-                if let Some(diff) = serialized.snap.get(file) {
-                    if diff.m_time == mod_time {
-                        // Even though written, timestamp was reverted
-                        continue;
-                    }
-                }
+            if let Some(serialized) = self.serialized_diff.lock().unwrap().as_ref()
+                && let Some(diff) = serialized.snap.get(file)
+                && diff.m_time == mod_time
+            {
+                // Even though written, timestamp was reverted
+                continue;
             }
 
             // Ensure that the timestamp for emitted files is in the order

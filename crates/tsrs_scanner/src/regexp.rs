@@ -36,7 +36,7 @@ bitflags::bitflags! {
 }
 
 /// Go `charCodeToRegExpFlag[ch]` ("comma ok").
-pub(crate) fn char_code_to_reg_exp_flag(ch: Rune) -> Option<RegularExpressionFlags> {
+pub fn char_code_to_reg_exp_flag(ch: Rune) -> Option<RegularExpressionFlags> {
     Some(match ch {
         0x64 => RegularExpressionFlags::HasIndices,
         0x67 => RegularExpressionFlags::Global,
@@ -71,11 +71,11 @@ impl Scanner {
         pos: u32,
         size: u32,
     ) {
-        if let Some(available_from) = reg_exp_flag_to_first_available_language_version(flag) {
-            if self.language_version() < available_from {
-                let name = available_from.string().to_lowercase();
-                self.error_at(&diagnostics::This_regular_expression_flag_is_only_available_when_targeting_0_or_later, pos, size, &[&name]);
-            }
+        if let Some(available_from) = reg_exp_flag_to_first_available_language_version(flag)
+            && self.language_version() < available_from
+        {
+            let name = available_from.string().to_lowercase();
+            self.error_at(&diagnostics::THIS_REGULAR_EXPRESSION_FLAG_IS_ONLY_AVAILABLE_WHEN_TARGETING_0_OR_LATER, pos, size, &[&name]);
         }
     }
 }
@@ -100,7 +100,7 @@ struct DecimalEscapeValue {
 
 /// Go `regExpParser`. Go holds a `*Scanner`; to avoid a borrowing struct this one owns the
 /// scanner for the duration of the parse (see `Scanner::re_scan_slash_token`).
-pub(crate) struct RegExpParser {
+pub struct RegExpParser {
     scanner: Scanner,
     end: u32,
     any_unicode_mode: bool,
@@ -340,7 +340,7 @@ impl RegExpParser {
                                     self.scan_expected_char(b'>');
                                     if self.scanner.language_version() < ScriptTarget::ES2018 {
                                         self.error(
-                                            &diagnostics::Named_capturing_groups_are_only_available_when_targeting_ES2018_or_later,
+                                            &diagnostics::NAMED_CAPTURING_GROUPS_ARE_ONLY_AVAILABLE_WHEN_TARGETING_ES2018_OR_LATER,
                                             group_name_start,
                                             self.pos() - group_name_start,
                                             &[],
@@ -358,7 +358,7 @@ impl RegExpParser {
                                     self.scan_pattern_modifiers(set_flags);
                                     if self.pos() == flags_start + 1 {
                                         self.error(
-                                            &diagnostics::Subpattern_flags_must_be_present_when_there_is_a_minus_sign,
+                                            &diagnostics::SUBPATTERN_FLAGS_MUST_BE_PRESENT_WHEN_THERE_IS_A_MINUS_SIGN,
                                             flags_start,
                                             self.pos() - flags_start,
                                             &[],
@@ -369,7 +369,7 @@ impl RegExpParser {
                                 if self.pos() != flags_start && self.scanner.language_version() < ScriptTarget::ES2025 {
                                     let name = ScriptTarget::ES2025.string().to_lowercase();
                                     self.error(
-                                        &diagnostics::Regular_expression_pattern_modifiers_are_only_available_when_targeting_0_or_later,
+                                        &diagnostics::REGULAR_EXPRESSION_PATTERN_MODIFIERS_ARE_ONLY_AVAILABLE_WHEN_TARGETING_0_OR_LATER,
                                         flags_start,
                                         self.pos() - flags_start,
                                         &[&name],
@@ -402,31 +402,30 @@ impl RegExpParser {
                             let max_str = self.scanner.state.token_value;
                             if min_str.is_empty() {
                                 if !max_str.is_empty() || self.char() == Some(b'}') {
-                                    self.error(&diagnostics::Incomplete_quantifier_Digit_expected, digits_start, 0, &[]);
+                                    self.error(&diagnostics::INCOMPLETE_QUANTIFIER_DIGIT_EXPECTED, digits_start, 0, &[]);
                                 } else {
                                     let s = rune_string(u32::from(ch));
-                                    self.error(&diagnostics::Unexpected_0_Did_you_mean_to_escape_it_with_backslash, start, 1, &[&s]);
+                                    self.error(&diagnostics::UNEXPECTED_0_DID_YOU_MEAN_TO_ESCAPE_IT_WITH_BACKSLASH, start, 1, &[&s]);
                                     is_previous_term_quantifiable = true;
                                     continue;
                                 }
-                            } else if !max_str.is_empty() {
-                                if compare_decimal_strings(min_str, max_str).is_gt()
+                            } else if !max_str.is_empty()
+                                && compare_decimal_strings(min_str, max_str).is_gt()
                                     && (self.any_unicode_mode_or_non_annex_b || self.char() == Some(b'}'))
                                 {
-                                    self.error(&diagnostics::Numbers_out_of_order_in_quantifier, digits_start, self.pos() - digits_start, &[]);
+                                    self.error(&diagnostics::NUMBERS_OUT_OF_ORDER_IN_QUANTIFIER, digits_start, self.pos() - digits_start, &[]);
                                 }
-                            }
                         } else if min_str.is_empty() {
                             if self.any_unicode_mode_or_non_annex_b {
                                 let s = rune_string(u32::from(ch));
-                                self.error(&diagnostics::Unexpected_0_Did_you_mean_to_escape_it_with_backslash, start, 1, &[&s]);
+                                self.error(&diagnostics::UNEXPECTED_0_DID_YOU_MEAN_TO_ESCAPE_IT_WITH_BACKSLASH, start, 1, &[&s]);
                             }
                             is_previous_term_quantifiable = true;
                             continue;
                         }
                         if self.char() != Some(b'}') {
                             if self.any_unicode_mode_or_non_annex_b {
-                                self.error(&diagnostics::X_0_expected, self.pos(), 0, &[&"}"]);
+                                self.error(&diagnostics::X_0_EXPECTED, self.pos(), 0, &[&"}"]);
                                 self.dec_pos(1);
                             } else {
                                 is_previous_term_quantifiable = true;
@@ -440,7 +439,7 @@ impl RegExpParser {
                         self.inc_pos(1);
                     }
                     if !is_previous_term_quantifiable {
-                        self.error(&diagnostics::There_is_nothing_available_for_repetition, start, self.pos() - start, &[]);
+                        self.error(&diagnostics::THERE_IS_NOTHING_AVAILABLE_FOR_REPETITION, start, self.pos() - start, &[]);
                     }
                     is_previous_term_quantifiable = false;
                 }
@@ -465,7 +464,7 @@ impl RegExpParser {
                     }
                     if self.any_unicode_mode_or_non_annex_b || ch == b')' {
                         let s = rune_string(u32::from(ch));
-                        self.error(&diagnostics::Unexpected_0_Did_you_mean_to_escape_it_with_backslash, self.pos(), 1, &[&s]);
+                        self.error(&diagnostics::UNEXPECTED_0_DID_YOU_MEAN_TO_ESCAPE_IT_WITH_BACKSLASH, self.pos(), 1, &[&s]);
                     }
                     self.inc_pos(1);
                     is_previous_term_quantifiable = true;
@@ -495,7 +494,7 @@ impl RegExpParser {
             match char_code_to_reg_exp_flag(ch) {
                 None => {
                     self.error(
-                        &diagnostics::Unknown_regular_expression_flag,
+                        &diagnostics::UNKNOWN_REGULAR_EXPRESSION_FLAG,
                         self.pos(),
                         size,
                         &[],
@@ -503,14 +502,14 @@ impl RegExpParser {
                 }
                 Some(flag) if curr_flags.intersects(flag) => {
                     self.error(
-                        &diagnostics::Duplicate_regular_expression_flag,
+                        &diagnostics::DUPLICATE_REGULAR_EXPRESSION_FLAG,
                         self.pos(),
                         size,
                         &[],
                     );
                 }
                 Some(flag) if !flag.intersects(RegularExpressionFlags::Modifiers) => {
-                    self.error(&diagnostics::This_regular_expression_flag_cannot_be_toggled_within_a_subpattern, self.pos(), size, &[]);
+                    self.error(&diagnostics::THIS_REGULAR_EXPRESSION_FLAG_CANNOT_BE_TOGGLED_WITHIN_A_SUBPATTERN, self.pos(), size, &[]);
                 }
                 Some(flag) => {
                     // Modifier syntax itself requires ES2025, which is later than any flag that can appear
@@ -540,7 +539,7 @@ impl RegExpParser {
                 self.scan_expected_char(b'>');
             } else if self.any_unicode_mode_or_non_annex_b || self.named_capture_groups {
                 self.error(
-                    &diagnostics::X_k_must_be_followed_by_a_capturing_group_name_enclosed_in_angle_brackets,
+                    &diagnostics::X_K_MUST_BE_FOLLOWED_BY_A_CAPTURING_GROUP_NAME_ENCLOSED_IN_ANGLE_BRACKETS,
                     self.pos() - 2,
                     2,
                     &[],
@@ -551,7 +550,7 @@ impl RegExpParser {
         if ch == Some(b'q') && self.unicode_sets_mode {
             self.inc_pos(1);
             self.error(
-                &diagnostics::X_q_is_only_available_inside_character_class,
+                &diagnostics::X_Q_IS_ONLY_AVAILABLE_INSIDE_CHARACTER_CLASS,
                 self.pos() - 2,
                 2,
                 &[],
@@ -598,7 +597,7 @@ impl RegExpParser {
         let ch = self.char();
         match ch {
             None => {
-                self.error(&diagnostics::Undetermined_character_escape, self.pos() - 1, 1, &[]);
+                self.error(&diagnostics::UNDETERMINED_CHARACTER_ESCAPE, self.pos() - 1, 1, &[]);
                 Cow::Borrowed("\\")
             }
             Some(0x63) /* c */ => {
@@ -609,7 +608,7 @@ impl RegExpParser {
                     return Cow::Owned(rune_string(u32::from(ch & 0x1f)));
                 }
                 if self.any_unicode_mode_or_non_annex_b {
-                    self.error(&diagnostics::X_c_must_be_followed_by_an_ASCII_letter, self.pos() - 2, 2, &[]);
+                    self.error(&diagnostics::X_C_MUST_BE_FOLLOWED_BY_AN_ASCII_LETTER, self.pos() - 2, 2, &[]);
                 } else if atom_escape {
                     self.dec_pos(1);
                     return Cow::Borrowed("\\");
@@ -641,7 +640,7 @@ impl RegExpParser {
         assert!(self.pos() > 0 && self.text_byte(self.pos() - 1) == b'<');
         self.scanner.state.token_start = self.pos();
         if !self.scanner.scan_identifier(0, IdentifierVariant::RegExpGroupName) {
-            self.error(&diagnostics::Expected_a_capturing_group_name, self.pos(), 0, &[]);
+            self.error(&diagnostics::EXPECTED_A_CAPTURING_GROUP_NAME, self.pos(), 0, &[]);
         } else if is_reference {
             self.group_name_references.push(GroupNameReference {
                 pos: self.scanner.state.token_start,
@@ -650,7 +649,7 @@ impl RegExpParser {
             });
         } else if self.named_capturing_groups_contains(self.scanner.state.token_value) {
             self.error(
-                &diagnostics::Named_capturing_groups_with_the_same_name_must_be_mutually_exclusive_to_each_other,
+                &diagnostics::NAMED_CAPTURING_GROUPS_WITH_THE_SAME_NAME_MUST_BE_MUTUALLY_EXCLUSIVE_TO_EACH_OTHER,
                 self.scanner.state.token_start,
                 self.pos() - self.scanner.state.token_start,
                 &[],
@@ -665,7 +664,7 @@ impl RegExpParser {
             {
                 let name = ScriptTarget::ES2025.string().to_lowercase();
                 self.error(
-                    &diagnostics::Duplicate_named_capturing_groups_are_only_available_when_targeting_0_or_later,
+                    &diagnostics::DUPLICATE_NAMED_CAPTURING_GROUPS_ARE_ONLY_AVAILABLE_WHEN_TARGETING_0_OR_LATER,
                     self.scanner.state.token_start,
                     self.pos() - self.scanner.state.token_start,
                     &[&name],
@@ -710,7 +709,7 @@ impl RegExpParser {
                 }
                 if min_character.is_empty() && self.any_unicode_mode_or_non_annex_b {
                     self.error(
-                        &diagnostics::A_character_class_range_must_not_be_bounded_by_another_character_class,
+                        &diagnostics::A_CHARACTER_CLASS_RANGE_MUST_NOT_BE_BOUNDED_BY_ANOTHER_CHARACTER_CLASS,
                         min_start,
                         self.pos() - 1 - min_start,
                         &[],
@@ -720,7 +719,7 @@ impl RegExpParser {
                 let max_character = self.scan_class_atom();
                 if max_character.is_empty() && self.any_unicode_mode_or_non_annex_b {
                     self.error(
-                        &diagnostics::A_character_class_range_must_not_be_bounded_by_another_character_class,
+                        &diagnostics::A_CHARACTER_CLASS_RANGE_MUST_NOT_BE_BOUNDED_BY_ANOTHER_CHARACTER_CLASS,
                         max_start,
                         self.pos() - max_start,
                         &[],
@@ -739,7 +738,7 @@ impl RegExpParser {
                     && min_character_value > max_character_value
                 {
                     self.error(
-                        &diagnostics::Range_out_of_order_in_character_class,
+                        &diagnostics::RANGE_OUT_OF_ORDER_IN_CHARACTER_CLASS,
                         min_start,
                         self.pos() - min_start,
                         &[],
@@ -784,7 +783,7 @@ impl RegExpParser {
         }
         match two_chars {
             b"--" | b"&&" => {
-                self.error(&diagnostics::Expected_a_class_set_operand, self.pos(), 0, &[]);
+                self.error(&diagnostics::EXPECTED_A_CLASS_SET_OPERAND, self.pos(), 0, &[]);
                 self.may_contain_strings = false;
             }
             _ => {
@@ -796,7 +795,7 @@ impl RegExpParser {
                 if self.pos() + 1 < self.end && self.char_at(self.pos() + 1) == Some(b'-') {
                     if is_character_complement && self.may_contain_strings {
                         self.error(
-                            &diagnostics::Anything_that_would_possibly_match_more_than_a_single_character_is_invalid_inside_a_negated_character_class,
+                            &diagnostics::ANYTHING_THAT_WOULD_POSSIBLY_MATCH_MORE_THAN_A_SINGLE_CHARACTER_IS_INVALID_INSIDE_A_NEGATED_CHARACTER_CLASS,
                             start,
                             self.pos() - start,
                             &[],
@@ -813,7 +812,7 @@ impl RegExpParser {
                     self.scan_class_set_sub_expression(ClassSetExpressionType::ClassIntersection);
                     if is_character_complement && self.may_contain_strings {
                         self.error(
-                            &diagnostics::Anything_that_would_possibly_match_more_than_a_single_character_is_invalid_inside_a_negated_character_class,
+                            &diagnostics::ANYTHING_THAT_WOULD_POSSIBLY_MATCH_MORE_THAN_A_SINGLE_CHARACTER_IS_INVALID_INSIDE_A_NEGATED_CHARACTER_CLASS,
                             start,
                             self.pos() - start,
                             &[],
@@ -827,7 +826,7 @@ impl RegExpParser {
             _ => {
                 if is_character_complement && self.may_contain_strings {
                     self.error(
-                        &diagnostics::Anything_that_would_possibly_match_more_than_a_single_character_is_invalid_inside_a_negated_character_class,
+                        &diagnostics::ANYTHING_THAT_WOULD_POSSIBLY_MATCH_MORE_THAN_A_SINGLE_CHARACTER_IS_INVALID_INSIDE_A_NEGATED_CHARACTER_CLASS,
                         start,
                         self.pos() - start,
                         &[],
@@ -849,7 +848,7 @@ impl RegExpParser {
                 if ch == Some(b'-') {
                     self.inc_pos(1);
                     self.error(
-                        &diagnostics::Operators_must_not_be_mixed_within_a_character_class_Wrap_it_in_a_nested_class_instead,
+                        &diagnostics::OPERATORS_MUST_NOT_BE_MIXED_WITHIN_A_CHARACTER_CLASS_WRAP_IT_IN_A_NESTED_CLASS_INSTEAD,
                         self.pos() - 2,
                         2,
                         &[],
@@ -860,7 +859,7 @@ impl RegExpParser {
                 }
                 if operand.is_empty() {
                     self.error(
-                        &diagnostics::A_character_class_range_must_not_be_bounded_by_another_character_class,
+                        &diagnostics::A_CHARACTER_CLASS_RANGE_MUST_NOT_BE_BOUNDED_BY_ANOTHER_CHARACTER_CLASS,
                         start,
                         self.pos() - 1 - start,
                         &[],
@@ -870,7 +869,7 @@ impl RegExpParser {
                 let second_operand = self.scan_class_set_operand();
                 if is_character_complement && self.may_contain_strings {
                     self.error(
-                        &diagnostics::Anything_that_would_possibly_match_more_than_a_single_character_is_invalid_inside_a_negated_character_class,
+                        &diagnostics::ANYTHING_THAT_WOULD_POSSIBLY_MATCH_MORE_THAN_A_SINGLE_CHARACTER_IS_INVALID_INSIDE_A_NEGATED_CHARACTER_CLASS,
                         second_start,
                         self.pos() - second_start,
                         &[],
@@ -880,7 +879,7 @@ impl RegExpParser {
                     expression_may_contain_strings || self.may_contain_strings;
                 if second_operand.is_empty() {
                     self.error(
-                        &diagnostics::A_character_class_range_must_not_be_bounded_by_another_character_class,
+                        &diagnostics::A_CHARACTER_CLASS_RANGE_MUST_NOT_BE_BOUNDED_BY_ANOTHER_CHARACTER_CLASS,
                         second_start,
                         self.pos() - second_start,
                         &[],
@@ -895,36 +894,37 @@ impl RegExpParser {
                         && min_character_value > max_character_value
                     {
                         self.error(
-                            &diagnostics::Range_out_of_order_in_character_class,
+                            &diagnostics::RANGE_OUT_OF_ORDER_IN_CHARACTER_CLASS,
                             start,
                             self.pos() - start,
                             &[],
                         );
                     }
                 }
-            } else if ch == Some(b'&') {
-                if self.pos() + 1 < self.end && self.char_at(self.pos() + 1) == Some(b'&') {
-                    start = self.pos();
-                    self.inc_pos(2);
-                    self.error(
-                        &diagnostics::Operators_must_not_be_mixed_within_a_character_class_Wrap_it_in_a_nested_class_instead,
+            } else if ch == Some(b'&')
+                && self.pos() + 1 < self.end
+                && self.char_at(self.pos() + 1) == Some(b'&')
+            {
+                start = self.pos();
+                self.inc_pos(2);
+                self.error(
+                        &diagnostics::OPERATORS_MUST_NOT_BE_MIXED_WITHIN_A_CHARACTER_CLASS_WRAP_IT_IN_A_NESTED_CLASS_INSTEAD,
                         self.pos() - 2,
                         2,
                         &[],
                     );
-                    if self.char() == Some(b'&') {
-                        let s = rune_string(u32::from(ch.expect("class content is not at end")));
-                        self.error(
-                            &diagnostics::Unexpected_0_Did_you_mean_to_escape_it_with_backslash,
-                            self.pos(),
-                            1,
-                            &[&s],
-                        );
-                        self.inc_pos(1);
-                    }
-                    operand = Cow::Borrowed(&self.text()[start as usize..self.pos() as usize]);
-                    continue;
+                if self.char() == Some(b'&') {
+                    let s = rune_string(u32::from(ch.expect("class content is not at end")));
+                    self.error(
+                        &diagnostics::UNEXPECTED_0_DID_YOU_MEAN_TO_ESCAPE_IT_WITH_BACKSLASH,
+                        self.pos(),
+                        1,
+                        &[&s],
+                    );
+                    self.inc_pos(1);
                 }
+                operand = Cow::Borrowed(&self.text()[start as usize..self.pos() as usize]);
+                continue;
             }
             if self.is_class_content_exit(self.char()) {
                 break;
@@ -937,7 +937,7 @@ impl RegExpParser {
             match two_chars {
                 b"--" | b"&&" => {
                     self.error(
-                        &diagnostics::Operators_must_not_be_mixed_within_a_character_class_Wrap_it_in_a_nested_class_instead,
+                        &diagnostics::OPERATORS_MUST_NOT_BE_MIXED_WITHIN_A_CHARACTER_CLASS_WRAP_IT_IN_A_NESTED_CLASS_INSTEAD,
                         self.pos(),
                         2,
                         &[],
@@ -949,7 +949,7 @@ impl RegExpParser {
                     operand = self.scan_class_set_operand();
                     if is_character_complement && self.may_contain_strings {
                         self.error(
-                            &diagnostics::Anything_that_would_possibly_match_more_than_a_single_character_is_invalid_inside_a_negated_character_class,
+                            &diagnostics::ANYTHING_THAT_WOULD_POSSIBLY_MATCH_MORE_THAN_A_SINGLE_CHARACTER_IS_INVALID_INSIDE_A_NEGATED_CHARACTER_CLASS,
                             start,
                             self.pos() - start,
                             &[],
@@ -977,7 +977,7 @@ impl RegExpParser {
                         self.inc_pos(1);
                         if expression_type != ClassSetExpressionType::ClassSubtraction {
                             self.error(
-                                &diagnostics::Operators_must_not_be_mixed_within_a_character_class_Wrap_it_in_a_nested_class_instead,
+                                &diagnostics::OPERATORS_MUST_NOT_BE_MIXED_WITHIN_A_CHARACTER_CLASS_WRAP_IT_IN_A_NESTED_CLASS_INSTEAD,
                                 self.pos() - 2,
                                 2,
                                 &[],
@@ -985,7 +985,7 @@ impl RegExpParser {
                         }
                     } else {
                         self.error(
-                            &diagnostics::Operators_must_not_be_mixed_within_a_character_class_Wrap_it_in_a_nested_class_instead,
+                            &diagnostics::OPERATORS_MUST_NOT_BE_MIXED_WITHIN_A_CHARACTER_CLASS_WRAP_IT_IN_A_NESTED_CLASS_INSTEAD,
                             self.pos() - 1,
                             1,
                             &[],
@@ -998,7 +998,7 @@ impl RegExpParser {
                         self.inc_pos(1);
                         if expression_type != ClassSetExpressionType::ClassIntersection {
                             self.error(
-                                &diagnostics::Operators_must_not_be_mixed_within_a_character_class_Wrap_it_in_a_nested_class_instead,
+                                &diagnostics::OPERATORS_MUST_NOT_BE_MIXED_WITHIN_A_CHARACTER_CLASS_WRAP_IT_IN_A_NESTED_CLASS_INSTEAD,
                                 self.pos() - 2,
                                 2,
                                 &[],
@@ -1006,26 +1006,26 @@ impl RegExpParser {
                         }
                         if self.char() == Some(b'&') {
                             let s = rune_string(u32::from(ch.expect("class content is not at end")));
-                            self.error(&diagnostics::Unexpected_0_Did_you_mean_to_escape_it_with_backslash, self.pos(), 1, &[&s]);
+                            self.error(&diagnostics::UNEXPECTED_0_DID_YOU_MEAN_TO_ESCAPE_IT_WITH_BACKSLASH, self.pos(), 1, &[&s]);
                             self.inc_pos(1);
                         }
                     } else {
                         let s = rune_string(u32::from(ch.expect("class content is not at end")));
-                        self.error(&diagnostics::Unexpected_0_Did_you_mean_to_escape_it_with_backslash, self.pos() - 1, 1, &[&s]);
+                        self.error(&diagnostics::UNEXPECTED_0_DID_YOU_MEAN_TO_ESCAPE_IT_WITH_BACKSLASH, self.pos() - 1, 1, &[&s]);
                     }
                 }
                 _ => match expression_type {
                     ClassSetExpressionType::ClassSubtraction => {
-                        self.error(&diagnostics::X_0_expected, self.pos(), 0, &[&"--"]);
+                        self.error(&diagnostics::X_0_EXPECTED, self.pos(), 0, &[&"--"]);
                     }
                     ClassSetExpressionType::ClassIntersection => {
-                        self.error(&diagnostics::X_0_expected, self.pos(), 0, &[&"&&"]);
+                        self.error(&diagnostics::X_0_EXPECTED, self.pos(), 0, &[&"&&"]);
                     }
                 },
             }
             ch = self.char();
             if self.is_class_content_exit(ch) {
-                self.error(&diagnostics::Expected_a_class_set_operand, self.pos(), 0, &[]);
+                self.error(&diagnostics::EXPECTED_A_CLASS_SET_OPERAND, self.pos(), 0, &[]);
                 break;
             }
             self.scan_class_set_operand();
@@ -1064,7 +1064,7 @@ impl RegExpParser {
                         self.scan_expected_char(b'}');
                         return Cow::Borrowed("");
                     }
-                    self.error(&diagnostics::X_q_must_be_followed_by_string_alternatives_enclosed_in_braces, self.pos() - 2, 2, &[]);
+                    self.error(&diagnostics::X_Q_MUST_BE_FOLLOWED_BY_STRING_ALTERNATIVES_ENCLOSED_IN_BRACES, self.pos() - 2, 2, &[]);
                     return Cow::Borrowed("q");
                 }
                 self.dec_pos(1);
@@ -1122,26 +1122,26 @@ impl RegExpParser {
                 }
                 _ => return self.scan_character_escape(false /*atomEscape*/),
             }
-        } else if self.pos() + 1 < self.end && ch == self.char_at(self.pos() + 1) {
-            if let Some(
+        } else if self.pos() + 1 < self.end
+            && ch == self.char_at(self.pos() + 1)
+            && let Some(
                 0x26 | 0x21 | 0x23 | 0x25 | 0x2A | 0x2B | 0x2C | 0x2E | 0x3A | 0x3B | 0x3C | 0x3D
                 | 0x3E | 0x3F | 0x40 | 0x60 | 0x7E,
             ) = ch
-            {
-                self.error(
-                    &diagnostics::A_character_class_must_not_contain_a_reserved_double_punctuator_Did_you_mean_to_escape_it_with_backslash,
+        {
+            self.error(
+                    &diagnostics::A_CHARACTER_CLASS_MUST_NOT_CONTAIN_A_RESERVED_DOUBLE_PUNCTUATOR_DID_YOU_MEAN_TO_ESCAPE_IT_WITH_BACKSLASH,
                     self.pos(),
                     2,
                     &[],
                 );
-                self.inc_pos(2);
-                return Cow::Borrowed(&self.text()[(self.pos() - 2) as usize..self.pos() as usize]);
-            }
+            self.inc_pos(2);
+            return Cow::Borrowed(&self.text()[(self.pos() - 2) as usize..self.pos() as usize]);
         }
         if let Some(ch @ (0x2F | 0x28 | 0x29 | 0x5B | 0x5D | 0x7B | 0x7D | 0x2D | 0x7C)) = ch {
             let s = rune_string(u32::from(ch));
             self.error(
-                &diagnostics::Unexpected_0_Did_you_mean_to_escape_it_with_backslash,
+                &diagnostics::UNEXPECTED_0_DID_YOU_MEAN_TO_ESCAPE_IT_WITH_BACKSLASH,
                 self.pos(),
                 1,
                 &[&s],
@@ -1214,10 +1214,10 @@ impl RegExpParser {
                     if self.char() == Some(b'=') {
                         let property_name = non_binary_unicode_properties(property_name_or_value).unwrap_or("");
                         if self.pos() == property_name_or_value_start {
-                            self.error(&diagnostics::Expected_a_Unicode_property_name, self.pos(), 0, &[]);
+                            self.error(&diagnostics::EXPECTED_A_UNICODE_PROPERTY_NAME, self.pos(), 0, &[]);
                         } else if property_name.is_empty() {
                             self.error(
-                                &diagnostics::Unknown_Unicode_property_name,
+                                &diagnostics::UNKNOWN_UNICODE_PROPERTY_NAME,
                                 property_name_or_value_start,
                                 self.pos() - property_name_or_value_start,
                                 &[],
@@ -1225,7 +1225,7 @@ impl RegExpParser {
                             let suggestion = Self::get_spelling_suggestion_for_unicode_property_name(property_name_or_value);
                             if !suggestion.is_empty() {
                                 self.error(
-                                    &diagnostics::Did_you_mean_0,
+                                    &diagnostics::DID_YOU_MEAN_0,
                                     property_name_or_value_start,
                                     self.pos() - property_name_or_value_start,
                                     &[&suggestion],
@@ -1236,12 +1236,12 @@ impl RegExpParser {
                         let property_value_start = self.pos();
                         let property_value = self.scan_word_characters();
                         if self.pos() == property_value_start {
-                            self.error(&diagnostics::Expected_a_Unicode_property_value, self.pos(), 0, &[]);
-                        } else if !property_name.is_empty() {
-                            if let Some(values) = values_of_non_binary_unicode_properties(property_name) {
-                                if !values.contains(property_value) {
+                            self.error(&diagnostics::EXPECTED_A_UNICODE_PROPERTY_VALUE, self.pos(), 0, &[]);
+                        } else if !property_name.is_empty()
+                            && let Some(values) = values_of_non_binary_unicode_properties(property_name)
+                                && !values.contains(property_value) {
                                     self.error(
-                                        &diagnostics::Unknown_Unicode_property_value,
+                                        &diagnostics::UNKNOWN_UNICODE_PROPERTY_VALUE,
                                         property_value_start,
                                         self.pos() - property_value_start,
                                         &[],
@@ -1249,28 +1249,26 @@ impl RegExpParser {
                                     let suggestion = Self::get_spelling_suggestion_for_unicode_property_value(property_name, property_value);
                                     if !suggestion.is_empty() {
                                         self.error(
-                                            &diagnostics::Did_you_mean_0,
+                                            &diagnostics::DID_YOU_MEAN_0,
                                             property_value_start,
                                             self.pos() - property_value_start,
                                             &[&suggestion],
                                         );
                                     }
                                 }
-                            }
-                        }
                     } else if self.pos() == property_name_or_value_start {
-                        self.error(&diagnostics::Expected_a_Unicode_property_name_or_value, self.pos(), 0, &[]);
+                        self.error(&diagnostics::EXPECTED_A_UNICODE_PROPERTY_NAME_OR_VALUE, self.pos(), 0, &[]);
                     } else if binary_unicode_properties_of_strings().contains(property_name_or_value) {
                         if !self.unicode_sets_mode {
                             self.error(
-                                &diagnostics::Any_Unicode_property_that_would_possibly_match_more_than_a_single_character_is_only_available_when_the_Unicode_Sets_v_flag_is_set,
+                                &diagnostics::ANY_UNICODE_PROPERTY_THAT_WOULD_POSSIBLY_MATCH_MORE_THAN_A_SINGLE_CHARACTER_IS_ONLY_AVAILABLE_WHEN_THE_UNICODE_SETS_V_FLAG_IS_SET,
                                 property_name_or_value_start,
                                 self.pos() - property_name_or_value_start,
                                 &[],
                             );
                         } else if is_character_complement {
                             self.error(
-                                &diagnostics::Anything_that_would_possibly_match_more_than_a_single_character_is_invalid_inside_a_negated_character_class,
+                                &diagnostics::ANYTHING_THAT_WOULD_POSSIBLY_MATCH_MORE_THAN_A_SINGLE_CHARACTER_IS_INVALID_INSIDE_A_NEGATED_CHARACTER_CLASS,
                                 property_name_or_value_start,
                                 self.pos() - property_name_or_value_start,
                                 &[],
@@ -1280,7 +1278,7 @@ impl RegExpParser {
                         }
                     } else if !general_category_values().contains(property_name_or_value) && !binary_unicode_properties().contains(property_name_or_value) {
                         self.error(
-                            &diagnostics::Unknown_Unicode_property_name_or_value,
+                            &diagnostics::UNKNOWN_UNICODE_PROPERTY_NAME_OR_VALUE,
                             property_name_or_value_start,
                             self.pos() - property_name_or_value_start,
                             &[],
@@ -1288,7 +1286,7 @@ impl RegExpParser {
                         let suggestion = Self::get_spelling_suggestion_for_unicode_property_name_or_value(property_name_or_value);
                         if !suggestion.is_empty() {
                             self.error(
-                                &diagnostics::Did_you_mean_0,
+                                &diagnostics::DID_YOU_MEAN_0,
                                 property_name_or_value_start,
                                 self.pos() - property_name_or_value_start,
                                 &[&suggestion],
@@ -1298,7 +1296,7 @@ impl RegExpParser {
                     self.scan_expected_char(b'}');
                     if !self.any_unicode_mode {
                         self.error(
-                            &diagnostics::Unicode_property_value_expressions_are_only_available_when_the_Unicode_u_flag_or_the_Unicode_Sets_v_flag_is_set,
+                            &diagnostics::UNICODE_PROPERTY_VALUE_EXPRESSIONS_ARE_ONLY_AVAILABLE_WHEN_THE_UNICODE_U_FLAG_OR_THE_UNICODE_SETS_V_FLAG_IS_SET,
                             start,
                             self.pos() - start,
                             &[],
@@ -1307,7 +1305,7 @@ impl RegExpParser {
                 } else if self.any_unicode_mode_or_non_annex_b {
                     let s = rune_string(u32::from(ch));
                     self.error(
-                        &diagnostics::X_0_must_be_followed_by_a_Unicode_property_value_expression_enclosed_in_braces,
+                        &diagnostics::X_0_MUST_BE_FOLLOWED_BY_A_UNICODE_PROPERTY_VALUE_EXPRESSION_ENCLOSED_IN_BRACES,
                         self.pos() - 2,
                         2,
                         &[&s],
@@ -1422,7 +1420,7 @@ impl RegExpParser {
             self.inc_pos(1);
         } else {
             let s = rune_string(u32::from(ch));
-            self.error(&diagnostics::X_0_expected, self.pos(), 0, &[&s]);
+            self.error(&diagnostics::X_0_EXPECTED, self.pos(), 0, &[&s]);
         }
     }
 
@@ -1447,7 +1445,7 @@ impl RegExpParser {
         for reference in &references {
             if !self.group_specifiers.contains(reference.name) {
                 self.error(
-                    &diagnostics::There_is_no_capturing_group_named_0_in_this_regular_expression,
+                    &diagnostics::THERE_IS_NO_CAPTURING_GROUP_NAMED_0_IN_THIS_REGULAR_EXPRESSION,
                     reference.pos,
                     reference.end - reference.pos,
                     &[&reference.name],
@@ -1461,7 +1459,7 @@ impl RegExpParser {
                     .unwrap_or_default();
                     if !suggestion.is_empty() {
                         self.error(
-                            &diagnostics::Did_you_mean_0,
+                            &diagnostics::DID_YOU_MEAN_0,
                             reference.pos,
                             reference.end - reference.pos,
                             &[&suggestion],
@@ -1479,14 +1477,14 @@ impl RegExpParser {
                 if self.number_of_capturing_groups > 0 {
                     let n = self.number_of_capturing_groups;
                     self.error(
-                        &diagnostics::This_backreference_refers_to_a_group_that_does_not_exist_There_are_only_0_capturing_groups_in_this_regular_expression,
+                        &diagnostics::THIS_BACKREFERENCE_REFERS_TO_A_GROUP_THAT_DOES_NOT_EXIST_THERE_ARE_ONLY_0_CAPTURING_GROUPS_IN_THIS_REGULAR_EXPRESSION,
                         escape.pos,
                         escape.end - escape.pos,
                         &[&n],
                     );
                 } else {
                     self.error(
-                        &diagnostics::This_backreference_refers_to_a_group_that_does_not_exist_There_are_no_capturing_groups_in_this_regular_expression,
+                        &diagnostics::THIS_BACKREFERENCE_REFERS_TO_A_GROUP_THAT_DOES_NOT_EXIST_THERE_ARE_NO_CAPTURING_GROUPS_IN_THIS_REGULAR_EXPRESSION,
                         escape.pos,
                         escape.end - escape.pos,
                         &[],

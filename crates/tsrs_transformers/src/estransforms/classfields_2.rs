@@ -4,7 +4,7 @@
 use super::*;
 use printer::{EmitFlags, PrivateIdentifierKind};
 
-impl classFieldsTransformer {
+impl ClassFieldsTransformer {
     // classfields.go:1889
     pub(crate) fn visit_class_declaration(&self, node: P<Node>) -> Option<P<Node>> {
         self.visit_in_new_class_lexical_environment(
@@ -214,25 +214,24 @@ impl classFieldsTransformer {
 
         let static_properties_or_class_static_blocks =
             Self::get_static_properties_and_class_static_block(node);
+        let has_transformable_statics = (self
+            .should_transform_private_elements_or_class_static_blocks
+            .get()
+            || self.node_has_transform_private_static_elements_flag(node))
+            && static_properties_or_class_static_blocks.iter().any(|&n| {
+                ast::is_class_static_block_declaration(n)
+                    || ast::is_private_identifier_class_element_declaration(n)
+                    || (self.should_transform_initializers.get() && ast::is_initialized_property(n))
+            });
 
         // Pre-compute whether the class expression will need a temp variable wrapper.
         // Strada registers class aliases AFTER transformClassMembers (since onSubstituteNode runs
         // at emit time), but we must predict this before visiting members since we substitute
         // eagerly. This requires pre-detecting willHavePrivatePendingExpressions.
         let mut is_class_with_constructor_reference = false;
-        let mut has_transformable_statics = false;
         let mut defer_temp_declaration = false;
         if !is_decorated_class_declaration {
             is_class_with_constructor_reference = self.class_contains_constructor_reference(node);
-            has_transformable_statics =
-                (self.should_transform_private_elements_or_class_static_blocks.get()
-                    || self.node_has_transform_private_static_elements_flag(node))
-                    && static_properties_or_class_static_blocks.iter().any(|&n| {
-                        ast::is_class_static_block_declaration(n)
-                            || ast::is_private_identifier_class_element_declaration(n)
-                            || (self.should_transform_initializers.get()
-                                && ast::is_initialized_property(n))
-                    });
 
             // Private instance elements (fields, methods, accessors) transformed to
             // WeakMap/WeakSet will add initialization expressions to pendingExpressions
@@ -268,12 +267,13 @@ impl classFieldsTransformer {
                     .class_constructor
                     .set(Some(t.clone_node(self.factory())));
             }
-            if let Some(alias) = self.get_class_lexical_environment().class_constructor.get() {
-                if is_class_with_constructor_reference && will_need_temp_wrapper {
-                    self.class_aliases
-                        .borrow_mut()
-                        .insert(self.emit_context().most_original(Some(node)).unwrap(), alias);
-                }
+            if let Some(alias) = self.get_class_lexical_environment().class_constructor.get()
+                && is_class_with_constructor_reference
+                && will_need_temp_wrapper
+            {
+                self.class_aliases
+                    .borrow_mut()
+                    .insert(self.emit_context().most_original(Some(node)).unwrap(), alias);
             }
         }
 
@@ -345,7 +345,7 @@ impl classFieldsTransformer {
             } else {
                 expressions.push(class_expression);
             }
-        } else {
+        } else if has_transformable_statics || !self.pending_expressions.borrow().is_empty() {
             // Decorated class declaration path: emit static properties as separate statements
             // via pendingStatements, matching the class declaration output structure.
 
@@ -386,6 +386,8 @@ impl classFieldsTransformer {
             } else {
                 expressions.push(class_expression);
             }
+        } else {
+            expressions.push(class_expression);
         }
 
         if expressions.len() > 1 {
@@ -424,7 +426,7 @@ impl classFieldsTransformer {
             // Don't replace `this` in computed property names for ES-decorated classes.
             // The esDecorator transformer wraps them in an arrow IIFE where `this` already
             // refers to the correct outer scope.
-            if !self
+            if (!self
                 .lexical_environment
                 .get()
                 .unwrap()
@@ -434,11 +436,10 @@ impl classFieldsTransformer {
                 .facts
                 .get()
                 .intersects(classFacts::ClassWasDecorated)
-                || self.legacy_decorators
+                || self.legacy_decorators)
+                && let Some(class_this) = self.try_get_class_this_no_container()
             {
-                if let Some(class_this) = self.try_get_class_this_no_container() {
-                    return Some(class_this);
-                }
+                return Some(class_this);
             }
         }
         if self.should_transform_this_in_static_initializers.get()
@@ -502,10 +503,10 @@ impl classFieldsTransformer {
                 }
             }
 
-            if self.should_transform_private_elements_or_class_static_blocks.get() {
-                if !Self::get_private_instance_methods_and_accessors(node).is_empty() {
-                    self.create_brand_check_weak_set_for_private_methods();
-                }
+            if self.should_transform_private_elements_or_class_static_blocks.get()
+                && !Self::get_private_instance_methods_and_accessors(node).is_empty()
+            {
+                self.create_brand_check_weak_set_for_private_methods();
             }
 
             if self.should_transform_auto_accessors_in_current_class() {
@@ -928,17 +929,7 @@ impl classFieldsTransformer {
 
             let super_path =
                 find_super_statement_index_path(body.statements.nodes(), statement_offset);
-            if !super_path.is_empty() {
-                statements = self.transform_constructor_body_worker(
-                    statements,
-                    body.statements.nodes(),
-                    statement_offset,
-                    &super_path,
-                    0,
-                    &initializer_statements,
-                    constructor,
-                );
-            } else {
+            if super_path.is_empty() {
                 // parameter-property assignments should occur immediately after the prologue and `super()`,
                 // so only count the statements that immediately follow.
                 while statement_offset < body.statements.nodes().len() {
@@ -954,6 +945,16 @@ impl classFieldsTransformer {
                 let (visited, _) =
                     self.visitor().visit_slice(&body.statements.nodes()[statement_offset..]);
                 statements.extend_from_slice(visited);
+            } else {
+                statements = self.transform_constructor_body_worker(
+                    statements,
+                    body.statements.nodes(),
+                    statement_offset,
+                    &super_path,
+                    0,
+                    &initializer_statements,
+                    constructor,
+                );
             }
         } else {
             if needs_synthetic_constructor {
@@ -1110,24 +1111,24 @@ impl classFieldsTransformer {
     ) -> Option<P<Node>> {
         let saved_current_class_element = self.current_class_element.get();
         let transformed = self.transform_property_worker(property, receiver);
-        if let Some(transformed) = transformed {
-            if ast::has_static_modifier(property) {
-                self.emit_context().add_emit_flags(transformed, EmitFlags::NoLexicalThis);
-            }
+        if let Some(transformed) = transformed
+            && ast::has_static_modifier(property)
+        {
+            self.emit_context().add_emit_flags(transformed, EmitFlags::NoLexicalThis);
         }
-        if let Some(transformed) = transformed {
-            if ast::has_static_modifier(property)
-                && self.lexical_environment.get().is_some_and(|l| {
-                    l.data.get().is_some_and(|d| d.facts.get() != classFacts::None)
-                })
-            {
-                // capture the lexical environment for the member
-                self.emit_context().set_original(transformed, property);
-                self.emit_context().set_source_map_range(
-                    transformed,
-                    self.emit_context().source_map_range(property.name().unwrap()),
-                );
-            }
+        if let Some(transformed) = transformed
+            && ast::has_static_modifier(property)
+            && self
+                .lexical_environment
+                .get()
+                .is_some_and(|l| l.data.get().is_some_and(|d| d.facts.get() != classFacts::None))
+        {
+            // capture the lexical environment for the member
+            self.emit_context().set_original(transformed, property);
+            self.emit_context().set_source_map_range(
+                transformed,
+                self.emit_context().source_map_range(property.name().unwrap()),
+            );
         }
         self.current_class_element.set(saved_current_class_element);
         transformed
@@ -1425,7 +1426,7 @@ impl classFieldsTransformer {
 
     // classfields.go:2910
     pub(crate) fn start_class_lexical_environment(&self) {
-        self.lexical_environment.set(Some(P::new(classLexicalEnv {
+        self.lexical_environment.set(Some(P::new(ClassLexicalEnv {
             previous: self.lexical_environment.get(),
             data: Cell::new(None),
             private_env: Cell::new(None),
@@ -1438,21 +1439,21 @@ impl classFieldsTransformer {
     }
 
     // classfields.go:2918
-    pub(crate) fn get_class_lexical_environment(&self) -> P<classLexicalEnvironment> {
+    pub(crate) fn get_class_lexical_environment(&self) -> P<ClassLexicalEnvironment> {
         assert!(self.lexical_environment.get().is_some());
         let lex = self.lexical_environment.get().unwrap();
         if lex.data.get().is_none() {
-            lex.data.set(Some(P::new(classLexicalEnvironment::default())));
+            lex.data.set(Some(P::new(ClassLexicalEnvironment::default())));
         }
         lex.data.get().unwrap()
     }
 
     // classfields.go:2926
-    pub(crate) fn get_private_identifier_environment(&self) -> P<privateEnvironment> {
+    pub(crate) fn get_private_identifier_environment(&self) -> P<PrivateEnvironment> {
         assert!(self.lexical_environment.get().is_some());
         let lex = self.lexical_environment.get().unwrap();
         if lex.private_env.get().is_none() {
-            lex.private_env.set(Some(P::new(privateEnvironment::default())));
+            lex.private_env.set(Some(P::new(PrivateEnvironment::default())));
         }
         lex.private_env.get().unwrap()
     }
@@ -1483,7 +1484,7 @@ impl classFieldsTransformer {
             self.set_private_identifier(
                 env,
                 name,
-                P::new(privateIdentifierInfo {
+                P::new(PrivateIdentifierInfo {
                     kind: PrivateIdentifierKind::Field,
                     is_static: true,
                     brand_check_identifier,
@@ -1499,7 +1500,7 @@ impl classFieldsTransformer {
             self.set_private_identifier(
                 env,
                 name,
-                P::new(privateIdentifierInfo {
+                P::new(PrivateIdentifierInfo {
                     kind: PrivateIdentifierKind::Field,
                     is_static: false,
                     brand_check_identifier: Some(weak_map_name),
@@ -1525,8 +1526,8 @@ impl classFieldsTransformer {
     pub(crate) fn add_private_identifier_method_to_environment(
         &self,
         name: P<Node>,
-        lex: P<classLexicalEnvironment>,
-        env: P<privateEnvironment>,
+        lex: P<ClassLexicalEnvironment>,
+        env: P<PrivateEnvironment>,
         is_static: bool,
         is_valid: bool,
     ) {
@@ -1544,7 +1545,7 @@ impl classFieldsTransformer {
         self.set_private_identifier(
             env,
             name,
-            P::new(privateIdentifierInfo {
+            P::new(PrivateIdentifierInfo {
                 kind: PrivateIdentifierKind::Method,
                 method_name: Some(method_name),
                 brand_check_identifier,
@@ -1561,11 +1562,11 @@ impl classFieldsTransformer {
     pub(crate) fn add_private_identifier_get_accessor_to_environment(
         &self,
         name: P<Node>,
-        lex: P<classLexicalEnvironment>,
-        env: P<privateEnvironment>,
+        lex: P<ClassLexicalEnvironment>,
+        env: P<PrivateEnvironment>,
         is_static: bool,
         is_valid: bool,
-        previous_info: Option<P<privateIdentifierInfo>>,
+        previous_info: Option<P<PrivateIdentifierInfo>>,
     ) {
         let getter_name = self.create_hoisted_variable_for_private_name(name, "_get");
         let brand_check_identifier: Option<P<Node>>;
@@ -1593,7 +1594,7 @@ impl classFieldsTransformer {
             self.set_private_identifier(
                 env,
                 name,
-                P::new(privateIdentifierInfo {
+                P::new(PrivateIdentifierInfo {
                     kind: PrivateIdentifierKind::Accessor,
                     getter_name: Cell::new(Some(getter_name)),
                     brand_check_identifier,
@@ -1611,11 +1612,11 @@ impl classFieldsTransformer {
     pub(crate) fn add_private_identifier_set_accessor_to_environment(
         &self,
         name: P<Node>,
-        lex: P<classLexicalEnvironment>,
-        env: P<privateEnvironment>,
+        lex: P<ClassLexicalEnvironment>,
+        env: P<PrivateEnvironment>,
         is_static: bool,
         is_valid: bool,
-        previous_info: Option<P<privateIdentifierInfo>>,
+        previous_info: Option<P<PrivateIdentifierInfo>>,
     ) {
         let setter_name = self.create_hoisted_variable_for_private_name(name, "_set");
         let brand_check_identifier: Option<P<Node>>;
@@ -1643,7 +1644,7 @@ impl classFieldsTransformer {
             self.set_private_identifier(
                 env,
                 name,
-                P::new(privateIdentifierInfo {
+                P::new(PrivateIdentifierInfo {
                     kind: PrivateIdentifierKind::Accessor,
                     setter_name: Cell::new(Some(setter_name)),
                     brand_check_identifier,
@@ -1662,8 +1663,8 @@ impl classFieldsTransformer {
         &self,
         node: P<Node>,
         name: P<Node>,
-        lex: P<classLexicalEnvironment>,
-        env: P<privateEnvironment>,
+        lex: P<ClassLexicalEnvironment>,
+        env: P<PrivateEnvironment>,
         is_static: bool,
         is_valid: bool,
     ) {
@@ -1688,7 +1689,7 @@ impl classFieldsTransformer {
         self.set_private_identifier(
             env,
             name,
-            P::new(privateIdentifierInfo {
+            P::new(PrivateIdentifierInfo {
                 kind: PrivateIdentifierKind::Accessor,
                 getter_name: Cell::new(Some(getter_name)),
                 setter_name: Cell::new(Some(setter_name)),
@@ -1742,9 +1743,9 @@ impl classFieldsTransformer {
     // classfields.go:3102
     pub(crate) fn set_private_identifier(
         &self,
-        env: P<privateEnvironment>,
+        env: P<PrivateEnvironment>,
         name: P<Node>,
-        info: P<privateIdentifierInfo>,
+        info: P<PrivateIdentifierInfo>,
     ) {
         if self.emit_context().has_auto_generate_info(Some(name)) {
             env.generated_identifiers
@@ -1758,9 +1759,9 @@ impl classFieldsTransformer {
     // classfields.go:3113
     pub(crate) fn get_private_identifier(
         &self,
-        env: P<privateEnvironment>,
+        env: P<PrivateEnvironment>,
         name: P<Node>,
-    ) -> Option<P<privateIdentifierInfo>> {
+    ) -> Option<P<PrivateIdentifierInfo>> {
         if self.emit_context().has_auto_generate_info(Some(name)) {
             return env
                 .generated_identifiers
@@ -1863,16 +1864,16 @@ impl classFieldsTransformer {
     pub(crate) fn access_private_identifier(
         &self,
         name: P<Node>,
-    ) -> Option<P<privateIdentifierInfo>> {
+    ) -> Option<P<PrivateIdentifierInfo>> {
         let mut env = self.lexical_environment.get();
         while let Some(e) = env {
-            if let Some(private_env) = e.private_env.get() {
-                if let Some(info) = self.get_private_identifier(private_env, name) {
-                    if info.kind == PrivateIdentifierKind::Untransformed {
-                        return None;
-                    }
-                    return Some(info);
+            if let Some(private_env) = e.private_env.get()
+                && let Some(info) = self.get_private_identifier(private_env, name)
+            {
+                if info.kind == PrivateIdentifierKind::Untransformed {
+                    return None;
                 }
+                return Some(info);
             }
             env = e.previous;
         }
@@ -2048,7 +2049,7 @@ impl classFieldsTransformer {
 
     // classfields.go:3320
     pub(crate) fn visit_object_assignment_element(&self, node: P<Node>) -> Option<P<Node>> {
-        assert!(ast::is_object_binding_or_assignment_element(node));
+        assert!(ast::is_object_literal_element(node));
         if ast::is_spread_assignment(node) {
             return self.visit_assignment_rest_property(node);
         }
@@ -2101,7 +2102,7 @@ impl classFieldsTransformer {
 }
 
 // classfields.go:3365
-pub(crate) fn create_private_static_field_initializer(
+pub fn create_private_static_field_initializer(
     factory: &printer::NodeFactory,
     variable_name: P<Node>,
     initializer: Option<P<Node>>,
@@ -2123,7 +2124,7 @@ pub(crate) fn create_private_static_field_initializer(
 }
 
 // classfields.go:3380
-pub(crate) fn create_private_instance_field_initializer(
+pub fn create_private_instance_field_initializer(
     factory: &printer::NodeFactory,
     receiver: P<Node>,
     initializer: Option<P<Node>>,
@@ -2138,7 +2139,7 @@ pub(crate) fn create_private_instance_field_initializer(
 }
 
 // classfields.go:3387
-pub(crate) fn create_private_instance_method_initializer(
+pub fn create_private_instance_method_initializer(
     factory: &printer::NodeFactory,
     receiver: P<Node>,
     weak_set_name: P<Node>,
@@ -2146,7 +2147,7 @@ pub(crate) fn create_private_instance_method_initializer(
     factory.new_method_call(weak_set_name, factory.new_identifier("add"), vec![receiver])
 }
 
-impl classFieldsTransformer {
+impl ClassFieldsTransformer {
     // classfields.go:3391
     pub(crate) fn is_reserved_private_name(&self, node: P<Node>) -> bool {
         !(ast::is_private_identifier(node)
@@ -2156,12 +2157,12 @@ impl classFieldsTransformer {
 }
 
 // classfields.go:3395
-pub(crate) fn is_static_property_declaration_or_class_static_block(node: P<Node>) -> bool {
+pub fn is_static_property_declaration_or_class_static_block(node: P<Node>) -> bool {
     ast::is_class_static_block_declaration(node)
         || (ast::is_property_declaration(node) && ast::has_static_modifier(node))
 }
 
-impl classFieldsTransformer {
+impl ClassFieldsTransformer {
     // classfields.go:3400
     pub(crate) fn get_properties(
         node: P<Node>,
@@ -2200,12 +2201,12 @@ impl classFieldsTransformer {
 
 // classfields.go:3423
 // classHasClassThisAssignment checks if a class has a static block that is a class-this assignment.
-pub(crate) fn class_has_class_this_assignment(emit_context: P<EmitContext>, node: P<Node>) -> bool {
+pub fn class_has_class_this_assignment(emit_context: P<EmitContext>, node: P<Node>) -> bool {
     node.members().iter().any(|member| is_class_this_assignment_block(emit_context, *member))
 }
 
 // classfields.go:3432
-pub(crate) fn is_non_static_method_or_accessor_with_private_name(member: P<Node>) -> bool {
+pub fn is_non_static_method_or_accessor_with_private_name(member: P<Node>) -> bool {
     !ast::is_static(member)
         && (ast::is_method_or_accessor(member)
             || ast::is_auto_accessor_property_declaration(member))
@@ -2213,7 +2214,7 @@ pub(crate) fn is_non_static_method_or_accessor_with_private_name(member: P<Node>
 }
 
 // classfields.go:3438
-pub(crate) fn create_member_access_for_property_name(
+pub fn create_member_access_for_property_name(
     factory: &printer::NodeFactory,
     emit_context: P<EmitContext>,
     receiver: P<Node>,
@@ -2243,7 +2244,7 @@ pub(crate) fn create_member_access_for_property_name(
     expression
 }
 
-impl classFieldsTransformer {
+impl ClassFieldsTransformer {
     // classfields.go:3457
     // Returns (thisArg, target).
     pub(crate) fn create_call_binding(&self, node: P<Node>) -> (P<Node>, P<Node>) {
@@ -2275,7 +2276,7 @@ impl classFieldsTransformer {
 }
 
 // classfields.go:3483
-pub(crate) fn should_be_captured_in_temp_variable(node: P<Node>) -> bool {
+pub fn should_be_captured_in_temp_variable(node: P<Node>) -> bool {
     let target = ast::skip_parentheses(node);
     !matches!(
         target.kind(),
@@ -2287,7 +2288,7 @@ pub(crate) fn should_be_captured_in_temp_variable(node: P<Node>) -> bool {
     )
 }
 
-impl classFieldsTransformer {
+impl ClassFieldsTransformer {
     // classfields.go:3493
     pub(crate) fn create_accessor_property_get_redirector(
         &self,
@@ -2357,7 +2358,7 @@ impl classFieldsTransformer {
 
 // classfields.go:3547
 // Go returns an `iter.Seq`; every caller ranges over all of it, so the elements are collected.
-pub(crate) fn flatten_comma_list(node: P<Node>) -> Vec<P<Node>> {
+pub fn flatten_comma_list(node: P<Node>) -> Vec<P<Node>> {
     let mut result = Vec::new();
     flatten_comma_list_worker(node, &mut |e| {
         result.push(e);
@@ -2380,7 +2381,7 @@ fn flatten_comma_list_worker(node: P<Node>, yield_: &mut dyn FnMut(P<Node>) -> b
 
 // classfields.go:3564
 // Returns the BinaryExpression node (Go returns `*ast.BinaryExpression`).
-pub(crate) fn find_computed_property_name_cache_assignment(
+pub fn find_computed_property_name_cache_assignment(
     emit_context: P<EmitContext>,
     name: P<Node>,
 ) -> Option<P<Node>> {
@@ -2405,7 +2406,7 @@ pub(crate) fn find_computed_property_name_cache_assignment(
 }
 
 // classfields.go:3580
-pub(crate) fn expand_pre_or_postfix_increment_or_decrement_expression(
+pub fn expand_pre_or_postfix_increment_or_decrement_expression(
     factory: &printer::NodeFactory,
     emit_context: P<EmitContext>,
     node: P<Node>,
@@ -2452,8 +2453,8 @@ pub(crate) fn expand_pre_or_postfix_increment_or_decrement_expression(
 }
 
 // Go `&privateIdentifierInfo{kind: ...}` with every other field at its zero value.
-pub(crate) fn new_private_identifier_info(kind: PrivateIdentifierKind) -> P<privateIdentifierInfo> {
-    P::new(privateIdentifierInfo {
+pub fn new_private_identifier_info(kind: PrivateIdentifierKind) -> P<PrivateIdentifierInfo> {
+    P::new(PrivateIdentifierInfo {
         kind,
         brand_check_identifier: None,
         is_static: false,

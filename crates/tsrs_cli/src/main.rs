@@ -8,7 +8,7 @@ mod api;
 mod lsp;
 mod signals;
 
-use tsrs_execute::{build, execute, sys, tsc};
+use tsrs_execute::{execute, sys, tsc};
 
 // TSRS_MEM_SPLIT (tsrs_core::memsplit): mimalloc's view of its heap, every page of every thread.
 #[cfg(not(feature = "system-alloc"))]
@@ -105,7 +105,7 @@ fn main() {
         .name("tsrs".to_string())
         .stack_size(512 << 20)
         .spawn(move || {
-            let sys: &'static sys::osSys = Box::leak(Box::new(sys::new_system()));
+            let sys: &'static sys::OsSys = Box::leak(Box::new(sys::new_system()));
             let result = execute::command_line(sys, args);
             tsc::System::flush(sys);
             tsrs_compiler::dump_site_counts();

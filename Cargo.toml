@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "tasks/*"]
 
 [workspace.package]
-version = "0.18.0"
+version = "0.19.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -11,14 +11,14 @@ publish = false
 
 # The microsoft/TypeScript commit this port follows. Read by crates/tsrs_execute/build.rs (`tsrs --version`), by
 # npm/build.mjs (npm version = "<workspace version>-ts<version>") and by CI (conformance testdata checkout).
-# `nightly` is the npm `typescript` nightly built from `commit` (its package.json `gitHead` is `commit`, or a later
-# commit that changes nothing under tsc/; 7.1.0-dev.20260930.4 adds a CI-only one). Release builds stamp it
-# as TypeScript's version (TSRS_TS_VERSION, crates/tsrs_core/src/version.rs), as the nightly's own build does, so the
+# `nightly` is the npm `typescript` package matching `commit` (a nightly or prerelease; its package.json `gitHead`
+# is `commit`, or a later commit that changes nothing under tsc/). Release builds stamp it
+# as TypeScript's version (TSRS_TS_VERSION, crates/tsrs_core/src/version.rs), as the package's own build does, so the
 # tsbuildinfo `version`, `typesVersions` matching and `--version` agree with that tsgo; the release checks both.
 [workspace.metadata.typescript]
-version = "7.1.0-dev.20260929"
-commit = "b85298b6a81f772d080b0455de0ca9d744cd6fd6"
-nightly = "7.1.0-dev.20260930.4"
+version = "7.1.0-beta"
+commit = "3e9236361fa97a9e6c685f4833ac457ae2d8c50a"
+nightly = "7.1.0-beta"
 
 [workspace.dependencies]
 criterion2 = { version = "3.0.4", default-features = false } # Benchmarking
@@ -75,19 +75,9 @@ tsrs_contentmapper = { path = "crates/tsrs_contentmapper" }
 tsrs_contentmappertest = { path = "crates/tsrs_contentmappertest" }
 
 [profile.dev]
-# The edit-build-test loop (docs/DEBUGGING.md): release optimization without any LTO, incrementally. A checker edit
-# rebuilds tsrs and tsrs-test in about 5 s instead of about 3 minutes, and the conformance suite gives the same
-# results in the same time (notes/dev-loop-build.md). Not for performance measurements: use `release`.
-opt-level = 3
-lto = "off"
-codegen-units = 256
-incremental = true
-strip = "symbols"
 debug = false
-panic = "unwind"
 
-# Correctness gates and the native reference of the WebAssembly gate in CI (tools/wasm/gate.sh): release code without
-# LTO, which builds in about a third of the release build's time; these gates compare outputs, which LTO does not change.
+# Optimized correctness binaries without release LTO; measured in notes/dev-loop-build.md.
 [profile.ci]
 inherits = "release"
 lto = "off"
@@ -106,8 +96,9 @@ debug = false # set to `true` for debug information
 panic = "unwind"
 
 [workspace.lints.rust]
-non_upper_case_globals = "allow"
-non_camel_case_types = "allow"
+non_upper_case_globals = "deny"
+non_camel_case_types = "deny"
+non_snake_case = "deny"
 # Rust 1.99: forming raw pointers through intermediate references can strengthen aliasing assumptions accidentally.
 raw_borrows_via_references = "warn"
 
@@ -139,7 +130,6 @@ useless_let_if_seq = "allow"
 
 # Tsrs-specific exceptions to Oxc's policy. This workspace is an unpublished, mechanical Go port: visibility,
 # signatures, numeric conversions, declaration placement and control-flow decomposition follow the Go source.
-redundant_pub_crate = "allow"
 missing_panics_doc = "allow"
 missing_errors_doc = "allow"
 cast_lossless = "allow"
@@ -147,11 +137,7 @@ cast_possible_truncation = "allow"
 cast_precision_loss = "allow"
 cast_sign_loss = "allow"
 cast_possible_wrap = "allow"
-collapsible_if = "allow"
-if_not_else = "allow"
 type_complexity = "allow"
-match_same_arms = "allow"
-items_after_statements = "allow"
 struct_field_names = "allow"
 many_single_char_names = "allow"
 

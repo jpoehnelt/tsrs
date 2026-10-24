@@ -1,6 +1,6 @@
 // session.go source-file handling: encodeSourceFileResponse, newSourceFileDescriptor, sourceFileNodeID,
 // nodeHandleFrom / resolveNodeHandle, source-file leases (createSourceFile*, retainSourceFile,
-// releaseSourceFile, getCachedSourceFile) and getSourceFile / getConfigSourceFile.
+// releaseSourceFile, getCachedSourceFile, getSymbolOfDeclaration) and getSourceFile / getConfigSourceFile.
 //
 // Node index tables: Go caches one table per AST on the source file itself (`GetOrComputeData`), created
 // either by the first encode or by the first node-handle request. tsrs source files have no per-file data
@@ -78,6 +78,44 @@ pub fn source_file_descriptor(file: P<SourceFile>) -> Value {
         .set("scriptKind", Value::Number(file.script_kind() as i32 as f64))
         .set("nodeId", s(source_file_node_id(file).to_string()))
         .build()
+}
+
+/// `source_file_descriptor(file) == *descriptor` without building the descriptor: the same six members,
+/// with equal values.
+pub fn source_file_descriptor_matches(file: P<SourceFile>, descriptor: &Value) -> bool {
+    // Six distinct member names, each one of the descriptor's six, are exactly its members.
+    let Value::Object(members) = descriptor else { return false };
+    if members.len() != 6 {
+        return false;
+    }
+    let o = file.parse_options();
+    let key = u32::from(o.external_module_indicator_options.jsx)
+        | (u32::from(o.external_module_indicator_options.force) << 1);
+    let mut digits = [0u8; 32];
+    members.iter().all(|(name, value)| {
+        let text = match value {
+            Value::String(s) => Some(s.as_str()),
+            _ => None,
+        };
+        match name {
+            "fileName" => text == Some(o.file_name.as_str()),
+            "path" => text == Some(o.path.as_str()),
+            "contentHash" => text == Some(codec::source_file_hash_into(&file, &mut digits)),
+            "parseOptionsKey" => {
+                text.and_then(|k| k.parse::<u32>().ok().filter(|_| k.len() == 1)) == Some(key)
+            }
+            "scriptKind" => *value == Value::Number(file.script_kind() as i32 as f64),
+            "nodeId" => text.is_some_and(|id| decimal_equals(id, source_file_node_id(file))),
+            _ => false,
+        }
+    })
+}
+
+/// Whether `text` is the decimal form of `n` (no sign or leading zeros), as `n.to_string()` would be.
+fn decimal_equals(text: &str, n: u64) -> bool {
+    !(text.len() > 1 && text.starts_with('0'))
+        && text.bytes().all(|b| b.is_ascii_digit())
+        && text.parse::<u64>() == Ok(n)
 }
 
 /// Go `SourceFileDescriptor.parseCacheKey`.
@@ -244,12 +282,12 @@ impl Session {
             if let Some(result) = (["fileName", "path", "contentHash", "parseOptionsKey", "nodeId"])
                 .into_iter()
                 .find_map(|key| {
-                    if !matches!(o.get(key), None | Some(Value::Null | Value::String(_))) {
+                    if matches!(o.get(key), None | Some(Value::Null | Value::String(_))) {
+                        None
+                    } else {
                         Some(Err(ApiError::invalid_request(format!(
                             "cannot unmarshal into Go string within \"/file/{key}\""
                         ))))
-                    } else {
-                        None
                     }
                 })
             {
@@ -319,6 +357,14 @@ impl Session {
         Ok(self.snapshot_host.acquire_source_file(options, text, sk))
     }
 
+    // session.go:2074
+    fn resolve_create_source_file_name(&self, file_name: &str) -> ApiResult<String> {
+        if file_name.is_empty() {
+            return Err(ApiError::client("fileName must not be empty"));
+        }
+        Ok(tspath::get_normalized_absolute_path(file_name, self.current_directory()))
+    }
+
     /// Go `encodeLeasedSourceFile`.
     fn encode_leased(&self, lease: SourceFileLease) -> ApiResult<Response> {
         let mut data = match self.encode_source_file(lease.source_file()) {
@@ -334,17 +380,14 @@ impl Session {
     }
 
     pub(crate) fn handle_create_source_file(&self, p: Params) -> ApiResult<Response> {
-        let lease = self.create_source_file_lease(
-            p.str("fileName")?,
-            p.str("sourceText")?,
-            p.get("options"),
-        )?;
+        let file_name = self.resolve_create_source_file_name(p.str("fileName")?)?;
+        let lease =
+            self.create_source_file_lease(&file_name, p.str("sourceText")?, p.get("options"))?;
         self.encode_leased(lease)
     }
 
     pub(crate) fn handle_create_source_file_from_file(&self, p: Params) -> ApiResult<Response> {
-        let file_name =
-            tspath::get_normalized_absolute_path(p.str("fileName")?, self.current_directory());
+        let file_name = self.resolve_create_source_file_name(p.str("fileName")?)?;
         let text = self
             .base_fs()
             .read_file(&file_name)
@@ -364,6 +407,28 @@ impl Session {
         let r = self.encode_source_file_response(Some(lease.source_file()));
         lease.release();
         r
+    }
+
+    /// Go `handleGetSymbolOfDeclaration`.
+    pub(crate) fn handle_get_symbol_of_declaration(&self, p: Params) -> ApiResult<Response> {
+        let index = u32::try_from(p.u64("index")?)
+            .map_err(|_| ApiError::invalid_request("index must be a uint32"))?;
+        let lease = self.acquire_cached_source_file(p.get("file"))?;
+        let table = self.node_index_table(lease.source_file());
+        let result = if index == 0 || index as usize >= table.len() {
+            Err(ApiError::client(format!("declaration node index {index} is out of range")))
+        } else if let Some(node) = table.node(index).filter(|n| tsrs_ast::is_declaration(*n)) {
+            match node.symbol() {
+                Some(symbol) => crate::checker::file_symbol_response(self, symbol),
+                None => Err(ApiError::client(format!(
+                    "declaration node index {index} has no binder symbol"
+                ))),
+            }
+        } else {
+            Err(ApiError::client(format!("node index {index} is not a declaration")))
+        };
+        lease.release();
+        json_response(&result?)
     }
 
     pub(crate) fn handle_release_source_file(&self, p: Params) -> ApiResult<Response> {

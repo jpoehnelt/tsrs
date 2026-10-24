@@ -1,10 +1,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
 use tsrs_ast::Diagnostic;
-use tsrs_core::collections::{OrderedMap, OrderedMapExt, Set, SyncSet, diff_ordered_maps};
+use tsrs_core::collections::{OrderedMap, Set, SyncSet, diff_ordered_maps};
 use tsrs_core::context::{CancelFunc, Context, has_locale, with_locale};
 use tsrs_core::tspath::{self, Path};
 use tsrs_core::{CompilerOptions, P, ScriptKind, diff_maps_func};
@@ -20,21 +20,22 @@ use crate::ata;
 use crate::background::{Queue, Timer, after_func, new_queue};
 use crate::checkerpool::CheckerPoolOptions;
 use crate::client::Client;
-use crate::configfileregistry::configFileEntry;
+use crate::configfileregistry::ConfigFileEntry;
 use crate::dirty::Shared;
-use crate::filechange::{FileChange, FileChangeKind, FileChangeSummary};
+use crate::filechange::{FileChange, FileChangeKind, FileChangeSummary, merge_file_change_summary};
 use crate::logging::{Logger, new_nop_logger};
-use crate::overlayfs::{FsRef, OverlayMap, ToPath, new_overlay_fs, overlayFS};
+use crate::overlayfs::{FsRef, OverlayFS, OverlayMap, ToPath, new_overlay_fs};
 use crate::parsecache::{ContentMappedParseCache, ParseCache};
-use crate::project::{ID, Kind, ProgramUpdateKind, Project, hr};
+use crate::project::{HR, ID, Kind, ProgramUpdateKind, Project};
 use crate::snapshot::{
-    ATAStateChange, ProjectTreeRequest, ResourceRequest, Snapshot, SnapshotChange,
+    APISnapshotRequest, ATAStateChange, ProjectTreeRequest, ResourceRequest, Snapshot,
+    SnapshotChange,
 };
 use crate::snapshotfs::{is_node_modules_path, is_relevant_extension};
 use crate::snapshothost::{SnapshotHost, new_snapshot_host};
 use crate::watch::{
-    WatchedFiles, WatchedFilesExt, WatcherID, file_system_watcher_glob_string, new_watch_registry,
-    watchRegistry,
+    WatchRegistry, WatchedFiles, WatchedFilesExt, WatcherID, file_system_watcher_glob_string,
+    new_watch_registry,
 };
 
 #[repr(u32)]
@@ -58,11 +59,11 @@ pub enum UpdateReason {
 
 // ErrNoProjectForUnknownScriptKind identifies requests for otherwise unsupported files.
 // (Go `errors.New`; errors wrapping it carry this message as their prefix, see `is_err_no_project_for_unknown_script_kind`.)
-pub const ErrNoProjectForUnknownScriptKind: &str = "no project for unknown script kind";
+pub const ERR_NO_PROJECT_FOR_UNKNOWN_SCRIPT_KIND: &str = "no project for unknown script kind";
 
 // Go `errors.Is(err, ErrNoProjectForUnknownScriptKind)`.
 pub fn is_err_no_project_for_unknown_script_kind(err: &lsproto::Error) -> bool {
-    err.message.starts_with(ErrNoProjectForUnknownScriptKind)
+    err.message.starts_with(ERR_NO_PROJECT_FOR_UNKNOWN_SCRIPT_KIND)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -73,7 +74,7 @@ pub struct ContentMapperContributions {
 
 // watchRequestTimeout is the maximum time to wait for the client to respond to
 // a WatchFiles or UnwatchFiles request while holding the watches mutex.
-const watchRequestTimeout: Duration = Duration::from_secs(1);
+const WATCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 // SessionOptions are the immutable initialization options for a session.
 // Snapshots may reference them as a pointer since they never change.
@@ -107,16 +108,36 @@ pub struct SessionInit {
     pub content_mapped_parse_cache: Option<Arc<ContentMappedParseCache>>,
 }
 
-struct userConfigState {
+struct UserConfigState {
     // current preferences
     workspace_user_preferences: UserPreferences,
     pending_user_config_changes: bool,
 }
 
 #[derive(Default)]
-struct cancelState {
+struct CancelState {
     cancel: Option<CancelFunc>,
     generation: u64,
+}
+
+#[derive(Default)]
+struct IdleCacheCleanState {
+    timer: Option<Timer>,
+    generation: u64,
+    pending: usize,
+    closed: bool,
+}
+
+struct IdleCacheCleanDone(Arc<Session>);
+
+impl Drop for IdleCacheCleanDone {
+    fn drop(&mut self) {
+        let mut state = self.0.idle_cache_clean.lock().unwrap();
+        state.pending -= 1;
+        if state.pending == 0 {
+            self.0.idle_cache_clean_done.notify_all();
+        }
+    }
 }
 
 // Session manages the state of an LSP session. It receives textDocument
@@ -133,6 +154,7 @@ pub struct Session {
     options: Arc<SessionOptions>,
     logger: Arc<dyn Logger>,
     background_ctx: Context,
+    background_cancel: CancelFunc,
     to_path: ToPath,
     client: Option<Arc<dyn Client>>,
     #[expect(
@@ -141,7 +163,7 @@ pub struct Session {
     )]
     start_time: Instant,
     npm_executor: Option<Arc<dyn ata::NpmExecutor>>,
-    fs: Arc<overlayFS>,
+    fs: Arc<OverlayFS>,
 
     // registeredContentMapperSnapshotID is the ID of the newest snapshot whose registration has been
     // applied. Registration runs from background tasks that may finish out of order, so
@@ -153,24 +175,24 @@ pub struct Session {
     // read-only after initialization
     initial_user_preferences: Mutex<UserPreferences>,
     // Go: userConfigRWMu + workspaceUserPreferences + pendingUserConfigChanges.
-    user_config: Mutex<userConfigState>,
+    user_config: Mutex<UserConfigState>,
     compiler_options_for_inferred_projects: Mutex<Option<P<CompilerOptions>>>,
     background_queue: Queue,
 
     // snapshot is the current immutable state of all projects.
-    snapshot: RwLock<Arc<Snapshot>>,
+    snapshot: RwLock<Option<Arc<Snapshot>>>,
     snapshot_update_mu: Mutex<()>,
 
     // scheduledSnapshotUpdateCancel is the cancelation function for a scheduled
     // snapshot update. Snapshot updates are scheduled and debounced after file closes.
-    scheduled_snapshot_update: Mutex<cancelState>,
+    scheduled_snapshot_update: Mutex<CancelState>,
 
     configure_mu: Mutex<()>,
 
     // pendingFileChanges are accumulated from textDocument/* events delivered
     // by the LSP server through DidOpenFile(), DidChangeFile(), etc. They are
     // applied to the next snapshot update.
-    pending_file_changes: Mutex<Vec<FileChange>>,
+    pub(crate) pending_file_changes: Mutex<Vec<FileChange>>,
 
     // pendingATAChanges are produced by Automatic Type Acquisition (ATA)
     // installations and applied to the next snapshot update.
@@ -179,7 +201,7 @@ pub struct Session {
     // diagnosticsRefreshCancel is the cancelation function for a scheduled
     // diagnostics refresh. Diagnostics refreshes are scheduled and debounced
     // after file watch changes and ATA updates.
-    diagnostics_refresh: Mutex<cancelState>,
+    diagnostics_refresh: Mutex<CancelState>,
 
     // warmAutoImportCancel is the cancelation function for a running
     // auto-import cache warming task. It is cancelled on file opens,
@@ -190,7 +212,8 @@ pub struct Session {
     // idleCacheCleanTimer is a resettable timer for scheduling idle disk
     // cache cleans. The timer resets on any file event (open, close,
     // change, save, watch) and fires after 30 seconds of inactivity.
-    idle_cache_clean_timer: Mutex<Option<Timer>>,
+    idle_cache_clean: Mutex<IdleCacheCleanState>,
+    idle_cache_clean_done: Condvar,
 
     // performanceTelemetryCancel cancels the periodic performance telemetry ticker.
     performance_telemetry_cancel: Mutex<Option<CancelFunc>>,
@@ -204,7 +227,7 @@ pub struct Session {
 
     // watches tracks the current watch globs and how many individual WatchedFiles
     // are using each glob.
-    watches: watchRegistry,
+    watches: WatchRegistry,
 
     // globalDiagPublishPending is set to true when a global diagnostics publish
     // task should be enqueued. It is reset when the task runs, coalescing multiple
@@ -223,11 +246,13 @@ pub fn new_session(init: &SessionInit) -> Arc<Session> {
         .did_change_watched_files
         .relative_pattern_support;
     let snapshot = snapshot_host.new_root_snapshot_with(0, relative_pattern_support);
+    let (background_ctx, background_cancel) = init.background_ctx.with_cancel();
     // (ATA is not ported: Go creates a typings installer here when TypingsLocation and NpmExecutor are set.)
     Arc::new_cyclic(|self_ref| Session {
         options: Arc::clone(&init.options),
         logger: session_logger,
-        background_ctx: init.background_ctx.clone(),
+        background_ctx,
+        background_cancel,
         to_path: Arc::clone(&snapshot_host.to_path),
         client: init.client.clone(),
         npm_executor: init.npm_executor.clone(),
@@ -239,9 +264,9 @@ pub fn new_session(init: &SessionInit) -> Arc<Session> {
         )),
         background_queue: new_queue(),
         start_time: Instant::now(),
-        snapshot: RwLock::new(snapshot),
+        snapshot: RwLock::new(Some(snapshot)),
         initial_user_preferences: Mutex::new(lsutil::new_default_user_preferences()),
-        user_config: Mutex::new(userConfigState {
+        user_config: Mutex::new(UserConfigState {
             workspace_user_preferences: lsutil::new_default_user_preferences(),
             pending_user_config_changes: false,
         }),
@@ -251,12 +276,13 @@ pub fn new_session(init: &SessionInit) -> Arc<Session> {
         content_mapper_registration: Mutex::new((None, 0)),
         compiler_options_for_inferred_projects: Mutex::new(None),
         snapshot_update_mu: Mutex::new(()),
-        scheduled_snapshot_update: Mutex::new(cancelState::default()),
+        scheduled_snapshot_update: Mutex::new(CancelState::default()),
         configure_mu: Mutex::new(()),
         pending_file_changes: Mutex::new(Vec::new()),
-        diagnostics_refresh: Mutex::new(cancelState::default()),
+        diagnostics_refresh: Mutex::new(CancelState::default()),
         warm_auto_import_cancel: Mutex::new(None),
-        idle_cache_clean_timer: Mutex::new(None),
+        idle_cache_clean: Mutex::new(IdleCacheCleanState::default()),
+        idle_cache_clean_done: Condvar::new(),
         performance_telemetry_cancel: Mutex::new(None),
         seen_projects: SyncSet::default(),
         global_diag_publish_pending: AtomicBool::new(false),
@@ -277,6 +303,11 @@ impl Session {
     // FS implements module.ResolutionHost
     pub fn fs(&self) -> &dyn FS {
         &*self.fs
+    }
+
+    /// `fs` as a shared handle (a Go `vfs.FS` is a reference), for an LSP-attached API session.
+    pub fn shared_fs(&self) -> Arc<dyn FS> {
+        Arc::clone(&self.fs) as Arc<dyn FS>
     }
 
     // session.go:256
@@ -318,11 +349,11 @@ impl Session {
             std::mem::replace(&mut user_config.workspace_user_preferences, config.clone())
         };
 
-        if !config.locale.is_empty() {
-            if let Some(client) = &self.client {
-                // (Content mappers are not ported: Go forwards a changed locale to the content mapper host.)
-                client.set_locale(&config.locale);
-            }
+        if !config.locale.is_empty()
+            && let Some(client) = &self.client
+        {
+            // (Content mappers are not ported: Go forwards a changed locale to the content mapper host.)
+            client.set_locale(&config.locale);
         }
 
         // Tell the client to re-request certain commands depending on user preference changes.
@@ -487,9 +518,9 @@ impl Session {
             snapshot.content_mapper_watch_state();
         for change in changes {
             let kind = match change.type_ {
-                lsproto::FileChangeType::Created => FileChangeKind::WatchCreate,
-                lsproto::FileChangeType::Changed => FileChangeKind::WatchChange,
-                lsproto::FileChangeType::Deleted => FileChangeKind::WatchDelete,
+                lsproto::FileChangeType::CREATED => FileChangeKind::WatchCreate,
+                lsproto::FileChangeType::CHANGED => FileChangeKind::WatchChange,
+                lsproto::FileChangeType::DELETED => FileChangeKind::WatchDelete,
                 _ => continue, // Ignore unknown change types.
             };
             file_changes.push(FileChange { kind, uri: change.uri.clone(), ..Default::default() });
@@ -513,16 +544,16 @@ impl Session {
                     // Extensionless paths might be directories.
                     // For creations/changes, we can check the file system.
                     // For deletions, consult the current snapshot cache to avoid treating extensionless file deletions as relevant.
-                    if kind != FileChangeKind::WatchDelete {
-                        has_relevant_change = self.fs.directory_exists(&file_name);
-                    } else {
-                        let snapshot = self.snapshot.read().unwrap().clone();
+                    if kind == FileChangeKind::WatchDelete {
+                        let snapshot = self.snapshot();
                         if snapshot.fs.cache_directories.contains_key(&path)
                             || snapshot.has_overlay_within(&path)
                             || is_node_modules_path(&path)
                         {
                             has_relevant_change = true;
                         }
+                    } else {
+                        has_relevant_change = self.fs.directory_exists(&file_name);
                     }
                 } else if let Some(i) = i {
                     let extensions: Vec<&str> =
@@ -600,7 +631,7 @@ impl Session {
         // Enqueue the (optionally debounced) diagnostics refresh
         let s = self.arc();
         self.background_queue.enqueue(&debounce_ctx, move |ctx| {
-            let _cancel = cancelOnDrop(cancel);
+            let _cancel = CancelOnDrop(cancel);
             if !delay.is_zero() {
                 // Wait out the debounce window; a newer event cancels this one.
                 if ctx.wait_timeout(delay) {
@@ -624,12 +655,11 @@ impl Session {
             if s.options.logging_enabled {
                 s.logger.log("Running scheduled diagnostics refresh");
             }
-            if let Some(client) = &s.client {
-                if let Err(err) = client.refresh_diagnostics(&s.background_context()) {
-                    if s.options.logging_enabled {
-                        s.logger.logf(format_args!("Error refreshing diagnostics: {err}"));
-                    }
-                }
+            if let Some(client) = &s.client
+                && let Err(err) = client.refresh_diagnostics(&s.background_context())
+                && s.options.logging_enabled
+            {
+                s.logger.logf(format_args!("Error refreshing diagnostics: {err}"));
             }
         });
     }
@@ -667,7 +697,7 @@ impl Session {
         // Enqueue the debounced snapshot update
         let s = self.arc();
         self.background_queue.enqueue(&debounce_ctx, move |ctx| {
-            let _cancel = cancelOnDrop(cancel);
+            let _cancel = CancelOnDrop(cancel);
             // Sleep for the debounce delay
             if ctx.wait_timeout(s.options.debounce_delay) {
                 // Context was cancelled, newer events arrived or another snapshot update ran
@@ -733,20 +763,37 @@ impl Session {
 
     // session.go:663
     fn schedule_idle_cache_clean(&self) {
-        let mut timer = self.idle_cache_clean_timer.lock().unwrap();
-
-        if let Some(timer) = timer.take() {
-            timer.stop();
+        let mut state = self.idle_cache_clean.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        if let Some(timer) = state.timer.take()
+            && timer.stop()
+        {
+            state.pending -= 1;
         }
 
+        state.generation += 1;
+        state.pending += 1;
+        let generation = state.generation;
+
         let s = Weak::clone(&self.self_ref);
-        *timer = Some(after_func(idleCacheCleanDelay, move || {
+        state.timer = Some(after_func(IDLE_CACHE_CLEAN_DELAY, move || {
             let Some(s) = s.upgrade() else {
                 return;
             };
-            *s.idle_cache_clean_timer.lock().unwrap() = None;
+            let _done = IdleCacheCleanDone(Arc::clone(&s));
+            {
+                let mut state = s.idle_cache_clean.lock().unwrap();
+                if state.generation == generation {
+                    state.timer = None;
+                }
+            }
 
             let _update = s.snapshot_update_mu.lock().unwrap();
+            if s.background_ctx.is_canceled() {
+                return;
+            }
             s.cancel_scheduled_snapshot_update();
 
             let ctx = s.background_context();
@@ -768,13 +815,29 @@ impl Session {
     }
 
     // session.go:694
-    #[expect(
-        clippy::significant_drop_in_scrutinee,
-        reason = "Go holds idleCacheCleanMu while it stops the timer"
-    )]
     fn cancel_idle_cache_clean(&self) {
-        if let Some(timer) = self.idle_cache_clean_timer.lock().unwrap().take() {
-            timer.stop();
+        let mut state = self.idle_cache_clean.lock().unwrap();
+        if let Some(timer) = state.timer.take()
+            && timer.stop()
+        {
+            state.pending -= 1;
+            if state.pending == 0 {
+                self.idle_cache_clean_done.notify_all();
+            }
+        }
+    }
+
+    // session.go:720
+    fn close_idle_cache_clean(&self) {
+        let mut state = self.idle_cache_clean.lock().unwrap();
+        state.closed = true;
+        if let Some(timer) = state.timer.take()
+            && timer.stop()
+        {
+            state.pending -= 1;
+        }
+        while state.pending != 0 {
+            state = self.idle_cache_clean_done.wait(state).unwrap();
         }
     }
 
@@ -806,7 +869,7 @@ impl Session {
 
     // session.go:1018
     pub fn snapshot(&self) -> Arc<Snapshot> {
-        self.snapshot.read().unwrap().clone()
+        Arc::clone(self.snapshot.read().unwrap().as_ref().expect("session is closed"))
     }
 
     // session.go:1028
@@ -847,7 +910,7 @@ impl Session {
         }
         // If there are no pending file changes, we can try to use the current snapshot.
         let guard = self.snapshot.read().unwrap();
-        let snapshot = guard.clone();
+        let snapshot = Arc::clone(guard.as_ref().expect("session is closed"));
         let mut update_reason = UpdateReason::Unknown;
         if !request.projects.is_empty() {
             update_reason = UpdateReason::RequestedLanguageServiceProjectDirty;
@@ -922,12 +985,12 @@ impl Session {
             if caller_ref {
                 snapshot.deref();
             }
-            if let Some(file) = snapshot.get_file(&uri.file_name()) {
-                if file.kind() == ScriptKind::Unknown {
-                    return Err(lsproto::Error::new(format!(
-                        "{ErrNoProjectForUnknownScriptKind}: no project found for URI {uri}"
-                    )));
-                }
+            if let Some(file) = snapshot.get_file(&uri.file_name())
+                && file.kind() == ScriptKind::Unknown
+            {
+                return Err(lsproto::Error::new(format!(
+                    "{ERR_NO_PROJECT_FOR_UNKNOWN_SCRIPT_KIND}: no project found for URI {uri}"
+                )));
             }
             return Err(lsproto::Error::new(format!("no project found for URI {uri}")));
         };
@@ -1072,7 +1135,7 @@ impl Session {
             },
             true, /*callerRef*/
         );
-        let _deref = derefOnDrop(&snapshot);
+        let _deref = DerefOnDrop(&snapshot);
         f(&snapshot);
     }
 
@@ -1088,7 +1151,7 @@ impl Session {
             ResourceRequest { documents: vec![uri.clone()], ..Default::default() },
             true, /*callerRef*/
         );
-        let _deref = derefOnDrop(&snapshot);
+        let _deref = DerefOnDrop(&snapshot);
         f(&snapshot);
     }
 
@@ -1153,7 +1216,7 @@ impl Session {
                 Ok(None)
             }
             Ok(Some(async_work)) => Ok(Some(Box::new(move || {
-                let _deref = derefOnDrop(&snapshot);
+                let _deref = DerefOnDrop(&snapshot);
                 async_work()
             }))),
         }
@@ -1210,6 +1273,74 @@ impl Session {
         });
     }
 
+    // api.go:18
+    // APIUpdate creates a new snapshot incorporating the given file changes and the
+    // supplied API open/close request. The apiRequest may open or close projects and
+    // files; opens are tracked in the snapshot (ref-counted) so they persist across
+    // future updates, and closes release a previously taken ref. Programs are updated
+    // only when explicitly requested by an open or ensure operation.
+    // On success, returns a ref'd snapshot which the caller must Deref when done.
+    // On failure, releases the rejected snapshot and returns nil and the error.
+    // A snapshot with an API error is never adopted as canonical session state;
+    // host changes flushed alongside it are adopted separately.
+    pub fn api_update(
+        &self,
+        ctx: &Context,
+        api_file_changes: &FileChangeSummary,
+        api_request: Option<Arc<APISnapshotRequest>>,
+    ) -> Result<Arc<Snapshot>, lsproto::Error> {
+        let _update = self.snapshot_update_mu.lock().unwrap();
+        self.cancel_scheduled_snapshot_update();
+
+        let (host_file_changes, overlays, ata_changes, _) = self.flush_changes(ctx);
+        let mut file_changes = host_file_changes.clone_summary();
+        merge_file_change_summary(&mut file_changes, api_file_changes);
+        let mut fs = None;
+        let mut replace_file_system = false;
+        if let Some(api_request) = &api_request {
+            // Go passes the request file system as a `vfs.FS`; a layered one takes precedence, as in
+            // `SnapshotHost::clone_snapshot`.
+            fs = match &api_request.layered_file_system {
+                Some(layered) => Some(FsRef::Layered(Arc::clone(layered))),
+                None => api_request.file_system.clone().map(FsRef::Host),
+            };
+            replace_file_system = api_request.replace_file_system;
+        }
+
+        let file_system_override = fs.is_some();
+        let new_snapshot = self.update_snapshot_ref(
+            ctx,
+            Arc::clone(&overlays),
+            SnapshotChange {
+                api_request,
+                fs,
+                file_system_override,
+                replace_file_system,
+                file_changes,
+                ata_changes: ata_changes.clone(),
+                ..Default::default()
+            },
+        );
+        if let Some(api_error) = new_snapshot.api_error.clone() {
+            new_snapshot.deref();
+            if !host_file_changes.is_empty() || !ata_changes.is_empty() {
+                // The API request is rejected as a unit, but host changes were already
+                // flushed and must still advance the canonical session snapshot.
+                self.update_snapshot(
+                    ctx,
+                    overlays,
+                    SnapshotChange {
+                        file_changes: host_file_changes,
+                        ata_changes,
+                        ..Default::default()
+                    },
+                );
+            }
+            return Err(api_error);
+        }
+        Ok(new_snapshot)
+    }
+
     // api.go:59
     // TryAdoptSnapshotInBackground retains a derived snapshot and attempts to adopt it
     // as the session's current snapshot without blocking the caller.
@@ -1229,11 +1360,11 @@ impl Session {
     // auto-imports will redo the work on the latest snapshot.
     fn adopt_snapshot_change(&self, base_snapshot: &Arc<Snapshot>, new_snapshot: &Arc<Snapshot>) {
         let mut guard = self.snapshot.write().unwrap();
-        let old_snapshot = guard.clone();
+        let old_snapshot = Arc::clone(guard.as_ref().expect("session is closed"));
         if Arc::ptr_eq(&old_snapshot, base_snapshot) {
             // Session hasn't moved on; adopt the new snapshot. The clone's initial
             // ref is transferred to become the session's ref for its current snapshot.
-            *guard = Arc::clone(new_snapshot);
+            *guard = Some(Arc::clone(new_snapshot));
             old_snapshot.deref();
             drop(guard);
             if self.options.logging_enabled {
@@ -1284,10 +1415,6 @@ impl Session {
     // with an extra reference for the caller. The ref is taken atomically with
     // the snapshot assignment under snapshotMu, so the snapshot is guaranteed
     // to be alive when returned. The caller must call snapshot.Deref() when done.
-    #[expect(
-        dead_code,
-        reason = "Go's caller Session.APIUpdate (project/api.go) is not ported yet"
-    )]
     pub(crate) fn update_snapshot_ref(
         &self,
         ctx: &Context,
@@ -1307,8 +1434,8 @@ impl Session {
         caller_ref: bool,
     ) -> Option<Arc<Snapshot>> {
         let mut guard = self.snapshot.write().unwrap();
-        let old_snapshot = guard.clone();
-        let ctx = if !has_locale(ctx) { self.with_current_locale(ctx) } else { ctx.clone() };
+        let old_snapshot = Arc::clone(guard.as_ref().expect("session is closed"));
+        let ctx = if has_locale(ctx) { ctx.clone() } else { self.with_current_locale(ctx) };
         let warm_change = WarmChange::of(&change);
         let new_snapshot = old_snapshot.clone_snapshot(
             &ctx,
@@ -1328,7 +1455,7 @@ impl Session {
             new_snapshot.deref();
             return None;
         }
-        *guard = Arc::clone(&new_snapshot);
+        *guard = Some(Arc::clone(&new_snapshot));
         if caller_ref {
             new_snapshot.ref_();
         }
@@ -1361,12 +1488,11 @@ impl Session {
                 s.log_project_changes(&old_snapshot, &new_snapshot);
                 s.logger.log("");
             }
-            if s.options.watch_enabled {
-                if let Err(err) = s.update_watches(&old_snapshot, &new_snapshot) {
-                    if s.options.logging_enabled {
-                        s.logger.log(&err);
-                    }
-                }
+            if s.options.watch_enabled
+                && let Err(err) = s.update_watches(&old_snapshot, &new_snapshot)
+                && s.options.logging_enabled
+            {
+                s.logger.log(&err);
             }
             let _ = s.update_content_mapper_registrations(ctx, &new_snapshot);
             s.publish_program_diagnostics(&old_snapshot, &new_snapshot);
@@ -1415,7 +1541,7 @@ impl Session {
                 for (id, watcher) in &new_watchers {
                     // Create a fresh timeout per client call so earlier calls
                     // don't consume the deadline for later ones.
-                    let (call_ctx, call_cancel) = ctx.with_timeout(watchRequestTimeout);
+                    let (call_ctx, call_cancel) = ctx.with_timeout(WATCH_REQUEST_TIMEOUT);
                     let result = client.watch_files(&call_ctx, id.clone(), vec![watcher.clone()]);
                     call_cancel.call();
                     if let Err(err) = result {
@@ -1430,7 +1556,9 @@ impl Session {
                         self.logger.log("");
                     }
                 }
-                if !watch_errors.is_empty() {
+                if watch_errors.is_empty() {
+                    self.watches.clear_pending(&w.watcher_id);
+                } else {
                     // Roll back ALL newly-acquired watchers on any failure to keep
                     // refcounts clean. On retry, Acquire will see them as new again.
                     // Re-registering an already-registered watcher with the client
@@ -1440,8 +1568,6 @@ impl Session {
                     }
                     self.watches.mark_pending(w.watcher_id.clone());
                     errors.extend(watch_errors);
-                } else {
-                    self.watches.clear_pending(&w.watcher_id);
                 }
                 if !w.ignored_paths.is_empty() {
                     self.logger.logf(format_args!(
@@ -1471,7 +1597,7 @@ impl Session {
                     if removed { Some(id) } else { None }
                 }));
                 for id in removed_ids {
-                    let (call_ctx, call_cancel) = ctx.with_timeout(watchRequestTimeout);
+                    let (call_ctx, call_cancel) = ctx.with_timeout(WATCH_REQUEST_TIMEOUT);
                     let result = client.unwatch_files(&call_ctx, id.clone());
                     call_cancel.call();
                     match result {
@@ -1543,23 +1669,23 @@ impl Session {
         let ctx = self.background_context();
         let old_configs = &old_snapshot.config_file_registry.configs;
         let new_configs = &new_snapshot.config_file_registry.configs;
-        let mut added: Vec<Shared<configFileEntry>> = Vec::new();
-        let mut removed: Vec<Shared<configFileEntry>> = Vec::new();
-        let mut changed: Vec<(Shared<configFileEntry>, Shared<configFileEntry>)> = Vec::new();
+        let mut added: Vec<Shared<ConfigFileEntry>> = Vec::new();
+        let mut removed: Vec<Shared<ConfigFileEntry>> = Vec::new();
+        let mut changed: Vec<(Shared<ConfigFileEntry>, Shared<ConfigFileEntry>)> = Vec::new();
         diff_maps_func(
             old_configs,
             new_configs,
-            |a: &Shared<configFileEntry>, b: &Shared<configFileEntry>| {
+            |a: &Shared<ConfigFileEntry>, b: &Shared<ConfigFileEntry>| {
                 a.root_files_watch.id() == b.root_files_watch.id()
             },
-            Some(|_: &Path, added_entry: &Shared<configFileEntry>| added.push(added_entry.clone())),
-            Some(|_: &Path, removed_entry: &Shared<configFileEntry>| {
+            Some(|_: &Path, added_entry: &Shared<ConfigFileEntry>| added.push(added_entry.clone())),
+            Some(|_: &Path, removed_entry: &Shared<ConfigFileEntry>| {
                 removed.push(removed_entry.clone());
             }),
             Some(
                 |_: &Path,
-                 old_entry: &Shared<configFileEntry>,
-                 new_entry: &Shared<configFileEntry>| {
+                 old_entry: &Shared<ConfigFileEntry>,
+                 new_entry: &Shared<ConfigFileEntry>| {
                     changed.push((old_entry.clone(), new_entry.clone()));
                 },
             ),
@@ -1706,11 +1832,18 @@ impl Session {
         self.cancel_diagnostics_refresh();
         // Cancel any pending auto-import cache warming
         self.cancel_warm_auto_import_cache();
-        // Cancel any pending idle cache clean
-        self.cancel_idle_cache_clean();
+        // Stop and drain any pending idle cache clean
+        self.close_idle_cache_clean();
         // Cancel periodic performance telemetry
         self.stop_performance_telemetry();
+        self.background_cancel.call();
         self.background_queue.close();
+
+        let _update = self.snapshot_update_mu.lock().unwrap();
+        let snapshot = self.snapshot.write().unwrap().take();
+        if let Some(snapshot) = snapshot {
+            snapshot.deref();
+        }
         self.snapshot_host.close();
     }
 
@@ -1788,7 +1921,7 @@ impl Session {
                 // New project added
                 0 => log_project(&project),
                 // Project removed
-                1 => self.logger.logf(format_args!("\nProject '{}' removed\n{}", project.id(), hr)),
+                1 => self.logger.logf(format_args!("\nProject '{}' removed\n{}", project.id(), HR)),
                 // Project updated
                 _ => {
                     if project.program_update_kind == ProgramUpdateKind::NewFiles {
@@ -1915,14 +2048,12 @@ impl Session {
         old_prefs: &UserPreferences,
         new_prefs: &UserPreferences,
     ) {
-        if old_prefs.inlay_hints != new_prefs.inlay_hints {
-            if let Some(client) = &self.client {
-                if let Err(err) = client.refresh_inlay_hints(&self.background_context()) {
-                    if self.options.logging_enabled {
-                        self.logger.logf(format_args!("Error refreshing inlay hints: {err}"));
-                    }
-                }
-            }
+        if old_prefs.inlay_hints != new_prefs.inlay_hints
+            && let Some(client) = &self.client
+            && let Err(err) = client.refresh_inlay_hints(&self.background_context())
+            && self.options.logging_enabled
+        {
+            self.logger.logf(format_args!("Error refreshing inlay hints: {err}"));
         }
     }
 
@@ -1932,14 +2063,12 @@ impl Session {
         old_prefs: &UserPreferences,
         new_prefs: &UserPreferences,
     ) {
-        if old_prefs.code_lens != new_prefs.code_lens {
-            if let Some(client) = &self.client {
-                if let Err(err) = client.refresh_code_lens(&self.background_context()) {
-                    if self.options.logging_enabled {
-                        self.logger.logf(format_args!("Error refreshing code lens: {err}"));
-                    }
-                }
-            }
+        if old_prefs.code_lens != new_prefs.code_lens
+            && let Some(client) = &self.client
+            && let Err(err) = client.refresh_code_lens(&self.background_context())
+            && self.options.logging_enabled
+        {
+            self.logger.logf(format_args!("Error refreshing code lens: {err}"));
         }
     }
 
@@ -1977,20 +2106,19 @@ impl Session {
                 return;
             }
             for old_project in old_snapshot.project_collection.projects_by_id().values() {
-                if let Some(configured_id) = old_project.id().configured() {
-                    if old_snapshot
+                if let Some(configured_id) = old_project.id().configured()
+                    && old_snapshot
                         .project_collection
                         .get_open_configured_projects()
                         .has(&configured_id)
-                    {
-                        let config_file_path = old_project.config_file_path().clone();
-                        self.publish_project_diagnostics(
-                            &self.background_context(),
-                            &config_file_path,
-                            &[],
-                            &old_snapshot.converters(),
-                        );
-                    }
+                {
+                    let config_file_path = old_project.config_file_path().clone();
+                    self.publish_project_diagnostics(
+                        &self.background_context(),
+                        &config_file_path,
+                        &[],
+                        &old_snapshot.converters(),
+                    );
                 }
             }
             return;
@@ -2047,7 +2175,7 @@ impl Session {
             if new_project.kind != Kind::Configured {
                 continue;
             }
-            if !old_projects.has(project_id) {
+            if !old_projects.contains_key(project_id) {
                 continue; // Handled by added project case above
             }
             let configured_id = new_project.id().configured().unwrap();
@@ -2095,19 +2223,18 @@ impl Session {
             diagnostics.iter().map(|&diag| lsconv::diagnostic_to_lsp_push(&ctx, converters, diag)),
         );
 
-        if let Some(client) = &self.client {
-            if let Err(err) = client.publish_diagnostics(
+        if let Some(client) = &self.client
+            && let Err(err) = client.publish_diagnostics(
                 &ctx,
                 lsproto::PublishDiagnosticsParams {
                     uri: lsconv::file_name_to_document_uri(config_file_path),
                     version: None,
                     diagnostics: lsp_diagnostics,
                 },
-            ) {
-                if self.options.logging_enabled {
-                    self.logger.logf(format_args!("Error publishing diagnostics: {err}"));
-                }
-            }
+            )
+            && self.options.logging_enabled
+        {
+            self.logger.logf(format_args!("Error publishing diagnostics: {err}"));
         }
     }
 
@@ -2133,20 +2260,21 @@ impl Session {
 
     // session.go:1974
     fn publish_global_diagnostics(&self, ctx: &Context) {
-        struct resetPending<'a>(&'a AtomicBool);
-        impl Drop for resetPending<'_> {
+        struct ResetPending<'a>(&'a AtomicBool);
+        impl Drop for ResetPending<'_> {
             fn drop(&mut self) {
                 self.0.store(false, Ordering::SeqCst);
             }
         }
-        let _reset = resetPending(&self.global_diag_publish_pending);
+        let _reset = ResetPending(&self.global_diag_publish_pending);
 
         let snapshot = {
             let guard = self.snapshot.read().unwrap();
-            guard.ref_();
-            guard.clone()
+            let snapshot = guard.as_ref().expect("session is closed");
+            snapshot.ref_();
+            Arc::clone(snapshot)
         };
-        let _deref = derefOnDrop(&snapshot);
+        let _deref = DerefOnDrop(&snapshot);
 
         for project in snapshot.project_collection.projects() {
             if project.kind != Kind::Configured {
@@ -2225,14 +2353,14 @@ impl Session {
                 cancel.call();
                 return;
             }
-            let _cancel = cancelOnDrop(cancel);
+            let _cancel = CancelOnDrop(cancel);
 
             // Clone the snapshot with auto-imports using warmCtx so the expensive
             // extraction work is cancelled if a file change arrives.
             if !new_snapshot.try_ref() {
                 return;
             }
-            let _deref = derefOnDrop(new_snapshot);
+            let _deref = DerefOnDrop(new_snapshot);
 
             let warm_change = SnapshotChange {
                 reason: UpdateReason::RequestedLanguageServiceWithAutoImports,
@@ -2284,29 +2412,29 @@ fn should_publish_program_diagnostics(p: &Project, snapshot_id: u64) -> bool {
     p.program_update_kind > ProgramUpdateKind::Cloned
 }
 
-const idleCacheCleanDelay: Duration = Duration::from_secs(30);
+const IDLE_CACHE_CLEAN_DELAY: Duration = Duration::from_secs(30);
 
 // The deferred work a `WithLanguageServiceAndSnapshot` callback hands back (Go `func() error`).
 pub type AsyncWork = Box<dyn FnOnce() -> Result<(), lsproto::Error> + Send>;
 
 // Go `defer cancel()`.
-struct cancelOnDrop(CancelFunc);
+struct CancelOnDrop(CancelFunc);
 
-impl Drop for cancelOnDrop {
+impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.call();
     }
 }
 
 // Go `defer snapshot.Deref()`.
-struct derefOnDrop<'a>(&'a Arc<Snapshot>);
+struct DerefOnDrop<'a>(&'a Arc<Snapshot>);
 
-impl Drop for derefOnDrop<'_> {
+impl Drop for DerefOnDrop<'_> {
     fn drop(&mut self) {
         self.0.deref();
     }
 }
 
-fn tsrs_overlays(fs: &overlayFS) -> OverlayMap {
+fn tsrs_overlays(fs: &OverlayFS) -> OverlayMap {
     crate::overlayfs::LayeredFileSystem::overlays(fs)
 }

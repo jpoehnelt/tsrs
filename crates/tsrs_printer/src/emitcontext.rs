@@ -22,16 +22,17 @@ pub struct EmitContext {
     auto_generate: RefCell<FxHashMap<P<Node>, AutoGenerateInfo>>,
     text_source: RefCell<FxHashMap<P<Node>, P<Node>>>,
     original: RefCell<FxHashMap<P<Node>, P<Node>>>,
-    emit_nodes: RefCell<FxHashMap<P<Node>, emitNode>>,
+    emit_nodes: RefCell<FxHashMap<P<Node>, EmitNode>>,
     assigned_name: RefCell<FxHashMap<P<Node>, P<Node>>>,
     class_this: RefCell<FxHashMap<P<Node>, P<Node>>>,
-    var_scope_stack: RefCell<Stack<Rc<RefCell<varScope>>>>,
-    let_scope_stack: RefCell<Stack<Rc<RefCell<varScope>>>>,
+    var_scope_stack: RefCell<Stack<Rc<RefCell<VarScope>>>>,
+    let_scope_stack: RefCell<Stack<Rc<RefCell<VarScope>>>>,
     emit_helpers: RefCell<OrderedSet<SP<EmitHelper>>>,
 }
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+    #[expect(non_camel_case_types, reason = "Keep the upstream bitflags type name.")]
     pub(crate) struct environmentFlags: u32 {
         const None = 0;
         const InParameters = 1 << 0; // currently visiting a parameter list
@@ -40,7 +41,7 @@ bitflags::bitflags! {
 }
 
 #[derive(Default)]
-pub(crate) struct varScope {
+pub struct VarScope {
     variables: Vec<P<Node>>,
     functions: Vec<P<Node>>,
     flags: environmentFlags,
@@ -581,13 +582,11 @@ impl EmitContext {
 
     // Walks the associated AutoGenerateInfo entries of a name to find the root Nopde from which the name should be generated.
     pub fn get_node_for_generated_name(&self, name: P<Node>) -> P<Node> {
-        if let Some(auto_generate) = self.get_auto_generate_info(Some(name)) {
-            if auto_generate.flags.is_node() {
-                return self.get_node_for_generated_name_worker(
-                    auto_generate.node.unwrap(),
-                    auto_generate.id,
-                );
-            }
+        if let Some(auto_generate) = self.get_auto_generate_info(Some(name))
+            && auto_generate.flags.is_node()
+        {
+            return self
+                .get_node_for_generated_name_worker(auto_generate.node.unwrap(), auto_generate.id);
         }
         name
     }
@@ -697,10 +696,10 @@ impl EmitContext {
         name: &str,
         has_global_name: Option<&dyn Fn(&str) -> bool>,
     ) -> bool {
-        if let Some(has_global_name) = has_global_name {
-            if has_global_name(name) {
-                return false;
-            }
+        if let Some(has_global_name) = has_global_name
+            && has_global_name(name)
+        {
+            return false;
         }
         let source_file = self.most_original(Some(source_file.as_node())).unwrap().as_source_file();
         !source_file.has_identifier(name)
@@ -739,10 +738,10 @@ impl EmitContext {
 
     // Gets the range to use for a node when emitting comments.
     pub fn comment_range(&self, node: P<Node>) -> TextRange {
-        if let Some(emit_node) = self.emit_nodes.borrow().get(&node) {
-            if emit_node.flags.intersects(emitNodeFlags::hasCommentRange) {
-                return emit_node.comment_range;
-            }
+        if let Some(emit_node) = self.emit_nodes.borrow().get(&node)
+            && emit_node.flags.intersects(emitNodeFlags::hasCommentRange)
+        {
+            return emit_node.comment_range;
         }
         node.loc()
     }
@@ -762,10 +761,10 @@ impl EmitContext {
 
     // Gets the range to use for a node when emitting source maps.
     pub fn source_map_range(&self, node: P<Node>) -> TextRange {
-        if let Some(emit_node) = self.emit_nodes.borrow().get(&node) {
-            if emit_node.flags.intersects(emitNodeFlags::hasSourceMapRange) {
-                return emit_node.source_map_range;
-            }
+        if let Some(emit_node) = self.emit_nodes.borrow().get(&node)
+            && emit_node.flags.intersects(emitNodeFlags::hasSourceMapRange)
+        {
+            return emit_node.source_map_range;
         }
         node.loc()
     }
@@ -796,13 +795,11 @@ impl EmitContext {
 
     // Gets the range for a token of a node when emitting source maps.
     pub fn token_source_map_range(&self, node: P<Node>, kind: Kind) -> Option<TextRange> {
-        if let Some(emit_node) = self.emit_nodes.borrow().get(&node) {
-            if let Some(ranges) = emit_node.rare().and_then(|r| r.token_source_map_ranges.as_ref())
-            {
-                if let Some(loc) = ranges.get(&kind) {
-                    return Some(*loc);
-                }
-            }
+        if let Some(emit_node) = self.emit_nodes.borrow().get(&node)
+            && let Some(ranges) = emit_node.rare().and_then(|r| r.token_source_map_ranges.as_ref())
+            && let Some(loc) = ranges.get(&kind)
+        {
+            return Some(*loc);
         }
         None
     }
@@ -874,10 +871,10 @@ impl EmitContext {
     }
 
     pub fn get_external_helpers_module_name(&self, node: P<SourceFile>) -> Option<P<Node>> {
-        if let Some(parse_node) = self.parse_node(Some(node.as_node())) {
-            if let Some(emit_node) = self.emit_nodes.borrow().get(&parse_node) {
-                return emit_node.rare()?.external_helpers_module_name;
-            }
+        if let Some(parse_node) = self.parse_node(Some(node.as_node()))
+            && let Some(emit_node) = self.emit_nodes.borrow().get(&parse_node)
+        {
+            return emit_node.rare()?.external_helpers_module_name;
         }
         None
     }
@@ -1290,7 +1287,7 @@ impl EmitContext {
 }
 
 // emitcontext.go:362 (package-level; used by `EmitContext::is_hoisted_variable_statement`)
-pub(crate) fn is_hoisted_variable(node: P<Node>) -> bool {
+pub fn is_hoisted_variable(node: P<Node>) -> bool {
     is_identifier(node.name().unwrap()) && node.initializer().is_none()
 }
 
@@ -1301,10 +1298,10 @@ pub struct AutoGenerateOptions {
     pub suffix: &'static str,
 }
 
-static nextAutoGenerateId: AtomicU32 = AtomicU32::new(0);
+static NEXT_AUTO_GENERATE_ID: AtomicU32 = AtomicU32::new(0);
 
-pub(crate) fn next_auto_generate_id() -> AutoGenerateId {
-    AutoGenerateId(nextAutoGenerateId.fetch_add(1, Ordering::SeqCst) + 1)
+pub fn next_auto_generate_id() -> AutoGenerateId {
+    AutoGenerateId(NEXT_AUTO_GENERATE_ID.fetch_add(1, Ordering::SeqCst) + 1)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
@@ -1321,6 +1318,7 @@ pub struct AutoGenerateInfo {
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+    #[expect(non_camel_case_types, reason = "Keep the upstream bitflags type name.")]
     pub(crate) struct emitNodeFlags: u32 {
         const hasCommentRange = 1 << 0;
         const hasSourceMapRange = 1 << 1;
@@ -1353,21 +1351,21 @@ pub struct SynthesizedComment {
 // other fields (emit helpers, synthesized comments, token ranges, ...) live in a tail allocated on the first write
 // (`rare_mut`); reads of an absent tail see Go's zero values. 32 bytes per map entry instead of 160.
 #[derive(Clone, Default)]
-pub(crate) struct emitNode {
+pub struct EmitNode {
     flags: emitNodeFlags,
     emit_flags: EmitFlags,
     comment_range: TextRange,
     source_map_range: TextRange,
-    rare: Option<Box<emitNodeRare>>,
+    rare: Option<Box<EmitNodeRare>>,
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<emitNode>() == 32);
+const _: () = assert!(std::mem::size_of::<EmitNode>() == 32);
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(std::mem::size_of::<emitNode>() == 28);
+const _: () = assert!(std::mem::size_of::<EmitNode>() == 28);
 
 #[derive(Clone, Default)]
-struct emitNodeRare {
+struct EmitNodeRare {
     token_source_map_ranges: Option<FxHashMap<Kind, TextRange>>,
     helpers: Vec<SP<EmitHelper>>,
     external_helpers_module_name: Option<P<Node>>,
@@ -1377,17 +1375,17 @@ struct emitNodeRare {
     snippet_element: Option<SnippetElement>,
 }
 
-impl emitNode {
-    fn rare(&self) -> Option<&emitNodeRare> {
+impl EmitNode {
+    fn rare(&self) -> Option<&EmitNodeRare> {
         self.rare.as_deref()
     }
 
-    fn rare_mut(&mut self) -> &mut emitNodeRare {
+    fn rare_mut(&mut self) -> &mut EmitNodeRare {
         self.rare.get_or_insert_with(Default::default)
     }
 
     // NOTE: This method is not guaranteed to be thread-safe
-    fn copy_from(&mut self, source: &emitNode) {
+    fn copy_from(&mut self, source: &EmitNode) {
         self.flags = source.flags;
         self.emit_flags = source.emit_flags;
         self.comment_range = source.comment_range;

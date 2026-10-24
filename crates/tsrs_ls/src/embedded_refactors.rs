@@ -216,58 +216,53 @@ impl LanguageService {
         };
         let mut actions = Vec::new();
         let mut checker = program.get_type_checker_for_file(ctx, file);
-        if start < end {
-            if let Some(&expression) = all
+        if start < end
+            && let Some(&expression) = all
                 .iter()
                 .find(|&&node| ast::is_expression_node(node) && bounds(file, node) == (start, end))
-            {
-                if !captures_lexical_context(expression) {
-                    let parameters = free_names(file, expression, &mut checker);
-                    let name = fresh_name(&all, "newFunction", &mut checker, file.as_node());
-                    let generated = format!(
-                        "{newline}function {name}({}) {{{newline}  return {};{newline}}}{newline}",
-                        parameters.join(", "),
-                        text(file, expression)
-                    );
-                    if can_pass_free_names(expression, &parameters) {
-                        actions.push(EmbeddedRefactor {
-                            name: "extract_function",
-                            description: "Extract to function in global scope".to_string(),
-                            kind: "refactor.extract.function",
-                            changes: vec![
-                                edit(start, end, format!("{name}({})", parameters.join(", "))),
-                                edit(source.len() as u32, source.len() as u32, generated),
-                            ],
-                        });
-                    }
-                    if let Some(statement) = insertion_statement(expression) {
-                        let statement_start = bounds(file, statement).0;
-                        let line_start = source[..statement_start as usize]
-                            .rfind(['\n', '\r'])
-                            .map_or(0, |position| position + 1);
-                        let indent: String = source[line_start..statement_start as usize]
-                            .chars()
-                            .take_while(|&character| matches!(character, ' ' | '\t'))
-                            .collect();
-                        let local = fresh_name(&all, "newLocal", &mut checker, expression);
-                        actions.push(EmbeddedRefactor {
-                            name: "extract_constant",
-                            description: "Extract to constant in enclosing block".to_string(),
-                            kind: "refactor.extract.constant",
-                            changes: vec![
-                                edit(start, end, local.clone()),
-                                edit(
-                                    statement_start,
-                                    statement_start,
-                                    format!(
-                                        "const {local} = {};{newline}{indent}",
-                                        text(file, expression)
-                                    ),
-                                ),
-                            ],
-                        });
-                    }
-                }
+            && !captures_lexical_context(expression)
+        {
+            let parameters = free_names(file, expression, &mut checker);
+            let name = fresh_name(&all, "newFunction", &mut checker, file.as_node());
+            let generated = format!(
+                "{newline}function {name}({}) {{{newline}  return {};{newline}}}{newline}",
+                parameters.join(", "),
+                text(file, expression)
+            );
+            if can_pass_free_names(expression, &parameters) {
+                actions.push(EmbeddedRefactor {
+                    name: "extract_function",
+                    description: "Extract to function in global scope".to_string(),
+                    kind: "refactor.extract.function",
+                    changes: vec![
+                        edit(start, end, format!("{name}({})", parameters.join(", "))),
+                        edit(source.len() as u32, source.len() as u32, generated),
+                    ],
+                });
+            }
+            if let Some(statement) = insertion_statement(expression) {
+                let statement_start = bounds(file, statement).0;
+                let line_start = source[..statement_start as usize]
+                    .rfind(['\n', '\r'])
+                    .map_or(0, |position| position + 1);
+                let indent: String = source[line_start..statement_start as usize]
+                    .chars()
+                    .take_while(|&character| matches!(character, ' ' | '\t'))
+                    .collect();
+                let local = fresh_name(&all, "newLocal", &mut checker, expression);
+                actions.push(EmbeddedRefactor {
+                    name: "extract_constant",
+                    description: "Extract to constant in enclosing block".to_string(),
+                    kind: "refactor.extract.constant",
+                    changes: vec![
+                        edit(start, end, local.clone()),
+                        edit(
+                            statement_start,
+                            statement_start,
+                            format!("const {local} = {};{newline}{indent}", text(file, expression)),
+                        ),
+                    ],
+                });
             }
         }
         let concatenation = all
@@ -290,19 +285,19 @@ impl LanguageService {
                 let (left, right) = bounds(file, *node);
                 right - left
             });
-        if let Some(expression) = concatenation {
-            if checker.get_type_at_location(expression).flags().intersects(TypeFlags::StringLike) {
-                let mut replacement = "`".to_string();
-                template_part(file, expression, &mut checker, &mut replacement);
-                replacement.push('`');
-                let (left, right) = bounds(file, expression);
-                actions.push(EmbeddedRefactor {
-                    name: "convert_to_template",
-                    description: "Convert to template string".to_string(),
-                    kind: "refactor.rewrite.string",
-                    changes: vec![edit(left, right, replacement)],
-                });
-            }
+        if let Some(expression) = concatenation
+            && checker.get_type_at_location(expression).flags().intersects(TypeFlags::StringLike)
+        {
+            let mut replacement = "`".to_string();
+            template_part(file, expression, &mut checker, &mut replacement);
+            replacement.push('`');
+            let (left, right) = bounds(file, expression);
+            actions.push(EmbeddedRefactor {
+                name: "convert_to_template",
+                description: "Convert to template string".to_string(),
+                kind: "refactor.rewrite.string",
+                changes: vec![edit(left, right, replacement)],
+            });
         }
         Ok(actions)
     }

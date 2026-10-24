@@ -8,17 +8,17 @@ use tsrs_core::tspath::Path;
 use tsrs_tsoptions::{self as tsoptions, ParseConfigHost};
 use tsrs_vfs::{FS, vfstest};
 
-use crate::checkerpool::checkerPool;
+use crate::checkerpool::CheckerPoolImpl;
 use crate::{
     CheckerHandle, CheckerPool, CompilerHost, Context, CreateCheckerPool, PooledChecker, Program,
     ProgramOptions, new_compiler_host, new_program,
 };
 
-struct parseConfigHost {
+struct ParseConfigHostImpl {
     fs: Arc<dyn FS>,
 }
 
-impl ParseConfigHost for parseConfigHost {
+impl ParseConfigHost for ParseConfigHostImpl {
     fn fs(&self) -> &dyn FS {
         &*self.fs
     }
@@ -32,9 +32,106 @@ fn host_for(files: &[(&str, &str)]) -> Arc<dyn CompilerHost> {
     new_compiler_host("/", fs, "", None, None, None)
 }
 
+#[test]
+fn later_relative_import_restarts_package_imports_at_lower_depth() {
+    let files = [
+        (
+            "/src/tsconfig.json",
+            vfstest::MapFile::from(
+                r#"{"compilerOptions":{"noLib":true,"module":"commonjs"},"files":["b.ts","a.ts"]}"#,
+            ),
+        ),
+        (
+            "/src/a.ts",
+            vfstest::MapFile::from("import { util } from './lib/index'; export const a = util;"),
+        ),
+        ("/src/b.ts", vfstest::MapFile::from("import { util } from 'lib'; export const b = util;")),
+        ("/src/lib/package.json", vfstest::MapFile::from(r#"{"name":"lib","types":"index.ts"}"#)),
+        ("/src/lib/index.ts", vfstest::MapFile::from("export { util } from './util';")),
+        ("/src/lib/util.ts", vfstest::MapFile::from("export const util = 1;")),
+        ("/src/node_modules/lib/package.json", vfstest::symlink("/src/lib/package.json")),
+        ("/src/node_modules/lib/index.ts", vfstest::symlink("/src/lib/index.ts")),
+        ("/src/node_modules/lib/util.ts", vfstest::symlink("/src/lib/util.ts")),
+    ];
+    let fs: Arc<dyn FS> = Arc::new(vfstest::from_map(files, true));
+    let config_host: &'static ParseConfigHostImpl =
+        Box::leak(Box::new(ParseConfigHostImpl { fs: Arc::clone(&fs) }));
+    let (config, diagnostics) = tsoptions::get_parsed_command_line_of_config_file(
+        "/src/tsconfig.json",
+        None,
+        None,
+        config_host,
+        None,
+    );
+    assert_eq!(diagnostics, [] as [tsrs_core::P<tsrs_ast::Diagnostic>; 0]);
+    let program = new_program(ProgramOptions::new(
+        P::new(config.unwrap()),
+        new_compiler_host("/", fs, "", None, None, None),
+    ));
+    let util = program.get_source_file("/src/lib/util.ts").expect("transitive util import");
+    assert!(!program.is_source_file_from_external_library(util));
+    assert!(program.source_file_may_be_emitted(util, false));
+}
+
+// program_test.go: TestImportSourceProgram
+#[test]
+fn source_phase_imports_do_not_resolve_or_keep_stale_programs() {
+    for (source, evaluation) in [
+        ("import source a from \"./a.js\";", "import { a as value } from \"./a.js\";"),
+        ("import.source(\"./a.js\");", "import(\"./a.js\");"),
+    ] {
+        let config_file =
+            r#"{"compilerOptions":{"module":"esnext","noLib":true},"files":["index.ts"]}"#;
+        let content =
+            format!("{source} import source b from \"missing\"; import.source(\"other\");");
+        let files = [
+            ("/src/tsconfig.json", config_file),
+            ("/src/index.ts", content.as_str()),
+            ("/src/a.ts", "export const a = 1;"),
+        ];
+        let config = config_for(&files);
+        let program = new_program(ProgramOptions::new(config, host_for(&files)));
+        assert!(program.get_source_file("/src/a.ts").is_none());
+        let file = program.get_source_file("/src/index.ts").unwrap();
+        assert!(
+            program
+                .get_resolved_modules()
+                .get(file.path())
+                .is_none_or(tsrs_module::ModeAwareCache::is_empty)
+        );
+        assert!(program.get_unresolved_imports().is_empty());
+        assert!(program.unresolved_package_names().is_empty());
+
+        let edited = format!("{evaluation}{}", content.strip_prefix(source).unwrap());
+        let edited_files = [files[0], ("/src/index.ts", edited.as_str()), files[2]];
+        let (updated, _, reused) = program.update_program(
+            &Path::from("/src/index.ts"),
+            host_for(&edited_files),
+            None,
+            None,
+        );
+        assert!(!reused);
+        assert!(updated.get_source_file("/src/a.ts").is_some());
+        let updated_file = updated.get_source_file("/src/index.ts").unwrap();
+        for &specifier in updated_file.imports() {
+            let resolved =
+                updated.get_resolved_module_from_module_specifier(updated_file, specifier);
+            assert_eq!(
+                resolved.is_some_and(|module| module.is_resolved()),
+                !specifier.parent().is_some_and(tsrs_ast::is_source_phase_import)
+            );
+        }
+
+        let (restored, _, reused) =
+            updated.update_program(&Path::from("/src/index.ts"), host_for(&files), None, None);
+        assert!(!reused);
+        assert!(restored.get_source_file("/src/a.ts").is_none());
+    }
+}
+
 fn config_for(files: &[(&str, &str)]) -> P<tsoptions::ParsedCommandLine> {
     let fs: Arc<dyn FS> = Arc::new(vfstest::from_map(files.iter().map(|&(k, v)| (k, v)), true));
-    let host: &'static parseConfigHost = Box::leak(Box::new(parseConfigHost { fs }));
+    let host: &'static ParseConfigHostImpl = Box::leak(Box::new(ParseConfigHostImpl { fs }));
     let (config, diagnostics) = tsoptions::get_parsed_command_line_of_config_file(
         "/src/tsconfig.json",
         None,
@@ -48,13 +145,13 @@ fn config_for(files: &[(&str, &str)]) -> P<tsoptions::ParsedCommandLine> {
 
 // A pool outside the built-in one: hands out checkers through `CheckerHandle::from_raw` and takes them back on
 // release, like the project system's pool.
-struct testPool {
+struct TestPool {
     program: &'static Program,
     idle: Arc<Mutex<Vec<PooledChecker>>>,
     acquired: Arc<AtomicUsize>,
 }
 
-impl CheckerPool for testPool {
+impl CheckerPool for TestPool {
     fn get_checker(&self, _ctx: &Context, _file: Option<P<tsrs_ast::SourceFile>>) -> CheckerHandle {
         self.acquired.fetch_add(1, Ordering::Relaxed);
         let mut checker = self
@@ -90,11 +187,11 @@ fn program_hosts_and_factories() {
     let pools_c = std::sync::Arc::clone(&pools);
     opts.create_checker_pool = Some(Arc::new(move |p: &'static Program| -> Box<dyn CheckerPool> {
         pools_c.fetch_add(1, Ordering::Relaxed);
-        Box::new(checkerPool::new(p, None))
+        Box::new(CheckerPoolImpl::new(p, None))
     }));
     let resolvers_c = std::sync::Arc::clone(&resolvers);
     opts.create_module_resolver = Some(Arc::new(
-        move |options: tsrs_module::ResolverOptions| -> Box<dyn tsrs_module::Resolver> {
+        move |options: tsrs_module::ResolverOptions<'static>| -> Box<dyn tsrs_module::Resolver> {
             resolvers_c.fetch_add(1, Ordering::Relaxed);
             Box::new(tsrs_module::new_resolver(options))
         },
@@ -129,7 +226,7 @@ fn program_hosts_and_factories() {
         pools_c.fetch_add(1, Ordering::Relaxed);
         assert!(Arc::ptr_eq(p.host(), &new_host_c));
         assert_eq!(p.get_source_file("/src/index.ts").unwrap().text(), format!("\n{index}"));
-        Box::new(checkerPool::new(p, None))
+        Box::new(CheckerPoolImpl::new(p, None))
     });
     let (cloned, changed, reused) = p.reuse_program(
         &Path::from("/src/index.ts"),
@@ -219,7 +316,7 @@ fn external_checker_pool_diagnostics() {
     let (idle_c, acquired_c) = (std::sync::Arc::clone(&idle), std::sync::Arc::clone(&acquired));
     opts.create_checker_pool =
         Some(Arc::new(move |program: &'static Program| -> Box<dyn CheckerPool> {
-            Box::new(testPool {
+            Box::new(TestPool {
                 program,
                 idle: std::sync::Arc::clone(&idle_c),
                 acquired: std::sync::Arc::clone(&acquired_c),
@@ -389,4 +486,41 @@ fn emit_of_a_synthesized_return_expression() {
             "export function f(p) {\n    return Object.assign({ a: 1 }, p);\n}\n".to_string()
         )]
     );
+}
+
+// A file's JS transform, declaration transform, and printers share one emit context and resolver.
+// Re-emitting through the same checker must not keep the prior file's scratch node builder or emit state.
+#[test]
+fn repeated_js_and_declaration_emit_with_shared_context() {
+    let files = [
+        (
+            "/src/tsconfig.json",
+            r#"{"compilerOptions":{"noLib":true,"types":[],"target":"es2015","module":"commonjs","declaration":true,"sourceMap":true,"declarationMap":true},"files":["a.ts"]}"#,
+        ),
+        (
+            "/src/a.ts",
+            "export const value = { answer: 42 };\nexport function identity<T>(arg: T) { return arg; }\n",
+        ),
+    ];
+    let program = new_program(ProgramOptions::new(config_for(&files), host_for(&files)));
+    let written = Mutex::new(Vec::<(String, String)>::new());
+    let write_file = |name: &str, text: &str, _: &mut crate::WriteFileData| -> Result<(), String> {
+        written.lock().unwrap().push((name.to_string(), text.to_string()));
+        Ok(())
+    };
+    let options = crate::EmitOptions { write_file: Some(&write_file), ..Default::default() };
+    program.emit(&Context::default(), &options);
+    let first = written.lock().unwrap().clone();
+    assert!(
+        first.iter().any(|(name, body)| name.ends_with("a.js") && body.contains("exports.value"))
+    );
+    assert!(
+        first.iter().any(|(name, body)| name.ends_with("a.d.ts") && body.contains("identity<T>"))
+    );
+    assert!(first.iter().any(|(name, _)| name.ends_with("a.js.map")));
+    assert!(first.iter().any(|(name, _)| name.ends_with("a.d.ts.map")));
+
+    written.lock().unwrap().clear();
+    program.emit(&Context::default(), &options);
+    assert_eq!(*written.lock().unwrap(), first);
 }

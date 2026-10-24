@@ -1,7 +1,7 @@
 // Not a Go test: an end-to-end smoke test of references, rename, prepareRename, document highlights,
 // implementations and call hierarchy over an in-memory program with the bundled libs. The requests
 // (testdata/refs_smoke/reqs.json) and the expected responses (expected.txt) were recorded from
-// `tsgo-ref --lsp -stdio` with testdata/refs_smoke/drive.py (`python3 drive.py <dir with a.ts b.ts tsconfig.json>
+// `tsgo-ref --lsp -stdio` with testdata/refs_smoke/drive.mjs (`node drive.mjs <dir with a.ts b.ts tsconfig.json>
 // reqs.json`), with the project directory replaced by `/`.
 
 use std::ptr::NonNull;
@@ -13,7 +13,7 @@ use tsrs_compiler::{
 };
 use tsrs_core::P;
 use tsrs_core::context::Context;
-use tsrs_core::json::{self, Value};
+use tsrs_core::json::{self, JsonMap, Value};
 use tsrs_lsproto::{self as lsproto, Json};
 use tsrs_tsoptions::{self as tsoptions, ParseConfigHost};
 use tsrs_vfs::{FS, bundled, vfstest};
@@ -24,7 +24,7 @@ use crate::lsutil::{UserPreferences, new_default_user_preferences};
 use crate::sourcemap::ECMALineInfo;
 use crate::{Host, LanguageService, new_language_service};
 
-struct dataset {
+struct Dataset {
     a: &'static str,
     b: &'static str,
     tsconfig: &'static str,
@@ -38,7 +38,7 @@ struct dataset {
 
 macro_rules! dataset {
     ($dir:literal) => {
-        dataset {
+        Dataset {
             a: include_str!(concat!("../testdata/", $dir, "/a.ts")),
             b: include_str!(concat!("../testdata/", $dir, "/b.ts")),
             tsconfig: include_str!(concat!("../testdata/", $dir, "/tsconfig.json")),
@@ -50,12 +50,12 @@ macro_rules! dataset {
     };
 }
 
-struct testHost {
+struct TestHost {
     fs: Arc<dyn FS>,
     converters: Arc<Converters>,
 }
 
-impl Host for testHost {
+impl Host for TestHost {
     fn use_case_sensitive_file_names(&self) -> bool {
         true
     }
@@ -96,11 +96,11 @@ impl Host for testHost {
     }
 }
 
-struct parseConfigHost {
+struct ParseConfigHostImpl {
     fs: Arc<dyn FS>,
 }
 
-impl ParseConfigHost for parseConfigHost {
+impl ParseConfigHost for ParseConfigHostImpl {
     fn fs(&self) -> &dyn FS {
         &*self.fs
     }
@@ -112,14 +112,14 @@ impl ParseConfigHost for parseConfigHost {
 // A minimal stand-in for the project system's query-checker pool: like Go's project pool (and unlike the
 // compiler pool, whose checkers are locked per acquisition here), a nested acquisition while a checker is held
 // gets another checker. Call hierarchy acquires checkers while holding one, as Go does.
-struct testPoolState {
+struct TestPoolState {
     program: &'static Program,
     slots: Mutex<Vec<(PooledChecker, bool)>>,
 }
 
-struct testPool(&'static testPoolState);
+struct TestPool(&'static TestPoolState);
 
-impl CheckerPool for testPool {
+impl CheckerPool for TestPool {
     fn get_checker(&self, _ctx: &Context, _file: Option<P<tsrs_ast::SourceFile>>) -> CheckerHandle {
         let state = self.0;
         let mut slots = state.slots.lock().unwrap();
@@ -142,13 +142,13 @@ impl CheckerPool for testPool {
     }
 }
 
-fn setup(d: &dataset) -> (LanguageService, Context) {
+fn setup(d: &Dataset) -> (LanguageService, Context) {
     let a_path = format!("/{}", d.a_name);
     let files = [("/tsconfig.json", d.tsconfig), (a_path.as_str(), d.a), ("/b.ts", d.b)];
     let fs: Arc<dyn FS> =
         Arc::new(bundled::wrap_fs(vfstest::from_map(files.iter().map(|&(k, v)| (k, v)), true)));
-    let config_host: &'static parseConfigHost =
-        Box::leak(Box::new(parseConfigHost { fs: std::sync::Arc::clone(&fs) }));
+    let config_host: &'static ParseConfigHostImpl =
+        Box::leak(Box::new(ParseConfigHostImpl { fs: std::sync::Arc::clone(&fs) }));
     let (config, diagnostics) = tsoptions::get_parsed_command_line_of_config_file(
         "/tsconfig.json",
         None,
@@ -161,9 +161,9 @@ fn setup(d: &dataset) -> (LanguageService, Context) {
         new_compiler_host("/", std::sync::Arc::clone(&fs), &bundled::lib_path(), None, None, None);
     let mut options = ProgramOptions::new(P::new(config.unwrap()), host);
     options.create_checker_pool = Some(Arc::new(|program: &'static Program| {
-        let state: &'static testPoolState =
-            Box::leak(Box::new(testPoolState { program, slots: Mutex::new(Vec::new()) }));
-        Box::new(testPool(state)) as Box<dyn CheckerPool>
+        let state: &'static TestPoolState =
+            Box::leak(Box::new(TestPoolState { program, slots: Mutex::new(Vec::new()) }));
+        Box::new(TestPool(state)) as Box<dyn CheckerPool>
     }));
     let program: &'static Program = new_program(options);
     program.bind_source_files();
@@ -184,7 +184,7 @@ fn setup(d: &dataset) -> (LanguageService, Context) {
                 .insert(file_name.to_string(), std::sync::Arc::clone(&line_map));
             Some(line_map)
         });
-    let host = Arc::new(testHost { fs, converters });
+    let host = Arc::new(TestHost { fs, converters });
     let ls = new_language_service(ProjectID("/tsconfig.json".to_string()), program, host, "/b.ts");
     let mut caps = lsproto::ResolvedClientCapabilities {
         vs_supports_visual_studio_extensions: d.vs,
@@ -200,7 +200,7 @@ fn position_of(text: &str, marker: &str, off: usize) -> Value {
     let before = &text[..offset];
     let line = before.matches('\n').count();
     let character = offset - before.rfind('\n').map_or(0, |i| i + 1);
-    let mut pos = tsrs_core::collections::OrderedMap::default();
+    let mut pos = JsonMap::new();
     pos.insert("line".to_string(), Value::Number(line as f64));
     pos.insert("character".to_string(), Value::Number(character as f64));
     Value::Object(pos)
@@ -248,10 +248,10 @@ fn references_rename_classes_exports_destructuring() {
 // recorded with CAPS='{"_vs_supportsVisualStudioExtensions":true,"textDocument":{"implementation":{"linkSupport":true}}}'.
 #[test]
 fn vs_references_and_implementation_links() {
-    run(&dataset { vs: true, ..dataset!("refs_smoke_vs") });
+    run(&Dataset { vs: true, ..dataset!("refs_smoke_vs") });
 }
 
-fn run(d: &dataset) {
+fn run(d: &Dataset) {
     let (ls, ctx) = setup(d);
     let reqs = json::unmarshal(d.reqs).unwrap();
     let Value::Array(reqs) = reqs else { panic!() };
@@ -265,13 +265,13 @@ fn run(d: &dataset) {
         let off =
             get(r, "off").map_or(0, |v| if let Value::Number(n) = v { *n as usize } else { 0 });
         let text = if file == d.a_name { d.a } else { d.b };
-        let mut params = tsrs_core::collections::OrderedMap::default();
-        let mut text_document = tsrs_core::collections::OrderedMap::default();
+        let mut params = JsonMap::new();
+        let mut text_document = JsonMap::new();
         text_document.insert("uri".to_string(), Value::String(format!("file:///{file}")));
         params.insert("textDocument".to_string(), Value::Object(text_document));
         params.insert("position".to_string(), position_of(text, at, off));
         if let Some(Value::Object(extra)) = get(r, "params") {
-            params.extend(extra.into_iter().map(|(k, v)| (k.clone(), v.clone())));
+            params.extend(extra.into_iter().map(|(k, v)| (k.to_string(), v.clone())));
         }
         let params = Value::Object(params);
         let started = std::time::Instant::now();
@@ -288,16 +288,16 @@ fn run(d: &dataset) {
             "textDocument/prepareRename" => {
                 let p: lsproto::PrepareRenameParams = decode(&params);
                 let info = ls.get_rename_info(&ctx, "", &p.text_document.uri, p.position);
-                if !info.can_rename {
-                    format!(
-                        r#"{{"error":{{"code":-32803,"message":"{}"}}}}"#,
-                        info.localized_error_message
-                    )
-                } else {
+                if info.can_rename {
                     to_line(&lsproto::PrepareRenamePlaceholder {
                         range: info.trigger_span,
                         placeholder: info.display_name,
                     })
+                } else {
+                    format!(
+                        r#"{{"error":{{"code":-32803,"message":"{}"}}}}"#,
+                        info.localized_error_message
+                    )
                 }
             }
             "textDocument/documentHighlight" => {

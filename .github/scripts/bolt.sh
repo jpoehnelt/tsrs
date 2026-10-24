@@ -10,10 +10,10 @@
 # gates, and the BOLT-optimized tsrs must print byte-identical output to the input tsrs on both bench projects
 # (one and four checkers). Only then is <dist dir>/tsrs replaced; the input is kept as tsrs.prebolt.
 #
-# Needs llvm-bolt and merge-fdata (LLVM release matching rustc's LLVM) on PATH, Go, Python 3.12+, ts-ref/tsc, and the bench
+# Needs llvm-bolt and merge-fdata (LLVM release matching rustc's LLVM) on PATH, Go, Node.js 24+, ts-ref/tsc, and the bench
 # projects pgo-train.sh set up in <bench work dir>.
 #
-# BOLT_TSRS_ONLY=1 (update-benchmarks.yml): only tsrs, whose BOLT training and byte comparison are the same as
+# BOLT_TSRS_ONLY=1: only tsrs, whose BOLT training and byte comparison are the same as
 # above; <dist dir> then needs no tsrs-test or fourslash_server, and the suite gates (release.yml's job) are not run.
 set -euo pipefail
 
@@ -62,9 +62,11 @@ for b in "${bins[@]}"; do
   grep -E 'BOLT-INFO: (basic block reordering|splitting|ICF)' "$work/$b.bolt.log" || true
 done
 
-# Gates on the BOLT-optimized binaries (same thresholds as ci.yml).
+# All compiler baselines on the BOLT-optimized binaries, in both checker histories.
 if [ ${#bins[@]} -gt 1 ]; then
   TSRS_TEST="$work/tsrs-test.bolt" TSRS_TEST_RESULTS="$work/test-results" .github/scripts/conformance-gate.sh | tail -1
+  TS_TEST_PROGRAM_SINGLE_THREADED=false TSRS_HISTORY=canonical TSRS_TEST="$work/tsrs-test.bolt" \
+    TSRS_TEST_RESULTS="$work/test-results-default" .github/scripts/conformance-gate.sh | tail -1
   TSRS_FOURSLASH_SERVER="$work/fourslash_server.bolt" TSRS_GO_FOURSLASH_WORK="$work/go-fourslash" \
     .github/scripts/go-fourslash-gate.sh | tail -1
 fi

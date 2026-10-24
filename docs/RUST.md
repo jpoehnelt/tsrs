@@ -4,11 +4,16 @@
 performance techniques are in place, rejected or untried.
 
 The Clippy baseline follows oxc's `all`, `pedantic`, `complexity`, `nursery`, and `cargo` groups, with the
-remaining global exceptions documented in `Cargo.toml`. The port keeps the Go source's public API, names, numeric
+remaining global exceptions documented in `Cargo.toml`. The port keeps the Go source's API structure, vocabulary, numeric
 domains, and control-flow shape where changing them would obscure parity, so `Cargo.toml` documents the additional
 active exceptions. The stricter rules below target costs and risks that a port can introduce: copies, allocations,
 argument passing, hash iteration order, threading, and `unsafe`. They draw on Bun, oxc, Rolldown, rust-analyzer, Ruff
 and ty, Biome, Turborepo, and swc. Where a rule copies one of them, it says which.
+
+Rust naming lints are denied: types and traits use UpperCamelCase, functions and fields use snake_case, and constants
+and statics use SCREAMING_SNAKE_CASE. Bitflags types and constants keep their upstream names. Upstream acronym spellings
+remain (`ID`, `APIState`, `JSX`), with local reasoned Clippy expectations where needed. Serialized names, diagnostics
+and native ABI symbols keep their upstream spelling.
 
 ## Clippy
 
@@ -54,16 +59,16 @@ An upgrade is a pull request of its own:
 3. Run the full Clippy command above on macOS and Linux and fix every new finding.
 4. Measure the instruction and peak-memory change per project before and after the upgrade and put it in the pull
    request. The published benchmark workflow is disabled (`bench/README.md`, "CI"); use the local tools or restore the saved
-   workflow to collect the measurements (`bench/regressions.py` sees the rustc change and flags nothing).
+   workflow to collect the measurements (`node bench/bench.mjs regressions` sees the rustc change and flags nothing).
 5. Release builds use the same version; run the `Release` workflow by hand (`dry_run` on) to check them.
 
 ## Source checks
 
-`tools/lint/source.py` (CI: the `lint` job; after Bun's `test/internal/source-lints/`) checks three things
+`tools/lint/source.mjs` (CI: the `lint` job; after Bun's `test/internal/source-lints/`) checks four things
 clippy cannot express:
 
 - **`unsafe impl Send` / `Sync`.** `tools/lint/send_sync.tsv` lists all of them (31 on 2026-10-10). Adding or removing
-  one fails until `tools/lint/source.py --update` records it, so every new cross-thread escape is a reviewed line in a
+  one fails until `tools/lint/source.mjs --update` records it, so every new cross-thread escape is a reviewed line in a
   diff. `P<T>` is `Send + Sync` by decree (PORTING.md, "Threading"), so the compiler does not police these. After Bun's
   `vm-thread-door` inventory.
 - **Weakened atomic orderings.** A `Relaxed`, `Acquire`, `Release` or `AcqRel` needs a `//` comment on its line or in
@@ -76,6 +81,13 @@ clippy cannot express:
   behaviour; LLVM deleted that write in `panic = "abort"` builds and every such build crashed
   (`notes/fix-arena-recycle-uaf.md`). Take the block as a `P<T>`, an address or a raw slice (`*const [T]`). No
   baseline. The arena tests in `.github/workflows/miri.yml` use Miri for the forms a source check cannot see.
+- **Every `unsafe` site and lifetime escape.** `tools/lint/unsafe_sites.tsv` lists each `unsafe` block, `unsafe fn`,
+  `unsafe impl`, `unsafe extern`, `Box::leak`, `Box::from_raw`, `mem::forget`, `transmute` and `assume_static`
+  (498 on 2026-10-21), keyed by file, enclosing item, kind and the first line of its `SAFETY` comment (not by line
+  number), with a class (`boundary`, `core-allocator`, `ownership`, `logic`, `test`), a verdict (`keep`,
+  `safe-api-possible`, `defect-risk`, `unknown`) and a note that `--update` preserves. A site that appears or
+  disappears fails until `--update` records it; a new row starts with the verdict `unknown` and the check names it
+  until someone classifies it. The classification and its findings are in `notes/unsafe-audit.md` (issue #646).
 
 Source checks cover `crates/*/src` and `tasks/*/src`. Test files and generated files are not scanned.
 
@@ -92,7 +104,7 @@ Source checks cover `crates/*/src` and `tasks/*/src`. Test files and generated f
 | Branches | `single_match`, `single_match_else`, `redundant_else`, `collapsible_match`, `if_same_then_else`, `return_and_then` | Simplify branches while preserving the Go source's evaluation order and side effects; propagate absent optional results with `?` at return sites. |
 | Hashing | `disallowed_types` (`std::collections::HashMap` / `HashSet`), `set_contains_or_insert`, `zero_sized_map_values`, `iter_over_hash_type` | PORTING.md already requires `FxHashMap`; std's maps use SipHash. `iter_over_hash_type` flags iterating a hash map or set: the order must never reach a diagnostic or emitted text (sort, or use `OrderedMap`). oxc, Rolldown, rust-analyzer, Bun ban the std maps; Ruff uses `iter_over_hash_type`. |
 | Locks and threads | `mutex_atomic`, `mutex_integer`, `rc_mutex`, `significant_drop_in_scrutinee`, `non_send_fields_in_send_ty` | A mutex around a flag or counter, a lock guard held across a whole `match`, and every new `unsafe impl Send` over non-`Send` fields (the "by decree" impls in PORTING.md "Threading") becomes a reviewed line. |
-| `unsafe` | `undocumented_unsafe_blocks`, `missing_safety_doc`, `unsafe_op_in_unsafe_fn`, `ptr_as_ptr`, `ptr_cast_constness`, `ref_as_ptr`, `borrow_as_ptr`, `cast_ptr_alignment`, `as_ptr_cast_mut`, `transmute_ptr_to_ptr`, `mem_forget`, `disallowed_methods` | Every `unsafe` block states its invariant in a `// SAFETY:` comment. Pointer casts use the forms that cannot change mutability or type by accident. `clippy.toml` lists the unchecked operations (`get_unchecked`, `unwrap_unchecked`, `unreachable_unchecked`, `from_utf8_unchecked`): each needs a reason that cites a measurement. Bun, oxc, rust-analyzer. |
+| `unsafe` | `undocumented_unsafe_blocks`, `missing_safety_doc`, `unsafe_op_in_unsafe_fn`, `ptr_as_ptr`, `ptr_cast_constness`, `ref_as_ptr`, `borrow_as_ptr`, `cast_ptr_alignment`, `as_ptr_cast_mut`, `transmute_ptr_to_ptr`, `mem_forget`, `disallowed_methods` | Every `unsafe` block states its invariant in a `// SAFETY:` comment. Pointer casts use the forms that cannot change mutability or type by accident. `clippy.toml` lists the unchecked operations (`get_unchecked`, `unwrap_unchecked`, `unreachable_unchecked`, `from_utf8_unchecked`): each needs a reason that cites a measurement. `tools/lint/unsafe_sites.tsv` lists every site with a class and a verdict ("Source checks"). Bun, oxc, rust-analyzer. |
 | Leftovers | `dbg_macro`, `todo`, `unimplemented`, `disallowed_macros`, `allow_attributes`, `allow_attributes_without_reason` | Debugging output and placeholders do not land; suppressions are `#[expect]` with a reason. Bun, oxc and Rolldown have all of the first three; rust-analyzer, Ruff and Biome have `dbg_macro`. |
 | Unused code | `dead_code`, `unused_imports`, `unused_variables`, `unused_mut` (rustc) | Clippy denies unused code in its scope; ordinary compiler warnings are denied in every CI build. Unused variables were not prefixed with `_` in bulk: in a port an unused parameter can mean the Rust code dropped something the Go code uses, so each was checked against Go. Bun denies `dead_code`. |
 
@@ -152,10 +164,10 @@ In place:
 | Fx hashing everywhere | `notes/perf-checker-cpu2.md` | oxc, Rolldown, Ruff, rust-analyzer |
 | Lazy members, line maps and rare-field tails | `notes/lazy-members.md`, `notes/mem-lazy.md` | |
 | `#[cold]` slow-path splits | `notes/perf-parse.md` changes 6 to 8: parse instructions 16.66 G -> 15.07 G | oxc, Bun |
-| Instruction counts and peak memory, with regression reporting (automation disabled) | `bench/README.md` "Regression flag": single-threaded tsrs repeats to about 0.001% (instructions) and under 0.4% (peak RSS); the local tools remain available, but the saved `.yml.bak` workflows do not measure commits or comment on PRs | CodSpeed in oxc, Rolldown, Ruff, Biome, swc (simulated counts); Ruff's PR memory report |
+| Instruction counts and peak memory, with advisory CodSpeed reports | `bench/README.md` "Regression flag": single-threaded tsrs repeats to about 0.001% (instructions) and under 0.4% (peak RSS); local tools remain available, while `.github/workflows/benchmark.yml` gates measurements through Clef, builds release artifacts once, and shards CodSpeed CPU simulation and default-checker peak memory alongside PR comparisons. Cross-compiler reports require manual dispatch and remain in workflow artifacts without opening update PRs. Its Graviton walltime jobs are disabled by default after exhausting the included monthly Macro Runner minutes; set the repository variable `CODSPEED_WALLTIME_ENABLED=true` to re-enable them. The saved `.yml.bak` regression workflows remain disabled | CodSpeed in oxc, Rolldown, Ruff, Biome, swc (simulated counts); Ruff's PR memory report |
 | Generated-code freshness check | `tools/gen-check.sh` (run locally) re-runs the eight generators and fails on a diff; it found two hand edits the generators no longer reproduced | oxc, Ruff, rust-analyzer |
 | Unused-dependency checks in CI | `.github/workflows/autofix.yml` runs cargo-shear, updates the lock file after fixes, and rejects pending fixes in merge groups | oxc, Rolldown, Ruff, rust-analyzer |
-| Differential parser fuzzing | `tools/fuzz/parser.py` mutates conformance files and compares the AST hashes of the Go and Rust oracles (`tools/oracle/ast`); the nightly 200,000-mutant workflow is disabled as [fuzz.yml.bak](../.github/workflows/fuzz.yml.bak), while the local tool remains available. First 320,000 mutants: no divergence, no crash (inputs kept valid UTF-8; invalid UTF-8 is read lossily on purpose) | Ruff (`cargo fuzz` on its parser) |
+| Differential parser fuzzing | `tools/fuzz/parser.mjs` mutates conformance files and compares the AST hashes of the Go and Rust oracles (`tools/oracle/ast`); the nightly 200,000-mutant workflow is disabled as [fuzz.yml.bak](../.github/workflows/fuzz.yml.bak), while the local tool remains available. First 320,000 mutants: no divergence, no crash (inputs kept valid UTF-8; invalid UTF-8 is read lossily on purpose) | Ruff (`cargo fuzz` on its parser) |
 | Frame pointers for profiling | `docs/DEBUGGING.md` "Profiling": a `dist` build with `-C force-frame-pointers=yes` for samply / `perf` on Linux (Apple arm64 always keeps them) | Bun |
 | Transparent huge pages for the arena on Linux: large thread-arena chunks 2 MiB-aligned and advised with `MADV_HUGEPAGE`. The mimalloc heap is not advised (mimalloc binaries share `no_thp` and `tsrs_core::allocator::init_mimalloc`): with the advice every partly filled thread-local mimalloc page was resident as a whole 2 MiB page | `notes/linux-x86-round.md`: 2-6% less wall time, 21-48x fewer page faults; `notes/linux-perf.md`: THP off costs 11-12%; `notes/mem-no-thp.md`: no advice on the heap, -25 to -33% peak RSS at 4-64 checkers on 64 vCPUs for +4-9% wall time against `bun check` on the same runner (parse +30%, check +1-5%) | mimalloc (advises its own OS memory unless built with `no_thp`) |
 | Checking a heavy declaration file in statement ranges on several checkers (`crates/tsrs_compiler/src/splitcheck.rs`): stealing moves whole files, so a file costing more than a checker's share is the pass's tail; the type-check pass splits a checked declaration file of at least 40% of a share whose top-level statements are all declarations, and the owner merges the ranges' diagnostics | `notes/perf-next-heavy-files.md`: next-packages-next check phase 0.40 -> 0.12 s at 32 checkers, 0.40 -> 0.17 s at 16, 0.40 -> 0.29 s at 8 on 64 vCPUs, output byte-identical; +1.4-4.5% instructions on otherwise idle checkers, none single-threaded | |

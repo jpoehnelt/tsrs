@@ -30,7 +30,7 @@ fn host_tag(file: P<ast::SourceFile>, at: u32, kind: Kind) -> Option<(P<Node>, P
     }
     visit(file.as_node(), at, kind)
 }
-pub(crate) fn plans(_ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Plan> {
+pub fn plans(_ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Plan> {
     let file = fix.source_file;
     let at = fix.span.pos().expect_source("JSDoc diagnostic");
     let token = astnav::get_token_at_position(file, at);
@@ -96,14 +96,22 @@ pub(crate) fn plans(_ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -
                 };
                 if tag.kind() == Kind::JSDocReturnTag && function.type_node().is_none() {
                     edits.push(Edit::Type(function, typ));
-                } else if tag.kind() == Kind::JSDocParameterTag {
-                    if let Some(parameter) = function.parameters().iter().find(|p| {
+                } else if tag.kind() == Kind::JSDocParameterTag
+                    && let Some(parameter) = function.parameters().iter().find(|p| {
                         p.type_node().is_none()
                             && p.name().map(|n| n.text()) == tag.name().map(|n| n.text())
-                    }) {
-                        let end = parameter.name().unwrap().end().expect_source("parameter");
-                        edits.push(Edit::Raw(tsrs_core::TextRange::new(end,end),format!(": {}",crate::codeactions_fixmissingtypeannotation::type_to_string_for_diag(typ,file,t))));
-                    }
+                    })
+                {
+                    let end = parameter.name().unwrap().end().expect_source("parameter");
+                    edits.push(Edit::Raw(
+                        tsrs_core::TextRange::new(end, end),
+                        format!(
+                            ": {}",
+                            crate::codeactions_fixmissingtypeannotation::type_to_string_for_diag(
+                                typ, file, t
+                            )
+                        ),
+                    ));
                 }
             }
         }

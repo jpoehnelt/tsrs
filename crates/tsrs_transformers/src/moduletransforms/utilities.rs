@@ -1,36 +1,46 @@
 use super::*;
 
 // utilities.go:12
-pub(crate) fn is_declaration_name_of_enum_or_namespace(
+pub fn is_declaration_name_of_enum_or_namespace(
     emit_context: P<EmitContext>,
     node: P<Node>,
 ) -> bool {
-    if let Some(original) = emit_context.most_original(Some(node)) {
-        if let Some(parent) = original.parent() {
-            if let Kind::EnumDeclaration | Kind::ModuleDeclaration = parent.kind() {
-                return Some(original) == parent.name();
-            }
-        }
+    if let Some(original) = emit_context.most_original(Some(node))
+        && let Some(parent) = original.parent()
+        && let Kind::EnumDeclaration | Kind::ModuleDeclaration = parent.kind()
+    {
+        return Some(original) == parent.name();
     }
     false
 }
 
 // utilities.go:22
-pub(crate) fn rewrite_module_specifier(
+pub fn rewrite_module_specifier(
     emit_context: P<EmitContext>,
     node: Option<P<Node>>,
     compiler_options: &CompilerOptions,
+    rewrites: &[tspath::ExtensionRewrite],
+    use_case_sensitive_file_names: bool,
 ) -> Option<P<Node>> {
     let node = node?;
     if !ast::is_string_literal(node)
-        || !tsrs_core::should_rewrite_module_specifier(node.text(), compiler_options)
+        || !compiler_options.rewrite_relative_import_extensions.is_true()
     {
         return Some(node);
     }
-    let updated_text = tspath::change_extension(
-        node.text(),
-        tsrs_tsoptions::outputpaths::get_output_extension(node.text(), compiler_options.jsx),
-    );
+    if !tspath::should_rewrite_extension(node.text(), rewrites, use_case_sensitive_file_names) {
+        return Some(node);
+    }
+    let (rewritten, has_rewrite) =
+        tspath::rewrite_extension(node.text(), rewrites, use_case_sensitive_file_names);
+    let updated_text = if has_rewrite {
+        rewritten
+    } else {
+        tspath::change_extension(
+            node.text(),
+            tsrs_tsoptions::outputpaths::get_output_extension(node.text(), compiler_options.jsx),
+        )
+    };
     if updated_text != node.text() {
         let updated = emit_context
             .factory
@@ -43,7 +53,7 @@ pub(crate) fn rewrite_module_specifier(
 }
 
 // utilities.go:36
-pub(crate) fn create_empty_imports(factory: &printer::NodeFactory) -> P<Node> {
+pub fn create_empty_imports(factory: &printer::NodeFactory) -> P<Node> {
     factory.new_export_declaration(
         None,  /*modifiers*/
         false, /*isTypeOnly*/
@@ -61,7 +71,7 @@ pub(crate) fn create_empty_imports(factory: &printer::NodeFactory) -> P<Node> {
 //
 // Otherwise, a new StringLiteral node representing the module name will be returned.
 // utilities.go:54
-pub(crate) fn get_external_module_name_literal(
+pub fn get_external_module_name_literal(
     factory: &printer::NodeFactory,
     import_node: P<Node>, /*ImportDeclaration | ExportDeclaration | ImportEqualsDeclaration | ImportCall*/
     source_file: Option<P<SourceFile>>,
@@ -70,24 +80,24 @@ pub(crate) fn get_external_module_name_literal(
     compiler_options: &CompilerOptions,
 ) -> Option<P<Node>> {
     let module_name = ast::get_external_module_name(import_node);
-    if let Some(module_name) = module_name {
-        if ast::is_string_literal(module_name) {
-            let mut name = try_get_module_name_from_declaration(
-                import_node,
-                host,
-                factory,
-                resolver,
-                compiler_options,
-            );
-            if name.is_none() {
-                name = try_rename_external_module(factory, module_name, source_file);
-            }
-            if name.is_none() {
-                // !!! propagate token flags (will produce new diffs)
-                name = Some(factory.new_string_literal(module_name.text(), TokenFlags::None));
-            }
-            return name;
+    if let Some(module_name) = module_name
+        && ast::is_string_literal(module_name)
+    {
+        let mut name = try_get_module_name_from_declaration(
+            import_node,
+            host,
+            factory,
+            resolver,
+            compiler_options,
+        );
+        if name.is_none() {
+            name = try_rename_external_module(factory, module_name, source_file);
         }
+        if name.is_none() {
+            // !!! propagate token flags (will produce new diffs)
+            name = Some(factory.new_string_literal(module_name.text(), TokenFlags::None));
+        }
+        return name;
     }
     None
 }
@@ -99,7 +109,7 @@ pub(crate) fn get_external_module_name_literal(
 //
 // Otherwise, a new StringLiteral node representing the module name will be returned.
 // utilities.go:76
-pub(crate) fn try_get_module_name_from_file(
+pub fn try_get_module_name_from_file(
     _factory: &printer::NodeFactory,
     file: Option<P<SourceFile>>,
     _host: Option<()>,
@@ -114,7 +124,7 @@ pub(crate) fn try_get_module_name_from_file(
 }
 
 // utilities.go:87
-pub(crate) fn try_get_module_name_from_declaration(
+pub fn try_get_module_name_from_declaration(
     declaration: P<Node>, /*ImportEqualsDeclaration | ImportDeclaration | ExportDeclaration | ImportCall*/
     host: Option<()>,     /*EmitHost*/
     factory: &printer::NodeFactory,
@@ -133,7 +143,7 @@ pub(crate) fn try_get_module_name_from_declaration(
 // Some bundlers (SystemJS builder) sometimes want to rename dependencies.
 // Here we check if alternative name was provided for a given moduleName and return it if possible.
 // utilities.go:102
-pub(crate) fn try_rename_external_module(
+pub fn try_rename_external_module(
     _factory: &printer::NodeFactory,
     _module_name: P<Node>,
     _source_file: Option<P<SourceFile>>,
@@ -143,7 +153,7 @@ pub(crate) fn try_rename_external_module(
 }
 
 // utilities.go:107
-pub(crate) fn is_file_level_reserved_generated_identifier(
+pub fn is_file_level_reserved_generated_identifier(
     emit_context: P<EmitContext>,
     name: P<Node>,
 ) -> bool {
@@ -155,6 +165,6 @@ pub(crate) fn is_file_level_reserved_generated_identifier(
 // without risk of repeating any sideeffects and whose value could not possibly change between
 // any such locations
 // utilities.go:117
-pub(crate) fn is_simple_inlineable_expression(expression: P<Node>) -> bool {
+pub fn is_simple_inlineable_expression(expression: P<Node>) -> bool {
     !ast::is_identifier(expression) && is_simple_copiable_expression(expression)
 }

@@ -4,6 +4,7 @@ static GLOBAL: mimalloc_safe::MiMalloc = mimalloc_safe::MiMalloc;
 mod baseline;
 mod compile;
 mod compiler_runner;
+mod compiler_test_filter;
 mod diagnosticwriter;
 mod emit_harness;
 mod harnessutil;
@@ -35,7 +36,8 @@ use crate::harnessutil::OptionTable;
 const USAGE: &str = "usage:
   tsrs-test run [--suite compiler|conformance|all] [--filter <substr|regex>] [--list <file>]
                 [--jobs N] [--timeout S] [--recycle N] [--mem-limit MB] [--json <path>] [--panic-summary]
-                [--baselines types,symbols,js | --types --symbols --js]   also compare .types/.symbols/.js baselines
+                [--baselines all|types,symbols,js,jsmap,sourcemap | --types --symbols --js]
+                                      all: compare errors, types, symbols, JavaScript/declarations and source maps
                   (js: emit through Go's pre-/post-emit programs, docs/EMIT.md section 8)
                   (results: <suite>/<name>.{types,symbols}.{actual,diff}, lists types-<class>.txt, symbols-<class>.txt)
   tsrs-test show <name> [--full] [--types] [--symbols] [--js]
@@ -51,7 +53,7 @@ const USAGE: &str = "usage:
                                       the .types/.symbols walk over every non-node_modules, non-lib file of a project
                                       (single-threaded, like tools/oracle/project-types): <out>/manifest.<kind>
                                       (hash, lines, path per file) and <out>/<kind>/<path>.<kind>; --sample walks only
-                                      the listed files (e.g. from tools/project-types-sample.py), in program order";
+                                      the listed files (e.g. from tools/project-types-sample.mjs), in program order";
 
 // Which extra baselines to generate and compare besides `.errors.txt` (bit set of EXTRA_TYPES / EXTRA_SYMBOLS).
 // Asking for either runs both walks (Go runs the type walk before the symbol walk in the same program).
@@ -76,7 +78,7 @@ fn parse_baselines(v: &str) -> u8 {
             "errors" => 0,
             "types" => EXTRA_TYPES,
             "symbols" => EXTRA_SYMBOLS,
-            "all" => EXTRA_TYPES | EXTRA_SYMBOLS,
+            "all" => EXTRA_TYPES | EXTRA_SYMBOLS | EXTRA_JS | EXTRA_JSMAP | EXTRA_SOURCEMAP,
             "js" => EXTRA_JS,
             "jsmap" => EXTRA_JSMAP,
             "sourcemap" => EXTRA_SOURCEMAP,
@@ -180,8 +182,16 @@ impl Selection {
         let re = self.filter.as_deref().and_then(|f| Regex::new(f).ok());
         let mut items = Vec::new();
         for suite in &self.suites {
+            let file_filter = compiler_test_filter::CompilerTestFileFilter::new(
+                suite,
+                self.filter.as_deref(),
+                self.list.as_ref(),
+            );
             for path in compiler_runner::enumerate_test_files(suite) {
                 let basename = tspath::get_base_file_name(&path);
+                if !file_filter.includes(&basename) {
+                    continue;
+                }
                 let expanded = match compiler_runner::expand_test_file(suite, &path, table) {
                     Ok(v) => v,
                     Err(e) => {
@@ -196,19 +206,18 @@ impl Selection {
                 };
                 items.extend(expanded.into_iter().filter_map(|item| {
                     let id = item.id();
-                    if let Some(f) = &self.filter {
-                        if !id.contains(f.as_str()) && !re.as_ref().is_some_and(|r| r.is_match(&id))
-                        {
-                            return None;
-                        }
+                    if let Some(f) = &self.filter
+                        && !id.contains(f.as_str())
+                        && !re.as_ref().is_some_and(|r| r.is_match(&id))
+                    {
+                        return None;
                     }
-                    if let Some(list) = &self.list {
-                        if !list.contains(&id)
-                            && !list.contains(&item.name)
-                            && !list.contains(&basename)
-                        {
-                            return None;
-                        }
+                    if let Some(list) = &self.list
+                        && !list.contains(&id)
+                        && !list.contains(&item.name)
+                        && !list.contains(&basename)
+                    {
+                        return None;
                     }
                     Some(item)
                 }));
@@ -238,7 +247,7 @@ fn cmd_run(mut args: Args) {
     let items = sel.select(&table);
     if items.is_empty() {
         println!("no tests selected");
-        return;
+        std::process::exit(1);
     }
     if !quiet {
         eprintln!("running {} test variants with {jobs} workers", items.len());
@@ -309,6 +318,15 @@ fn cmd_run(mut args: Args) {
     println!("{:.1}s; results in {}", started.elapsed().as_secs_f64(), dir.display());
     if panic_summary {
         report::print_crashes(&this_run, 15, 2);
+    }
+    let failed = |class| !matches!(class, Class::Pass | Class::Skip);
+    if this_run.values().any(|entry| {
+        failed(entry.class)
+            || report::EXTRA_EXTS
+                .iter()
+                .any(|ext| entry.extra(ext).is_some_and(|(class, _)| failed(*class)))
+    }) {
+        std::process::exit(1);
     }
 }
 

@@ -2,7 +2,7 @@
 // text depends on the order in which files resolve. tsrs loads traced programs in the order of Go's single-threaded
 // work group (last queued first, core/workgroup.go), at any checker count. Here `index.ts` imports `./a` then `./b`,
 // which both import `pkg`: Go resolves `b.ts` first, so the lookup in `a.ts`'s (earlier) trace is the cached one.
-// Expected output from tsgo 7.1.0-dev.20260930.4 (the pinned commit) with `--singleThreaded`.
+// Expected output recorded from tsgo 7.1.0-dev.20260930.4 with `--singleThreaded`.
 
 use std::path::PathBuf;
 use std::process::Command;

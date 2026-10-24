@@ -140,7 +140,7 @@ impl FormattingContext {
         if self.tokens_are_on_same_line.get() == Tristate::Unknown {
             self.tokens_are_on_same_line.set(self.range_is_on_one_line(TextRange::from_text_pos(
                 self.current_token_span.loc.pos(),
-                self.next_token_span.loc.end(),
+                self.next_token_span.loc.pos(),
             )));
         }
         self.tokens_are_on_same_line.get() == Tristate::True
@@ -166,7 +166,7 @@ impl FormattingContext {
 }
 
 // context.go:73
-pub(crate) fn with_token_start(loc: P<Node>, file: P<SourceFile>) -> TextRange {
+pub fn with_token_start(loc: P<Node>, file: P<SourceFile>) -> TextRange {
     let start_pos = scanner::get_token_pos_of_node(loc, file, false);
     TextRange::new(start_pos, loc.end().expect_source("parsed nodes have source positions"))
 }

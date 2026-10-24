@@ -47,7 +47,7 @@ pub struct JsxNamesStruct {
     pub library_managed_attributes: &'static str,
 }
 
-pub static JsxNames: JsxNamesStruct = JsxNamesStruct {
+pub static JSX_NAMES: JsxNamesStruct = JsxNamesStruct {
     jsx: "JSX",
     intrinsic_elements: "IntrinsicElements",
     element_class: "ElementClass",
@@ -64,7 +64,7 @@ pub struct ReactNamesStruct {
     pub fragment: &'static str,
 }
 
-pub static ReactNames: ReactNamesStruct = ReactNamesStruct { fragment: "Fragment" };
+pub static REACT_NAMES: ReactNamesStruct = ReactNamesStruct { fragment: "Fragment" };
 
 #[derive(Clone, Default)]
 pub struct JsxElaborationElement {

@@ -1,7 +1,7 @@
 // Go package `outputpaths`.
 
 use tsrs_ast::{self as ast, SourceFile};
-use tsrs_core::tspath::{self, ComparePathsOptions};
+use tsrs_core::tspath::{self, ComparePathsOptions, ExtensionRewrite};
 use tsrs_core::{CompilerOptions, JsxEmit, P};
 
 // commonsourcedirectory.go
@@ -77,7 +77,7 @@ pub fn get_computed_common_source_directory(
 
 pub fn get_common_source_directory(
     options: &CompilerOptions,
-    files: impl Fn() -> Vec<String>,
+    files: impl FnOnce() -> Vec<String>,
     current_directory: &str,
     use_case_sensitive_file_names: bool,
     check_source_files_belong_to_path: Option<&mut dyn FnMut(&[String], &str) -> bool>,
@@ -119,6 +119,9 @@ pub fn get_common_source_directory(
 pub trait OutputPathsHost {
     fn common_source_directory(&self) -> String;
     fn content_mapper_extensions(&self) -> Vec<String>;
+    fn content_mapper_extension_rewrites(&self) -> Vec<ExtensionRewrite> {
+        Vec::new()
+    }
     fn get_current_directory(&self) -> &str;
     fn use_case_sensitive_file_names(&self) -> bool;
 }
@@ -129,6 +132,7 @@ pub struct OutputPaths {
     source_map_file_path: String,
     declaration_file_path: String,
     declaration_map_path: String,
+    external_output_file_path: String,
 }
 
 impl OutputPaths {
@@ -146,6 +150,10 @@ impl OutputPaths {
 
     pub fn declaration_map_path(&self) -> &str {
         &self.declaration_map_path
+    }
+
+    pub fn external_output_file_path(&self) -> &str {
+        &self.external_output_file_path
     }
 }
 
@@ -180,6 +188,10 @@ pub fn get_output_paths_for(
             },
         ) == std::cmp::Ordering::Equal;
     let mut paths = OutputPaths::default();
+    if !source_file.content_mapper().is_empty() {
+        paths.external_output_file_path =
+            get_external_output_file_name(source_file.file_name(), options, host);
+    }
     if source_file.content_mapper().is_empty()
         && (force.js || options.emit_declaration_only != tsrs_core::Tristate::True)
         && !is_json_emitted_to_same_location
@@ -206,10 +218,13 @@ pub fn for_each_emitted_file(
     options: &CompilerOptions,
     mut action: impl FnMut(&OutputPaths, P<SourceFile>) -> bool,
     source_files: &[P<SourceFile>],
+    external_output_source_files: &[P<SourceFile>],
     force_dts_emit: bool,
 ) -> bool {
-    source_files.iter().any(|&source_file| {
-        action(
+    let mut seen = rustc_hash::FxHashSet::default();
+    for &source_file in source_files {
+        seen.insert(source_file);
+        if action(
             &get_output_paths_for(
                 source_file,
                 options,
@@ -217,8 +232,27 @@ pub fn for_each_emitted_file(
                 ForceEmitPaths { dts: force_dts_emit, ..Default::default() },
             ),
             source_file,
-        )
-    })
+        ) {
+            return true;
+        }
+    }
+    for &source_file in external_output_source_files {
+        if seen.contains(&source_file) {
+            continue;
+        }
+        let paths = OutputPaths {
+            external_output_file_path: get_external_output_file_name(
+                source_file.file_name(),
+                options,
+                host,
+            ),
+            ..OutputPaths::default()
+        };
+        if action(&paths, source_file) {
+            return true;
+        }
+    }
+    false
 }
 
 fn extension_refs(extensions: &[String]) -> Vec<&str> {
@@ -287,10 +321,25 @@ pub fn get_output_declaration_file_name_worker(
     )
 }
 
+pub fn get_external_output_file_name(
+    input_file_name: &str,
+    options: &CompilerOptions,
+    host: &dyn OutputPathsHost,
+) -> String {
+    let output_path =
+        get_output_path_without_changing_extension(input_file_name, &options.out_dir, host);
+    let (rewritten, did_rewrite) = tspath::rewrite_extension(
+        &output_path,
+        &host.content_mapper_extension_rewrites(),
+        host.use_case_sensitive_file_names(),
+    );
+    if did_rewrite { rewritten } else { String::new() }
+}
+
 pub fn get_output_extension(file_name: &str, jsx: JsxEmit) -> &'static str {
     if tspath::file_extension_is(file_name, tspath::EXTENSION_JSON) {
         tspath::EXTENSION_JSON
-    } else if jsx == JsxEmit::Preserve
+    } else if jsx == JsxEmit::PRESERVE
         && tspath::file_extension_is_one_of(
             file_name,
             &[tspath::EXTENSION_JSX, tspath::EXTENSION_TSX],
@@ -339,12 +388,24 @@ pub fn get_declaration_emit_output_file_path(
 }
 
 pub fn change_to_declaration_extension(path: &str, host: &dyn OutputPathsHost) -> String {
+    let (rewritten, did_rewrite) = tspath::rewrite_extension(
+        path,
+        &host.content_mapper_extension_rewrites(),
+        host.use_case_sensitive_file_names(),
+    );
+    if did_rewrite {
+        return change_to_declaration_extension_worker(&rewritten);
+    }
     let extensions = host.content_mapper_extensions();
     let extension =
         tspath::get_longest_extension_from_path(path, &extension_refs(&extensions), false);
     if !extension.is_empty() {
         return format!("{}.d{}.ts", tspath::remove_extension(path, &extension), extension);
     }
+    change_to_declaration_extension_worker(path)
+}
+
+fn change_to_declaration_extension_worker(path: &str) -> String {
     let mut path_without_extension = tspath::remove_file_extension(path);
     if path_without_extension == path {
         let extension = tspath::get_any_extension_from_path(path, &[], false);
@@ -416,7 +477,9 @@ pub(crate) fn get_own_emit_output_file_path(
     host: &dyn OutputPathsHost,
     extension: &str,
 ) -> String {
-    let emit_output_file_path_without_extension = if !options.out_dir.is_empty() {
+    let emit_output_file_path_without_extension = if options.out_dir.is_empty() {
+        tspath::remove_file_extension(file_name).to_string()
+    } else {
         let current_directory = host.get_current_directory();
         tspath::remove_file_extension(&get_source_file_path_in_new_dir(
             file_name,
@@ -426,8 +489,6 @@ pub(crate) fn get_own_emit_output_file_path(
             host.use_case_sensitive_file_names(),
         ))
         .to_string()
-    } else {
-        tspath::remove_file_extension(file_name).to_string()
     };
     emit_output_file_path_without_extension + extension
 }
@@ -450,24 +511,22 @@ pub fn get_build_info_file_name(options: &CompilerOptions, opts: &ComparePathsOp
         return String::new();
     }
     let config_file_extension_less = tspath::remove_file_extension(&options.config_file_path);
-    let build_info_extension_less = if !options.out_dir.is_empty() {
-        if !options.root_dir.is_empty() {
-            tspath::resolve_path(
-                &options.out_dir,
-                &[&tspath::get_relative_path_from_directory(
-                    &options.root_dir,
-                    config_file_extension_less,
-                    opts,
-                )],
-            )
-        } else {
-            tspath::combine_paths(
-                &options.out_dir,
-                &[&tspath::get_base_file_name(config_file_extension_less)],
-            )
-        }
-    } else {
+    let build_info_extension_less = if options.out_dir.is_empty() {
         config_file_extension_less.to_string()
+    } else if options.root_dir.is_empty() {
+        tspath::combine_paths(
+            &options.out_dir,
+            &[&tspath::get_base_file_name(config_file_extension_less)],
+        )
+    } else {
+        tspath::resolve_path(
+            &options.out_dir,
+            &[&tspath::get_relative_path_from_directory(
+                &options.root_dir,
+                config_file_extension_less,
+                opts,
+            )],
+        )
     };
     build_info_extension_less + tspath::EXTENSION_TS_BUILD_INFO
 }

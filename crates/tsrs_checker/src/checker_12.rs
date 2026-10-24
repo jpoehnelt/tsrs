@@ -9,18 +9,18 @@ use tsrs_diagnostics as diagnostics;
 //   const (checker.go:26074): UnionReductionNone, UnionReductionLiteral, UnionReductionSubtype
 
 // checker.go:23954
-pub(crate) fn is_mutable_tuple_type(t: P<Type>) -> bool {
+pub fn is_mutable_tuple_type(t: P<Type>) -> bool {
     is_tuple_type(t) && !t.target_tuple_type().readonly.get()
 }
 
 // checker.go:23958
-pub(crate) fn is_generic_tuple_type(t: P<Type>) -> bool {
+pub fn is_generic_tuple_type(t: P<Type>) -> bool {
     is_tuple_type(t)
         && t.target_tuple_type().combined_flags.get().intersects(ElementFlags::Variadic)
 }
 
 // checker.go:23962
-pub(crate) fn is_single_element_generic_tuple_type(t: P<Type>) -> bool {
+pub fn is_single_element_generic_tuple_type(t: P<Type>) -> bool {
     is_generic_tuple_type(t) && t.target_tuple_type().element_infos.get().len() == 1
 }
 
@@ -82,12 +82,12 @@ impl Checker {
         if is_tuple_type(t) || self.get_property_of_type(t, "0").is_some() {
             return true;
         }
-        if self.is_array_like_type(t) {
-            if let Some(length_type) = self.get_type_of_property_of_type(t, "length") {
-                return every_type(self, length_type, |_, t| {
-                    t.flags().intersects(TypeFlags::NumberLiteral)
-                });
-            }
+        if self.is_array_like_type(t)
+            && let Some(length_type) = self.get_type_of_property_of_type(t, "length")
+        {
+            return every_type(self, length_type, |_, t| {
+                t.flags().intersects(TypeFlags::NumberLiteral)
+            });
         }
         false
     }
@@ -137,7 +137,7 @@ impl Checker {
         symbol: P<Symbol>,
     ) -> P<Type> {
         let type_arguments = node.type_arguments();
-        if symbol.check_flags.get().intersects(CheckFlags::Unresolved) {
+        if symbol.check_flags().intersects(CheckFlags::Unresolved) {
             let alias_type_arguments: Vec<P<Type>> =
                 type_arguments.iter().map(|&n| self.get_type_from_type_node(n)).collect();
             let alias = P::new(TypeAlias {
@@ -163,9 +163,9 @@ impl Checker {
                 || num_type_arguments > type_parameters.len()
             {
                 let message = if min_type_argument_count == type_parameters.len() {
-                    &diagnostics::Generic_type_0_requires_1_type_argument_s
+                    &diagnostics::GENERIC_TYPE_0_REQUIRES_1_TYPE_ARGUMENT_S
                 } else {
-                    &diagnostics::Generic_type_0_requires_between_1_and_2_type_arguments
+                    &diagnostics::GENERIC_TYPE_0_REQUIRES_BETWEEN_1_AND_2_TYPE_ARGUMENTS
                 };
                 let name = self.symbol_to_string(symbol);
                 self.error(
@@ -181,10 +181,10 @@ impl Checker {
             // a .d.ts file. See #43622 for an example.
             let alias_symbol = self.get_alias_symbol_for_type_node(node);
             let mut new_alias_symbol = None;
-            if let Some(alias_symbol) = alias_symbol {
-                if is_local_type_alias(symbol) || !is_local_type_alias(alias_symbol) {
-                    new_alias_symbol = Some(alias_symbol);
-                }
+            if let Some(alias_symbol) = alias_symbol
+                && (is_local_type_alias(symbol) || !is_local_type_alias(alias_symbol))
+            {
+                new_alias_symbol = Some(alias_symbol);
             }
             let mut alias_type_arguments: Vec<P<Type>> = Vec::new();
             if new_alias_symbol.is_some() {
@@ -229,16 +229,15 @@ impl Checker {
         alias: Option<P<TypeAlias>>,
     ) -> P<Type> {
         let t = self.get_declared_type_of_symbol(symbol);
-        if t == self.intrinsic_marker_type {
-            if let Some(&type_kind) = intrinsicTypeKinds.get(symbol.name()) {
-                if type_arguments.len() == 1 {
-                    match type_kind {
-                        IntrinsicTypeKind::NoInfer => {
-                            return self.get_no_infer_type(type_arguments[0]);
-                        }
-                        _ => return self.get_string_mapping_type(symbol, type_arguments[0]),
-                    }
+        if t == self.intrinsic_marker_type
+            && let Some(&type_kind) = INTRINSIC_TYPE_KINDS.get(symbol.name())
+            && type_arguments.len() == 1
+        {
+            match type_kind {
+                IntrinsicTypeKind::NoInfer => {
+                    return self.get_no_infer_type(type_arguments[0]);
                 }
+                _ => return self.get_string_mapping_type(symbol, type_arguments[0]),
             }
         }
         let links = self.type_alias_links.get(symbol);
@@ -254,7 +253,11 @@ impl Checker {
                 min_type_argument_count,
                 ast::is_in_js_file(symbol.value_declaration()),
             );
-            let mapper = new_type_mapper(type_parameters, alloc_vec(filled));
+            let filled = match filled {
+                std::borrow::Cow::Borrowed(args) => alloc_slice(args),
+                std::borrow::Cow::Owned(args) => alloc_vec(args),
+            };
+            let mapper = new_type_mapper(type_parameters, filled);
             let result = self.instantiate_type_with_alias(t, Some(mapper), alias);
             // tsrs-only: not cached when the instantiation reported TS2590 (`too_complex_since`).
             if !self.too_complex_since(too_complex_before) {
@@ -267,7 +270,7 @@ impl Checker {
 }
 
 // checker.go:24126
-pub(crate) fn is_local_type_alias(symbol: P<Symbol>) -> bool {
+pub fn is_local_type_alias(symbol: P<Symbol>) -> bool {
     let declaration = symbol.declarations().iter().copied().find(|&d| is_type_alias(d));
     declaration.is_some_and(|d| ast::get_containing_function(d).is_some())
 }
@@ -303,7 +306,7 @@ impl Checker {
 }
 
 // checker.go:24157
-pub(crate) fn get_type_reference_name(node: P<Node>) -> Option<P<Node>> {
+pub fn get_type_reference_name(node: P<Node>) -> Option<P<Node>> {
     match node.kind() {
         Kind::TypeReference => {
             return Some(node.as_type_reference_node().type_name);
@@ -439,12 +442,11 @@ impl Checker {
                         let t = self.get_type_of_symbol(symbol);
                         let signature =
                             self.get_signatures_of_type(t, SignatureKind::Call).first().copied();
-                        if let Some(signature) = signature {
-                            if !signature.type_parameters().is_empty() {
-                                outer_type_parameters
-                                    .extend_from_slice(signature.type_parameters());
-                                return outer_type_parameters;
-                            }
+                        if let Some(signature) = signature
+                            && !signature.type_parameters().is_empty()
+                        {
+                            outer_type_parameters.extend_from_slice(signature.type_parameters());
+                            return outer_type_parameters;
                         }
                     }
                     if kind == Kind::MappedType {
@@ -497,6 +499,7 @@ impl Checker {
                 None
             }
         }));
+        tsrs_core::goslices::sort_func(&mut result, |&a, &b| compare_types(self, Some(a), Some(b)));
         result
     }
 
@@ -551,10 +554,14 @@ impl Checker {
     }
 
     // checker.go:24299
-    pub(crate) fn get_declared_type_of_type_parameter(&mut self, symbol: P<Symbol>) -> P<Type> {
+    pub(crate) fn get_declared_type_of_type_parameter(
+        &mut self,
+        symbol: impl Into<Option<P<Symbol>>>,
+    ) -> P<Type> {
+        let symbol = symbol.into();
         let links = self.declared_type_links.get(symbol);
         if links.declared_type.get().is_none() {
-            links.declared_type.set(Some(self.new_type_parameter(Some(symbol))));
+            links.declared_type.set(Some(self.new_type_parameter(symbol)));
         }
         links.declared_type.get().unwrap()
     }
@@ -598,7 +605,7 @@ impl Checker {
                 let name = self.symbol_to_string(symbol);
                 self.error(
                     Some(error_node),
-                    &diagnostics::Type_alias_0_circularly_references_itself,
+                    &diagnostics::TYPE_ALIAS_0_CIRCULARLY_REFERENCES_ITSELF,
                     &[&name],
                 );
                 t = self.error_type;
@@ -619,7 +626,9 @@ impl Checker {
             for declaration in declarations {
                 if declaration.kind() == Kind::EnumDeclaration {
                     member_type_list.extend(declaration.members().iter().filter_map(|&member| {
-                        if !ast::has_dynamic_name(member) {
+                        if ast::has_dynamic_name(member) {
+                            None
+                        } else {
                             let member_symbol = self.get_symbol_of_declaration(member).unwrap();
                             let value = self.get_enum_member_value(member).value;
                             let member_type = if let Some(value) = value {
@@ -632,13 +641,13 @@ impl Checker {
                                 .declared_type
                                 .set(Some(self.get_fresh_type_of_literal_type(member_type)));
                             Some(member_type)
-                        } else {
-                            None
                         }
                     }));
                 }
             }
-            let enum_type = if !member_type_list.is_empty() {
+            let enum_type = if member_type_list.is_empty() {
+                self.create_computed_enum_type(symbol)
+            } else {
                 let alias =
                     P::new(TypeAlias { symbol: Cell::new(Some(symbol)), ..Default::default() });
                 self.get_union_type_ex(
@@ -647,8 +656,6 @@ impl Checker {
                     Some(alias).into(),
                     None, /*origin*/
                 )
-            } else {
-                self.create_computed_enum_type(symbol)
             };
             if enum_type.flags().intersects(TypeFlags::Union) {
                 enum_type.flags.set(enum_type.flags() | TypeFlags::EnumLiteral);
@@ -721,17 +728,17 @@ impl Checker {
         if ast::is_computed_non_literal_name(name) {
             self.error(
                 Some(name),
-                &diagnostics::Computed_property_names_are_not_allowed_in_enums,
+                &diagnostics::COMPUTED_PROPERTY_NAMES_ARE_NOT_ALLOWED_IN_ENUMS,
                 &[],
             );
         } else if ast::is_big_int_literal(name) {
-            self.error(Some(name), &diagnostics::An_enum_member_cannot_have_a_numeric_name, &[]);
+            self.error(Some(name), &diagnostics::AN_ENUM_MEMBER_CANNOT_HAVE_A_NUMERIC_NAME, &[]);
         } else {
             let text = ast::get_text_of_property_name(name);
             if is_numeric_literal_name(&text) && !ast::is_infinity_or_nan_string(&text) {
                 self.error(
                     Some(name),
-                    &diagnostics::An_enum_member_cannot_have_a_numeric_name,
+                    &diagnostics::AN_ENUM_MEMBER_CANNOT_HAVE_A_NUMERIC_NAME,
                     &[],
                 );
             }
@@ -750,18 +757,17 @@ impl Checker {
         // Otherwise, it is assigned the value of the immediately preceding member plus one, and an error
         // occurs if the immediately preceding member is not a constant enum member.
         let Some(auto_value) = auto_value else {
-            self.error(Some(name), &diagnostics::Enum_member_must_have_initializer, &[]);
+            self.error(Some(name), &diagnostics::ENUM_MEMBER_MUST_HAVE_INITIALIZER, &[]);
             return evaluator::new_result(None, false, false, false);
         };
-        if self.compiler_options.get_isolated_modules() {
-            if let Some(previous) = previous {
-                if previous.initializer().is_some() {
-                    let prev_value = self.get_enum_member_value(previous);
-                    let prev_is_num = matches!(prev_value.value, Some(LiteralValue::Number(_)));
-                    if !prev_is_num || prev_value.resolved_other_files {
-                        self.error(Some(name), &diagnostics::Enum_member_following_a_non_literal_numeric_member_must_have_an_initializer_when_isolatedModules_is_enabled, &[]);
-                    }
-                }
+        if self.compiler_options.get_isolated_modules()
+            && let Some(previous) = previous
+            && previous.initializer().is_some()
+        {
+            let prev_value = self.get_enum_member_value(previous);
+            let prev_is_num = matches!(prev_value.value, Some(LiteralValue::Number(_)));
+            if !prev_is_num || prev_value.resolved_other_files {
+                self.error(Some(name), &diagnostics::ENUM_MEMBER_FOLLOWING_A_NON_LITERAL_NUMERIC_MEMBER_MUST_HAVE_AN_INITIALIZER_WHEN_ISOLATED_MODULES_IS_ENABLED, &[]);
             }
         }
         evaluator::new_result(Some(LiteralValue::Number(*auto_value)), false, false, false)
@@ -777,49 +783,44 @@ impl Checker {
         let initializer = member.initializer().unwrap();
         let result = self.evaluate(initializer, member);
         if result.value.is_some() {
-            if is_const_enum {
-                if let Some(LiteralValue::Number(num_value)) = result.value {
-                    if num_value.is_inf() || num_value.is_nan() {
-                        let message = if num_value.is_nan() {
-                            &diagnostics::X_const_enum_member_initializer_was_evaluated_to_disallowed_value_NaN
-                        } else {
-                            &diagnostics::X_const_enum_member_initializer_was_evaluated_to_a_non_finite_value
-                        };
-                        self.error(Some(initializer), message, &[]);
-                    }
-                }
+            if is_const_enum
+                && let Some(LiteralValue::Number(num_value)) = result.value
+                && (num_value.is_inf() || num_value.is_nan())
+            {
+                let message = if num_value.is_nan() {
+                    &diagnostics::X_CONST_ENUM_MEMBER_INITIALIZER_WAS_EVALUATED_TO_DISALLOWED_VALUE_NA_N
+                } else {
+                    &diagnostics::X_CONST_ENUM_MEMBER_INITIALIZER_WAS_EVALUATED_TO_A_NON_FINITE_VALUE
+                };
+                self.error(Some(initializer), message, &[]);
             }
-            if self.compiler_options.get_isolated_modules() {
-                if let Some(LiteralValue::String(_)) = result.value {
-                    if !result.is_syntactically_string {
-                        let member_name = format!(
-                            "{}.{}",
-                            parent.name().unwrap().text(),
-                            member.name().unwrap().text()
-                        );
-                        self.error(
+            if self.compiler_options.get_isolated_modules()
+                && let Some(LiteralValue::String(_)) = result.value
+                && !result.is_syntactically_string
+            {
+                let member_name =
+                    format!("{}.{}", parent.name().unwrap().text(), member.name().unwrap().text());
+                self.error(
                             Some(initializer),
-                            &diagnostics::X_0_has_a_string_type_but_must_have_syntactically_recognizable_string_syntax_when_isolatedModules_is_enabled,
+                            &diagnostics::X_0_HAS_A_STRING_TYPE_BUT_MUST_HAVE_SYNTACTICALLY_RECOGNIZABLE_STRING_SYNTAX_WHEN_ISOLATED_MODULES_IS_ENABLED,
                             &[&member_name],
                         );
-                    }
-                }
             }
         } else if is_const_enum {
             self.error(
                 Some(initializer),
-                &diagnostics::X_const_enum_member_initializers_must_be_constant_expressions,
+                &diagnostics::X_CONST_ENUM_MEMBER_INITIALIZERS_MUST_BE_CONSTANT_EXPRESSIONS,
                 &[],
             );
         } else if parent.flags().intersects(NodeFlags::Ambient) {
-            self.error(Some(initializer), &diagnostics::In_ambient_enum_declarations_member_initializer_must_be_constant_expression, &[]);
+            self.error(Some(initializer), &diagnostics::IN_AMBIENT_ENUM_DECLARATIONS_MEMBER_INITIALIZER_MUST_BE_CONSTANT_EXPRESSION, &[]);
         } else {
             let t = self.check_expression(initializer);
             self.check_type_assignable_to(
                 t,
                 self.number_type,
                 Some(initializer),
-                Some(&diagnostics::Type_0_is_not_assignable_to_type_1_as_required_for_computed_enum_member_values),
+                Some(&diagnostics::TYPE_0_IS_NOT_ASSIGNABLE_TO_TYPE_1_AS_REQUIRED_FOR_COMPUTED_ENUM_MEMBER_VALUES),
             );
         }
         result
@@ -843,25 +844,24 @@ impl Checker {
                 let Some(symbol) = symbol else {
                     return evaluator::new_result(None, false, false, false);
                 };
-                if expr.kind() == Kind::Identifier {
-                    if ast::is_infinity_or_nan_string(expr.text())
-                        && (Some(symbol)
-                            == self.get_global_symbol(
-                                expr.text(),
-                                SymbolFlags::Value,
-                                None, /*diagnostic*/
-                            ))
-                    {
-                        // Technically we resolved a global lib file here, but the decision to treat this as numeric
-                        // is more predicated on the fact that the single-file resolution *didn't* resolve to a
-                        // different meaning of `Infinity` or `NaN`. Transpilers handle this no problem.
-                        return evaluator::new_result(
-                            Some(LiteralValue::Number(jsnum::from_string(expr.text()))),
-                            false,
-                            false,
-                            false,
-                        );
-                    }
+                if expr.kind() == Kind::Identifier
+                    && ast::is_infinity_or_nan_string(expr.text())
+                    && (Some(symbol)
+                        == self.get_global_symbol(
+                            expr.text(),
+                            SymbolFlags::Value,
+                            None, /*diagnostic*/
+                        ))
+                {
+                    // Technically we resolved a global lib file here, but the decision to treat this as numeric
+                    // is more predicated on the fact that the single-file resolution *didn't* resolve to a
+                    // different meaning of `Infinity` or `NaN`. Transpilers handle this no problem.
+                    return evaluator::new_result(
+                        Some(LiteralValue::Number(jsnum::from_string(expr.text()))),
+                        false,
+                        false,
+                        false,
+                    );
                 }
                 if symbol.flags().intersects(SymbolFlags::EnumMember) {
                     if let Some(location) = location {
@@ -869,34 +869,31 @@ impl Checker {
                     }
                     return self.get_enum_member_value(symbol.value_declaration().unwrap());
                 }
-                if self.is_constant_variable(symbol) {
-                    if let Some(declaration) = symbol.value_declaration() {
-                        if ast::is_variable_declaration(declaration)
-                            && declaration.type_node().is_none()
-                            && declaration.initializer().is_some()
-                            && (location.is_none()
-                                || Some(declaration) != location
-                                    && self.is_block_scoped_name_declared_before_use(
-                                        declaration,
-                                        location.unwrap(),
-                                    ))
-                        {
-                            let result =
-                                self.evaluate(declaration.initializer().unwrap(), declaration);
-                            if location.is_some()
-                                && ast::get_source_file_of_node(location)
-                                    != ast::get_source_file_of_node(declaration)
-                            {
-                                return evaluator::new_result(result.value, false, true, true);
-                            }
-                            return evaluator::new_result(
-                                result.value,
-                                result.is_syntactically_string,
-                                result.resolved_other_files,
-                                true, /*hasExternalReferences*/
-                            );
-                        }
+                if self.is_constant_variable(symbol)
+                    && let Some(declaration) = symbol.value_declaration()
+                    && ast::is_variable_declaration(declaration)
+                    && declaration.type_node().is_none()
+                    && declaration.initializer().is_some()
+                    && (location.is_none()
+                        || Some(declaration) != location
+                            && self.is_block_scoped_name_declared_before_use(
+                                declaration,
+                                location.unwrap(),
+                            ))
+                {
+                    let result = self.evaluate(declaration.initializer().unwrap(), declaration);
+                    if location.is_some()
+                        && ast::get_source_file_of_node(location)
+                            != ast::get_source_file_of_node(declaration)
+                    {
+                        return evaluator::new_result(result.value, false, true, true);
                     }
+                    return evaluator::new_result(
+                        result.value,
+                        result.is_syntactically_string,
+                        result.resolved_other_files,
+                        true, /*hasExternalReferences*/
+                    );
                 }
                 evaluator::new_result(None, false, false, false)
             }
@@ -913,18 +910,16 @@ impl Checker {
                         false,
                         None,
                     );
-                    if let Some(root_symbol) = root_symbol {
-                        if root_symbol.flags().intersects(SymbolFlags::Enum) {
-                            let name = argument_expression.text();
-                            let member =
-                                root_symbol.exports().and_then(|exports| exports.lookup(name));
-                            if let Some(member) = member {
-                                if let Some(location) = location {
-                                    return self.evaluate_enum_member(expr, member, location);
-                                }
-                                return self
-                                    .get_enum_member_value(member.value_declaration().unwrap());
+                    if let Some(root_symbol) = root_symbol
+                        && root_symbol.flags().intersects(SymbolFlags::Enum)
+                    {
+                        let name = argument_expression.text();
+                        let member = root_symbol.exports().and_then(|exports| exports.lookup(name));
+                        if let Some(member) = member {
+                            if let Some(location) = location {
+                                return self.evaluate_enum_member(expr, member, location);
                             }
+                            return self.get_enum_member_value(member.value_declaration().unwrap());
                         }
                     }
                 }
@@ -946,7 +941,7 @@ impl Checker {
             let name = self.symbol_to_string(symbol);
             self.error(
                 Some(expr),
-                &diagnostics::Property_0_is_used_before_being_assigned,
+                &diagnostics::PROPERTY_0_IS_USED_BEFORE_BEING_ASSIGNED,
                 &[&name],
             );
             return evaluator::new_result(None, false, false, false);
@@ -955,7 +950,7 @@ impl Checker {
         if !self.is_block_scoped_name_declared_before_use(declaration, location) {
             self.error(
                 Some(expr),
-                &diagnostics::A_member_initializer_in_a_enum_declaration_cannot_reference_members_declared_after_it_including_members_defined_in_other_enums,
+                &diagnostics::A_MEMBER_INITIALIZER_IN_A_ENUM_DECLARATION_CANNOT_REFERENCE_MEMBERS_DECLARED_AFTER_IT_INCLUDING_MEMBERS_DEFINED_IN_OTHER_ENUMS,
                 &[],
             );
             return evaluator::new_result(
@@ -1172,17 +1167,15 @@ impl Checker {
             // or a pattern literal template type. This enables union types like "a" | "b" | string & {} or
             // "aa" | "ab" | `a${string}` which preserve the literal types for purposes of statement completion.
             let mut no_supertype_reduction = false;
-            if types.len() == 2 {
-                if let Some(empty_index) =
+            if types.len() == 2
+                && let Some(empty_index) =
                     types.iter().position(|&t| t == self.empty_type_literal_type)
-                {
-                    let t = types[1 - empty_index];
-                    no_supertype_reduction = t
-                        .flags()
-                        .intersects(TypeFlags::String | TypeFlags::Number | TypeFlags::BigInt)
+            {
+                let t = types[1 - empty_index];
+                no_supertype_reduction =
+                    t.flags().intersects(TypeFlags::String | TypeFlags::Number | TypeFlags::BigInt)
                         || t.flags().intersects(TypeFlags::TemplateLiteral)
                             && self.is_pattern_literal_type(t);
-                }
             }
             let flags = if no_supertype_reduction {
                 IntersectionFlags::NoSupertypeReduction
@@ -1350,7 +1343,7 @@ impl Checker {
             if tail_count == 1000 {
                 self.error(
                     self.current_node,
-                    &diagnostics::Type_instantiation_is_excessively_deep_and_possibly_infinite,
+                    &diagnostics::TYPE_INSTANTIATION_IS_EXCESSIVELY_DEEP_AND_POSSIBLY_INFINITE,
                     &[],
                 );
                 return self.error_type;
@@ -1416,7 +1409,7 @@ impl Checker {
                         context.inferences.get(),
                         check_type,
                         extends_type,
-                        InferencePriority::NoConstraints | InferencePriority::AlwaysStrict,
+                        InferencePriority::NO_CONSTRAINTS | InferencePriority::ALWAYS_STRICT,
                         false,
                     );
                 }
@@ -1560,49 +1553,46 @@ impl Checker {
         new_type: P<Type>,
         new_mapper: Option<P<TypeMapper>>,
     ) -> (Option<P<ConditionalRoot>>, Option<P<TypeMapper>>) {
-        if new_type.flags().intersects(TypeFlags::Conditional) {
-            if let Some(new_mapper) = new_mapper {
-                let new_root = new_type.as_conditional_type().root.get().unwrap();
-                if !new_root.outer_type_parameters.get().is_empty() {
-                    let conditional_mapper = new_type.as_conditional_type().mapper.get();
-                    let type_param_mapper =
-                        Self::combine_type_mappers(conditional_mapper, new_mapper);
-                    let type_arguments: Vec<P<Type>> = new_root
-                        .outer_type_parameters
-                        .get()
-                        .iter()
-                        .map(|&t| type_param_mapper.map(self, t))
-                        .collect();
-                    if conditional_mapper.is_some() {
-                        // SAFETY: the composite made above, used only by those `map` calls.
-                        unsafe { recycle_mapper(type_param_mapper) };
-                    }
-                    let type_argument_list = tsrs_core::alloc_slice_recycled(&type_arguments);
-                    let new_root_mapper =
-                        new_type_mapper(new_root.outer_type_parameters.get(), type_argument_list);
-                    let mut new_check_type = None;
-                    if new_root.is_distributive.get() {
-                        new_check_type =
-                            Some(self.get_mapped_type(
-                                new_root.check_type.get().unwrap(),
-                                new_root_mapper,
-                            ));
-                    }
-                    if new_check_type.is_none()
-                        || new_check_type == new_root.check_type.get()
-                        || !new_check_type
-                            .unwrap()
-                            .flags()
-                            .intersects(TypeFlags::Union | TypeFlags::Never)
-                    {
-                        // The caller's `getConditionalType` loops with this mapper and recycles it on return unless
-                        // the result kept it (99% do not, notes/mem-scoped-arenas.md).
-                        self.scratch_mapper_lists.push((new_root_mapper, type_argument_list));
-                        return (Some(new_root), Some(new_root_mapper));
-                    }
-                    // SAFETY: made above; mapping a type through it stores nothing.
-                    unsafe { recycle_mapper_with_targets(new_root_mapper, type_argument_list) };
+        if new_type.flags().intersects(TypeFlags::Conditional)
+            && let Some(new_mapper) = new_mapper
+        {
+            let new_root = new_type.as_conditional_type().root.get().unwrap();
+            if !new_root.outer_type_parameters.get().is_empty() {
+                let conditional_mapper = new_type.as_conditional_type().mapper.get();
+                let type_param_mapper = Self::combine_type_mappers(conditional_mapper, new_mapper);
+                let type_arguments: Vec<P<Type>> = new_root
+                    .outer_type_parameters
+                    .get()
+                    .iter()
+                    .map(|&t| type_param_mapper.map(self, t))
+                    .collect();
+                if conditional_mapper.is_some() {
+                    // SAFETY: the composite made above, used only by those `map` calls.
+                    unsafe { recycle_mapper(type_param_mapper) };
                 }
+                let type_argument_list = tsrs_core::alloc_slice_recycled(&type_arguments);
+                let new_root_mapper =
+                    new_type_mapper(new_root.outer_type_parameters.get(), type_argument_list);
+                let mut new_check_type = None;
+                if new_root.is_distributive.get() {
+                    new_check_type = Some(
+                        self.get_mapped_type(new_root.check_type.get().unwrap(), new_root_mapper),
+                    );
+                }
+                if new_check_type.is_none()
+                    || new_check_type == new_root.check_type.get()
+                    || !new_check_type
+                        .unwrap()
+                        .flags()
+                        .intersects(TypeFlags::Union | TypeFlags::Never)
+                {
+                    // The caller's `getConditionalType` loops with this mapper and recycles it on return unless
+                    // the result kept it (99% do not, notes/mem-scoped-arenas.md).
+                    self.scratch_mapper_lists.push((new_root_mapper, type_argument_list));
+                    return (Some(new_root), Some(new_root_mapper));
+                }
+                // SAFETY: made above; mapping a type through it stores nothing.
+                unsafe { recycle_mapper_with_targets(new_root_mapper, type_argument_list) };
             }
         }
         (None, None)
@@ -1760,7 +1750,7 @@ impl Checker {
         if links.resolved_type.get().is_none() {
             let n = node.as_import_type_node();
             if !ast::is_literal_import_type_node(node) {
-                self.error(Some(n.argument), &diagnostics::String_literal_expected, &[]);
+                self.error(Some(n.argument), &diagnostics::STRING_LITERAL_EXPECTED, &[]);
                 self.symbol_node_links.get(node).resolved_symbol.set(Some(self.unknown_symbol));
                 links.resolved_type.set(Some(self.error_type));
                 return links.resolved_type.get().unwrap();
@@ -1837,7 +1827,7 @@ impl Checker {
                         let member_name = tsrs_scanner::declaration_name_to_string(Some(current));
                         self.error(
                             Some(current),
-                            &diagnostics::Namespace_0_has_no_exported_member_1,
+                            &diagnostics::NAMESPACE_0_HAS_NO_EXPORTED_MEMBER_1,
                             &[&namespace_name, &member_name],
                         );
                         links.resolved_type.set(Some(self.error_type));
@@ -1863,9 +1853,9 @@ impl Checker {
                 )));
             } else {
                 let message = if target_meaning == SymbolFlags::Value {
-                    &diagnostics::Module_0_does_not_refer_to_a_value_but_is_used_as_a_value_here
+                    &diagnostics::MODULE_0_DOES_NOT_REFER_TO_A_VALUE_BUT_IS_USED_AS_A_VALUE_HERE
                 } else {
-                    &diagnostics::Module_0_does_not_refer_to_a_type_but_is_used_as_a_type_here_Did_you_mean_typeof_import_0
+                    &diagnostics::MODULE_0_DOES_NOT_REFER_TO_A_TYPE_BUT_IS_USED_AS_A_TYPE_HERE_DID_YOU_MEAN_TYPEOF_IMPORT_0
                 };
                 let text = n.argument.as_literal_type_node().literal.text();
                 self.error(Some(node), message, &[&text]);
@@ -2208,10 +2198,10 @@ impl Checker {
             let Some(rest_type) = c.get_rest_type_of_tuple_type(t) else {
                 return Some(c.undefined_type);
             };
-            if let Some(undefined_like_type) = undefined_like_type {
-                if index >= Number(get_total_fixed_element_count(t.target_tuple_type()) as f64) {
-                    return Some(c.get_union_type(&[rest_type, undefined_like_type]));
-                }
+            if let Some(undefined_like_type) = undefined_like_type
+                && index >= Number(get_total_fixed_element_count(t.target_tuple_type()) as f64)
+            {
+                return Some(c.get_union_type(&[rest_type, undefined_like_type]));
             }
             Some(rest_type)
         })
@@ -2386,19 +2376,16 @@ impl Checker {
                     let type_parameter = self.get_homomorphic_type_variable(mapped_type);
                     if let Some(type_parameter) = type_parameter {
                         let constraint = self.get_constraint_of_type_parameter(type_parameter);
-                        if let Some(constraint) = constraint {
-                            if every_type(
+                        if let Some(constraint) = constraint
+                            && every_type(
                                 self,
                                 constraint,
                                 super::checker::Checker::is_array_or_tuple_type,
-                            ) {
-                                constraints.push(
-                                    self.get_union_type(&[
-                                        self.number_type,
-                                        self.numeric_string_type,
-                                    ]),
-                                );
-                            }
+                            )
+                        {
+                            constraints.push(
+                                self.get_union_type(&[self.number_type, self.numeric_string_type]),
+                            );
                         }
                     }
                 }
@@ -2435,7 +2422,7 @@ impl Checker {
 }
 
 // checker.go:25469
-pub(crate) fn is_unary_tuple_type_node(node: P<Node>) -> bool {
+pub fn is_unary_tuple_type_node(node: P<Node>) -> bool {
     ast::is_tuple_type_node(node) && node.elements().len() == 1
 }
 
@@ -2641,11 +2628,11 @@ impl Checker {
         let mut alias = alias;
         if alias.is_none() {
             alias = self.get_alias_for_type_node(node);
-            if let Some(a) = alias {
-                if mapper.is_some() {
-                    let type_arguments = self.instantiate_types(a.type_arguments.get(), mapper);
-                    a.type_arguments.set(alloc_vec(type_arguments));
-                }
+            if let Some(a) = alias
+                && mapper.is_some()
+            {
+                let type_arguments = self.instantiate_types(a.type_arguments.get(), mapper);
+                a.type_arguments.set(alloc_vec(type_arguments));
             }
         }
         let t = self.new_object_type(ObjectFlags::Reference, target.symbol());
@@ -2688,20 +2675,20 @@ impl Checker {
         data.set_members(members);
         let properties = self.get_named_members(members, t.symbol());
         data.set_properties(alloc_vec(properties));
-        if !call_signatures.is_empty() {
-            if !construct_signatures.is_empty() {
-                data.set_signatures(alloc_vec([call_signatures, construct_signatures].concat()));
-            } else {
-                data.set_signatures(alloc_slice(call_signatures));
-            }
-            data.set_call_signature_count(call_signatures.len());
-        } else {
-            if !construct_signatures.is_empty() {
-                data.set_signatures(alloc_slice(construct_signatures));
-            } else {
+        if call_signatures.is_empty() {
+            if construct_signatures.is_empty() {
                 data.set_signatures(&[]);
+            } else {
+                data.set_signatures(alloc_slice(construct_signatures));
             }
             data.set_call_signature_count(0);
+        } else {
+            if construct_signatures.is_empty() {
+                data.set_signatures(alloc_slice(call_signatures));
+            } else {
+                data.set_signatures(alloc_vec([call_signatures, construct_signatures].concat()));
+            }
+            data.set_call_signature_count(call_signatures.len());
         }
         data.set_index_infos(alloc_slice(index_infos));
     }
@@ -2853,7 +2840,9 @@ impl Checker {
         sig.id.set(SignatureId(self.signature_count));
         sig.flags.set(flags);
         sig.declaration.set(declaration);
-        sig.type_parameters.set(alloc_slice(type_parameters));
+        sig.set_type_parameters(
+            (!type_parameters.is_empty()).then(|| alloc_slice(type_parameters)),
+        );
         sig.parameters.set(alloc_slice(parameters));
         sig.set_this_parameter(this_parameter);
         sig.resolved_return_type.set(resolved_return_type);
@@ -2914,7 +2903,7 @@ impl Checker {
 }
 
 // checker.go:25771
-pub(crate) fn is_fresh_literal_type(t: P<Type>) -> bool {
+pub fn is_fresh_literal_type(t: P<Type>) -> bool {
     t.flags().intersects(TypeFlags::Freshable) && t.as_literal_type().fresh_type.get() == Some(t)
 }
 
@@ -2985,7 +2974,7 @@ impl Checker {
 }
 
 // checker.go:25816
-pub(crate) fn get_string_literal_value(t: P<Type>) -> &'static str {
+pub fn get_string_literal_value(t: P<Type>) -> &'static str {
     match t.as_literal_type().value.get() {
         Some(LiteralValue::String(s)) => s,
         _ => panic!("getStringLiteralValue: not a string literal"),
@@ -2993,7 +2982,7 @@ pub(crate) fn get_string_literal_value(t: P<Type>) -> &'static str {
 }
 
 // checker.go:25820
-pub(crate) fn get_number_literal_value(t: P<Type>) -> Number {
+pub fn get_number_literal_value(t: P<Type>) -> Number {
     match t.as_literal_type().value.get() {
         Some(LiteralValue::Number(n)) => n,
         _ => panic!("getNumberLiteralValue: not a number literal"),
@@ -3001,7 +2990,7 @@ pub(crate) fn get_number_literal_value(t: P<Type>) -> Number {
 }
 
 // checker.go:25824
-pub(crate) fn get_big_int_literal_value(t: P<Type>) -> PseudoBigInt {
+pub fn get_big_int_literal_value(t: P<Type>) -> PseudoBigInt {
     match t.as_literal_type().value.get() {
         Some(LiteralValue::BigInt(v)) => v,
         _ => panic!("getBigIntLiteralValue: not a bigint literal"),
@@ -3009,7 +2998,7 @@ pub(crate) fn get_big_int_literal_value(t: P<Type>) -> PseudoBigInt {
 }
 
 // checker.go:25828
-pub(crate) fn get_boolean_literal_value(t: P<Type>) -> bool {
+pub fn get_boolean_literal_value(t: P<Type>) -> bool {
     match t.as_literal_type().value.get() {
         Some(LiteralValue::Boolean(b)) => b,
         _ => panic!("getBooleanLiteralValue: not a boolean literal"),
@@ -3057,7 +3046,7 @@ impl Checker {
 }
 
 // checker.go:25863
-pub(crate) fn is_literal_type(t: P<Type>) -> bool {
+pub fn is_literal_type(t: P<Type>) -> bool {
     if t.flags().intersects(TypeFlags::Boolean) {
         return true;
     }
@@ -3071,12 +3060,12 @@ pub(crate) fn is_literal_type(t: P<Type>) -> bool {
 }
 
 // checker.go:25876
-pub(crate) fn is_neither_unit_type_nor_never(t: P<Type>) -> bool {
+pub fn is_neither_unit_type_nor_never(t: P<Type>) -> bool {
     !t.flags().intersects(TypeFlags::Unit | TypeFlags::Never)
 }
 
 // checker.go:25880
-pub(crate) fn is_unit_type(t: P<Type>) -> bool {
+pub fn is_unit_type(t: P<Type>) -> bool {
     t.flags().intersects(TypeFlags::Unit)
 }
 
@@ -3312,10 +3301,10 @@ impl Checker {
         }
         let u = t.as_union_type();
         let mut types = u.types.get();
-        if let Some(origin) = u.origin() {
-            if origin.flags().intersects(TypeFlags::Union) {
-                types = origin.types();
-            }
+        if let Some(origin) = u.origin()
+            && origin.flags().intersects(TypeFlags::Union)
+        {
+            types = origin.types();
         }
         let mut mapped_types = self.free_type_lists.pop().unwrap_or_default();
         let mut changed = false;
@@ -3438,7 +3427,7 @@ impl Checker {
 }
 
 /// Kind of a type for the creation-site counters (`crate::sitecount`).
-pub(crate) fn type_kind_label(flags: TypeFlags, object_flags: ObjectFlags) -> &'static str {
+pub fn type_kind_label(flags: TypeFlags, object_flags: ObjectFlags) -> &'static str {
     if flags.intersects(TypeFlags::Object) {
         if object_flags.intersects(ObjectFlags::ClassOrInterface) {
             "object:class/interface"

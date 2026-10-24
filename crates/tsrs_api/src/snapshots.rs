@@ -1,15 +1,17 @@
 // session.go handleCreateSnapshot / handleUpdateSnapshot / toAPISnapshotRequest / reconcileSnapshotOpens /
-// createSnapshotResponse / computeSnapshotChanges / handleRelease / handleGetDefaultProjectForFile, and
-// proto.go NewProjectResponse.
+// toLanguageServerSnapshotUpdate / handleGetCurrentLanguageServerSnapshot / createSnapshotResponse /
+// computeSnapshotChanges / handleRelease / handleGetDefaultProjectForFile, and proto.go NewProjectResponse.
 
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 use tsrs_core::P;
-use tsrs_core::collections::{OrderedMap, Set};
-use tsrs_core::json::Value;
+use tsrs_core::collections::Set;
+use tsrs_core::json::{JsonMap, Value};
 use tsrs_core::tspath::Path;
+use tsrs_ls::autoimport::ProjectID as AutoImportProjectID;
+use tsrs_ls::lsutil;
 use tsrs_project::dirty::Shared;
 use tsrs_project::{
     APICreateProgramRequest, APIReconfigureProgramRequest, APISnapshotRequest, FileChangeSummary,
@@ -22,7 +24,7 @@ use crate::config::config_file_response;
 use crate::diagnostics::diagnostic_from_response;
 use crate::handler::{ApiError, ApiResult};
 use crate::requestfs::{self, RequestFileSystem, RequestParams};
-use crate::session::{OpenState, Session};
+use crate::session::{LanguageServerState, OpenState, Session};
 use crate::wire::{DocumentIdentifier, Obj, Params, b, s, strings};
 
 fn file_uri(file_name: &str) -> tsrs_lsproto::DocumentUri {
@@ -42,23 +44,14 @@ impl DocumentIdentifier {
 /// Go `NewProjectResponse`.
 pub fn project_response(p: &Project) -> Value {
     let command_line = p.command_line.expect("project_response called with unloaded project");
-    let config_file_name = if p.kind == tsrs_project::Kind::Configured {
-        p.config_file_name().to_string()
-    } else {
-        String::new()
-    };
-    let options = match command_line.compiler_options() {
-        Some(o) => gojson::compiler_options_to_go_json(&o),
-        None => Value::Null,
-    };
+    let config_file_name =
+        (p.kind == tsrs_project::Kind::Configured).then(|| s(p.config_file_name().to_string()));
     Obj::new()
         .set("id", s(p.id().0))
-        .set("configFileName", s(config_file_name))
+        .set_opt("configFileName", config_file_name)
         .set("currentDirectory", s(p.current_directory()))
         .set("dirty", b(p.is_dirty()))
         .set("parsedCommandLine", config_file_response(&command_line))
-        .set("rootFiles", strings(command_line.file_names().iter().cloned()))
-        .set("compilerOptions", options)
         .build()
 }
 
@@ -79,7 +72,7 @@ fn compute_snapshot_changes(prev: &Snapshot, next: &Snapshot) -> Value {
     let prev_projects = prev.project_collection.projects_by_id();
     let next_projects = next.project_collection.projects_by_id();
     let mut removed = Vec::new();
-    let mut changed = OrderedMap::default();
+    let mut changed = JsonMap::new();
     for (id, old) in &prev_projects {
         match next_projects.get(id) {
             None => removed.push(s(old.id().0)),
@@ -144,6 +137,36 @@ struct RequestEcho {
     open_files: Option<Vec<DocumentIdentifier>>,
 }
 
+/// Go `languageServerSnapshotUpdate`.
+struct LanguageServerSnapshotUpdate {
+    request: Arc<APISnapshotRequest>,
+    open_state: OpenState,
+}
+
+impl LanguageServerSnapshotUpdate {
+    /// Go `languageServerSnapshotUpdate.commit`.
+    fn commit(&self, state: &mut LanguageServerState, snapshot: &Snapshot) {
+        state.open_state = self.open_state.clone();
+        if let Some(remove_programs) = &self.request.remove_programs {
+            #[expect(
+                clippy::iter_over_hash_type,
+                reason = "removals of distinct keys commute; Go ranges the set too"
+            )]
+            for program_id in remove_programs.keys() {
+                state.created_programs.delete(program_id);
+            }
+        }
+        for program in snapshot.created_programs() {
+            let program = program.as_ref().expect("created program result missing");
+            let id = program.id();
+            let Some(program_id) = id.synthetic() else {
+                panic!("created program has non-synthetic project ID: {}", id.0);
+            };
+            state.created_programs.add(program_id);
+        }
+    }
+}
+
 impl Session {
     fn create_programs_request(
         &self,
@@ -161,9 +184,7 @@ impl Session {
             .iter()
             .map(|d| d.to_absolute_file_name(cwd))
             .collect();
-        let mut options = gojson::compiler_options_from_go_json(p.get("compilerOptions"))
-            .map_err(ApiError::invalid_request)?;
-        crate::predecode::exact_compiler_options_ints(p.get("compilerOptions"), &mut options);
+        let options = crate::raw_options::compiler_options_from_raw(p.get("compilerOptions"), cwd)?;
         let mut request = APICreateProgramRequest {
             root_file_names,
             compiler_options: Some(P::new(options)),
@@ -370,6 +391,34 @@ impl Session {
         state
     }
 
+    /// Go `toLanguageServerSnapshotUpdate`.
+    fn to_language_server_snapshot_update(
+        &self,
+        changes: Params,
+        state: &LanguageServerState,
+    ) -> ApiResult<(LanguageServerSnapshotUpdate, RequestEcho)> {
+        let (mut request, echo) = self.to_api_snapshot_request(changes)?;
+        let open_state = self.reconcile_snapshot_opens(&mut request, &state.open_state);
+
+        if let Some(remove_programs) = &mut request.remove_programs {
+            let keys: Vec<SyntheticProjectID> = remove_programs.keys().iter().cloned().collect();
+            for program_id in keys {
+                if !state.created_programs.has(&program_id) {
+                    remove_programs.delete(&program_id);
+                }
+            }
+        }
+        for reconfigure in &request.reconfigure_programs {
+            if !state.created_programs.has(&reconfigure.program_id) {
+                return Err(ApiError::client(format!(
+                    "synthetic program is not owned by this API session: {}",
+                    reconfigure.program_id.0
+                )));
+            }
+        }
+        Ok((LanguageServerSnapshotUpdate { request: Arc::new(request), open_state }, echo))
+    }
+
     /// Go `toFileChangeSummary`.
     fn to_file_change_summary(&self, v: &Value) -> ApiResult<FileChangeSummary> {
         let mut summary = FileChangeSummary::default();
@@ -487,10 +536,10 @@ impl Session {
     fn module_resolution_error(snapshot: &Snapshot) -> ApiResult<()> {
         if let Some(result) =
             snapshot.project_collection.projects().into_iter().find_map(|project| {
-                if let Some(program) = project.get_program() {
-                    if let Some(err) = program.module_resolution_error() {
-                        return Some(Err(ApiError::internal(err.to_string())));
-                    }
+                if let Some(program) = project.get_program()
+                    && let Some(err) = program.module_resolution_error()
+                {
+                    return Some(Err(ApiError::internal(err.to_string())));
                 }
 
                 None
@@ -499,6 +548,51 @@ impl Session {
             return result;
         }
         Ok(())
+    }
+
+    /// Go `validatePreparedAutoImports`: a prepared snapshot is returned only if its
+    /// registry can serve auto-imports for the requested file and default project.
+    fn validate_prepared_auto_imports(
+        &self,
+        snapshot: &Snapshot,
+        file: Option<&DocumentIdentifier>,
+    ) -> ApiResult<()> {
+        let Some(file) = file else { return Ok(()) };
+        let uri = file.to_uri(self.current_directory());
+        let prepared = snapshot.get_default_project(&uri).is_some_and(|project| {
+            snapshot.auto_import_registry().is_some_and(|registry| {
+                registry.is_prepared_for_importing_file(
+                    &uri.file_name(),
+                    &AutoImportProjectID(project.id().0),
+                    snapshot.user_preferences(),
+                )
+            })
+        });
+        if prepared {
+            Ok(())
+        } else {
+            Err(ApiError::client(format!("could not prepare auto-imports for {file}")))
+        }
+    }
+
+    /// Go's two snapshot handlers copy the extra fields after `toAPISnapshotRequest`.
+    fn snapshot_preferences_and_auto_imports(
+        &self,
+        p: Params,
+        req: &mut APISnapshotRequest,
+    ) -> ApiResult<Option<DocumentIdentifier>> {
+        if let Value::Object(config) = p.get("userPreferences") {
+            req.user_preferences = Some(lsutil::parse_api_user_preferences(config));
+        }
+        let file = if p.has("prepareAutoImports") {
+            Some(p.document("prepareAutoImports")?)
+        } else {
+            None
+        };
+        if let Some(file) = &file {
+            req.prepare_auto_imports = file.to_uri(self.current_directory());
+        }
+        Ok(file)
     }
 
     /// Go `requestfilesystem.NewForUpdate` for the request's optional `fileSystem`.
@@ -514,7 +608,7 @@ impl Session {
         let params = RequestParams::parse(p.get("fileSystem")).map_err(ApiError::client)?;
         let fs = requestfs::new_for_update(
             &params,
-            ScopedFs::wrap(self.snapshot_host_fs()),
+            ScopedFs::wrap(self.fs()),
             base,
             self.current_directory(),
             file_changes,
@@ -529,6 +623,7 @@ impl Session {
             p.object()?;
         }
         let (mut req, echo) = self.to_api_snapshot_request(p)?;
+        let prepare_auto_imports = self.snapshot_preferences_and_auto_imports(p, &mut req)?;
         let open_state = self.reconcile_snapshot_opens(&mut req, &OpenState::default());
         let mut file_changes = self.to_file_change_summary(p.get("fileNotifications"))?;
         let snapshot_fs =
@@ -560,6 +655,12 @@ impl Session {
                 )));
             }
         };
+        if let Err(e) =
+            self.validate_prepared_auto_imports(&snapshot, prepare_auto_imports.as_ref())
+        {
+            snapshot.deref();
+            return Err(e);
+        }
         if let Err(e) = Self::module_resolution_error(&snapshot) {
             snapshot.deref();
             return Err(e);
@@ -585,6 +686,7 @@ impl Session {
             changes.object()?;
         }
         let (mut req, echo) = self.to_api_snapshot_request(changes)?;
+        let prepare_auto_imports = self.snapshot_preferences_and_auto_imports(changes, &mut req)?;
         let open_state = self.reconcile_snapshot_opens(&mut req, &base.open_state);
         let mut file_changes = self.to_file_change_summary(changes.get("fileNotifications"))?;
         let new_fs =
@@ -615,6 +717,12 @@ impl Session {
                 )));
             }
         };
+        if let Err(e) =
+            self.validate_prepared_auto_imports(&snapshot, prepare_auto_imports.as_ref())
+        {
+            snapshot.deref();
+            return Err(e);
+        }
         if let Err(e) = Self::module_resolution_error(&snapshot) {
             snapshot.deref();
             return Err(e);
@@ -627,6 +735,51 @@ impl Session {
             }
         };
         self.register_snapshot(snapshot, open_state, snapshot_fs);
+        Ok(response)
+    }
+
+    /// Go `handleGetCurrentLanguageServerSnapshot`.
+    pub(crate) fn handle_get_current_language_server_snapshot(
+        &self,
+        p: Params,
+    ) -> ApiResult<Value> {
+        let Some(project_session) = &self.project_session else {
+            return Err(ApiError::client(
+                "getCurrentLanguageServerSnapshot requires an LSP-connected API session",
+            ));
+        };
+        let base_handle = p.u64("baseSnapshot")?;
+        // retainSnapshotData: the Arc pins the base for the duration of the update.
+        let base = if base_handle != 0 { Some(self.snapshot_data(base_handle)?) } else { None };
+
+        let mut state = self.language_server.lock().unwrap();
+
+        let changes = Params(p.get("changes"));
+        if !matches!(changes.0, Value::Null) {
+            changes.object()?;
+        }
+        let (update, echo) = self.to_language_server_snapshot_update(changes, &state)?;
+
+        let ctx = project_session.with_current_locale(&tsrs_core::context::Context::background());
+        let snapshot = project_session
+            .api_update(&ctx, &FileChangeSummary::default(), Some(Arc::clone(&update.request)))
+            .map_err(|err| {
+                ApiError::client(format!(
+                    "failed to update language server snapshot: {}",
+                    err.message
+                ))
+            })?;
+
+        update.commit(&mut state, &snapshot);
+        let response =
+            match self.snapshot_response(&snapshot, base.as_ref().map(|b| &*b.snapshot), &echo) {
+                Ok(r) => r,
+                Err(e) => {
+                    snapshot.deref();
+                    return Err(e);
+                }
+            };
+        self.register_snapshot(snapshot, state.open_state.clone(), None);
         Ok(response)
     }
 

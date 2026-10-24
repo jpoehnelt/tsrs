@@ -1,11 +1,11 @@
 // Port of execute/build/orchestrator.go, including watch mode (`tsc -b --watch`: `Watch` / `DoCycle`).
 //
 // Like Go, the build tasks run on `--builders` threads (default 4, 1 with --singleThreaded; `rangeTasks`) that take
-// projects from Order() by an atomic index and block on their upstream tasks' `done` signals, while the calling thread
+// projects from ScheduleOrder() by an atomic index and block on their upstream tasks' `done` signals, while the
+// calling thread
 // (Go: a reporter goroutine) waits on each task's `built` signal in Order() and prints its buffered output. The
 // signals are Mutex + Condvar stand-ins for Go's closed channels (buildtask.rs closeSignal). Each task's state is
-// Mutex/atomic; the shared host caches are Mutex-guarded. At the pinned commit Go's builders iterate `order`, not
-// ScheduleOrder() (whose comment says otherwise); this port does the same.
+// Mutex/atomic; the shared host caches are Mutex-guarded.
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,9 +20,9 @@ use tsrs_core::tspath::{self, ComparePathsOptions, Path};
 use tsrs_diagnostics as diagnostics;
 use tsrs_tsoptions::ParsedBuildCommandLine;
 
-use super::buildtask::{BuildTask, taskResult};
-use super::host::host;
-use super::parsecache::parseCache;
+use super::buildtask::{BuildTask, TaskResult};
+use super::host::HostImpl;
+use super::parsecache::ParseCache;
 use crate::tsc::{
     self, CommandLineResult, CommandLineTesting, DiagnosticReporter, DiagnosticsReporter,
     ExitStatus, Statistics, System, Writer, create_builder_status_reporter,
@@ -61,29 +61,27 @@ impl OrchestratorResult {
                 let errors = self.errors.as_ref().map_or(0, Vec::len);
                 watch_status_reporter(if errors == 1 {
                     new_compiler_diagnostic(
-                        &diagnostics::Found_1_error_Watching_for_file_changes,
+                        &diagnostics::FOUND_1_ERROR_WATCHING_FOR_FILE_CHANGES,
                         &[],
                     )
                 } else {
                     new_compiler_diagnostic(
-                        &diagnostics::Found_0_errors_Watching_for_file_changes,
+                        &diagnostics::FOUND_0_ERRORS_WATCHING_FOR_FILE_CHANGES,
                         &[&errors],
                     )
                 });
             }
             None => (o.error_summary_reporter)(self.errors.as_deref().unwrap_or_default()),
         }
-        if report_files_to_delete {
-            if let Some(files_to_delete) = &self.files_to_delete {
-                let mut file_list = String::new();
-                for file in files_to_delete {
-                    let _ = write!(file_list, "\r\n * {file}");
-                }
-                o.create_builder_status_reporter(None)(new_compiler_diagnostic(
-                    &diagnostics::A_non_dry_build_would_delete_the_following_files_Colon_0,
-                    &[&file_list],
-                ));
+        if report_files_to_delete && let Some(files_to_delete) = &self.files_to_delete {
+            let mut file_list = String::new();
+            for file in files_to_delete {
+                let _ = write!(file_list, "\r\n * {file}");
             }
+            o.create_builder_status_reporter(None)(new_compiler_diagnostic(
+                &diagnostics::A_NON_DRY_BUILD_WOULD_DELETE_THE_FOLLOWING_FILES_COLON_0,
+                &[&file_list],
+            ));
         }
         let options = &o.opts.command.compiler_options;
         if !options.diagnostics.is_true() && !options.extended_diagnostics.is_true() {
@@ -98,7 +96,7 @@ impl OrchestratorResult {
 pub struct Orchestrator {
     pub(crate) opts: Options,
     pub(crate) compare_paths_options: ComparePathsOptions,
-    host: OnceLock<&'static host>,
+    host: OnceLock<&'static HostImpl>,
 
     // contentMapperHost transforms content-mapped files; it is created once per build session (when
     // enabled) and shared across all projects so mapper processes are consolidated. It closes itself when
@@ -141,7 +139,7 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    pub(crate) fn host(&self) -> &'static host {
+    pub(crate) fn host(&self) -> &'static HostImpl {
         self.host.get().unwrap()
     }
 
@@ -165,17 +163,15 @@ impl Orchestrator {
     }
 
     // ScheduleOrder is the order in which builders pick up projects: Order() stably sorted by dependency depth.
-    // Only Go tests call it (graph_test.go), and those are not ported.
     pub fn schedule_order(&self) -> Vec<String> {
         self.schedule_order.lock().unwrap().clone()
     }
 
     // orchestrator.go:131
-    fn compute_schedule_order(&self) -> Vec<String> {
-        let order = self.order.lock().unwrap().clone();
+    fn compute_schedule_order(&self, order: &[String]) -> Vec<String> {
         let mut entries: Vec<(String, usize)> = Vec::with_capacity(order.len());
         let mut depths: FxHashMap<P<BuildTask>, usize> = FxHashMap::default();
-        for config in &order {
+        for config in order {
             let task = self.get_task(&self.to_path(config));
             let mut depth = 0;
             depth = task.up_stream.lock().unwrap().iter().fold(depth, |mut depth, upstream| {
@@ -217,12 +213,12 @@ impl Orchestrator {
             let mut task = None;
             let mut build_info = None;
             if let Some(existing) = old_tasks.and_then(|old| old.get(&path)) {
-                if !existing.dirty.load(Ordering::SeqCst) {
-                    // Reuse existing task if config is same
-                    task = Some(*existing);
-                } else {
+                if existing.dirty.load(Ordering::SeqCst) {
                     existing.close_content_mapper_project();
                     build_info = existing.take_build_info_entry();
+                } else {
+                    // Reuse existing task if config is same
+                    task = Some(*existing);
                 }
             }
             let task = task.unwrap_or_else(|| {
@@ -260,7 +256,7 @@ impl Orchestrator {
             if analyzing.has(&path) {
                 if !in_circular_context {
                     self.errors.lock().unwrap().push(new_compiler_diagnostic(
-                        &diagnostics::Project_references_may_not_form_a_circular_graph_Cycle_detected_Colon_0,
+                        &diagnostics::PROJECT_REFERENCES_MAY_NOT_FORM_A_CIRCULAR_GRAPH_CYCLE_DETECTED_COLON_0,
                         &[&circularity_stack.join("\n")],
                     ));
                 }
@@ -281,7 +277,7 @@ impl Orchestrator {
                         circularity_stack,
                     );
                     if let Some(upstream) = upstream {
-                        task.up_stream.lock().unwrap().push(super::buildtask::upstreamTask {
+                        task.up_stream.lock().unwrap().push(super::buildtask::UpstreamTask {
                             task: upstream,
                             ref_index: index,
                         });
@@ -334,7 +330,8 @@ impl Orchestrator {
                 &mut circularity_stack,
             );
         }
-        *self.schedule_order.lock().unwrap() = self.compute_schedule_order();
+        let order = self.order.lock().unwrap().clone();
+        *self.schedule_order.lock().unwrap() = self.compute_schedule_order(&order);
         if let Some(old_tasks) = old_tasks {
             // Each old task is closed on its own; the order does not matter.
             #[expect(
@@ -390,7 +387,7 @@ impl Orchestrator {
         // Under the test harness a watch session returns after the first build; the harness drives the cycles.
         let watcher = (self.opts.command.compiler_options.watch.is_true()
             && self.opts.testing.is_some())
-        .then(|| Box::new(orchestratorWatcher(self)) as Box<dyn tsc::Watcher>);
+        .then(|| Box::new(OrchestratorWatcher(self)) as Box<dyn tsc::Watcher>);
         CommandLineResult { status, watcher }
     }
 
@@ -450,7 +447,7 @@ impl Orchestrator {
         let errors = self.errors.lock().unwrap().clone();
         if !errors.is_empty() {
             let mut result = OrchestratorResult {
-                status: Some(ExitStatus::ProjectReferenceCycle_OutputsSkipped),
+                status: Some(ExitStatus::ProjectReferenceCycleOutputsSkipped),
                 errors: Some(errors),
                 ..Default::default()
             };
@@ -459,7 +456,7 @@ impl Orchestrator {
         }
         let Some(mut order) = self.get_build_order_for(project) else {
             return OrchestratorResult {
-                status: Some(ExitStatus::InvalidProject_OutputsSkipped),
+                status: Some(ExitStatus::InvalidProjectOutputsSkipped),
                 ..Default::default()
             };
         };
@@ -475,7 +472,7 @@ impl Orchestrator {
             let task = self.get_task(&self.to_path(config));
             let Some(resolved) = task.resolved_opt() else {
                 let diagnostic =
-                    new_compiler_diagnostic(&diagnostics::File_0_not_found, &[&task.config]);
+                    new_compiler_diagnostic(&diagnostics::FILE_0_NOT_FOUND, &[&task.config]);
                 report_diagnostic(diagnostic);
                 result.errors.get_or_insert_with(Vec::new).push(diagnostic);
                 continue;
@@ -542,7 +539,7 @@ impl Orchestrator {
             return false;
         }
         if fs.remove(output_file).is_err() {
-            report(new_compiler_diagnostic(&diagnostics::Failed_to_delete_file_0, &[&output_file]));
+            report(new_compiler_diagnostic(&diagnostics::FAILED_TO_DELETE_FILE_0, &[&output_file]));
             return false;
         }
         true
@@ -560,10 +557,10 @@ impl Orchestrator {
         let close_host =
             if watch && self.opts.testing.is_some() { None } else { content_mapper_host };
         let _close_content_mapper_host =
-            tsc::contentMapperCloser { host: close_host, project: None };
+            tsc::ContentMapperCloser { host: close_host, project: None };
         if let Some(watch_status_reporter) = &self.watch_status_reporter {
             watch_status_reporter(new_compiler_diagnostic(
-                &diagnostics::Starting_compilation_in_watch_mode,
+                &diagnostics::STARTING_COMPILATION_IN_WATCH_MODE,
                 &[],
             ));
         }
@@ -577,18 +574,32 @@ impl Orchestrator {
         }
         let Some(mut order) = self.get_build_order_for(project) else {
             return OrchestratorResult {
-                status: Some(ExitStatus::InvalidProject_OutputsSkipped),
+                status: Some(ExitStatus::InvalidProjectOutputsSkipped),
                 ..Default::default()
             };
         };
         if only_references && self.errors.lock().unwrap().is_empty() {
             if project.is_empty() {
                 return OrchestratorResult {
-                    status: Some(ExitStatus::InvalidProject_OutputsSkipped),
+                    status: Some(ExitStatus::InvalidProjectOutputsSkipped),
                     ..Default::default()
                 };
             }
             order.pop();
+        }
+        // tsrs-only (notes/mem-lazy-dts-members.md): cached declaration files are shared by all projects, so keep
+        // their lists eager if any project checks them. Solution configs build no program. Forced members go to
+        // the forcing thread's arena (`LazyNodeList::force`), which outlives the freed program regions.
+        if self.frees_built_programs()
+            && tsrs_compiler::lazy_dts_allowed()
+            && order.iter().all(|config| {
+                self.get_task(&self.to_path(config)).resolved_opt().is_some_and(|resolved| {
+                    (resolved.file_names().is_empty() && !resolved.project_references_is_nil())
+                        || crate::execute::declaration_files_unchecked(resolved)
+                })
+            })
+        {
+            tsrs_compiler::enable_lazy_dts();
         }
         // tsrs-only (`queue_files_changed_since`): when the first build started.
         let build_started = std::time::SystemTime::now();
@@ -601,16 +612,6 @@ impl Orchestrator {
 
     // orchestrator.go:426
     fn get_build_order_for(&self, project: &str) -> Option<Vec<String>> {
-        if project.is_empty() {
-            return Some(self.order.lock().unwrap().clone());
-        }
-
-        let config = tsrs_core::resolve_config_file_name_of_project_reference(
-            &tspath::resolve_path(self.opts.sys.get_current_directory(), &[project]),
-        );
-        let target = *self.tasks.lock().unwrap().get(&self.to_path(&config))?;
-
-        let mut projects: Set<Path> = Set::default();
         fn add_project_and_references(
             o: &Orchestrator,
             projects: &mut Set<Path>,
@@ -625,6 +626,17 @@ impl Orchestrator {
                 add_project_and_references(o, projects, upstream.task);
             }
         }
+
+        if project.is_empty() {
+            return Some(self.order.lock().unwrap().clone());
+        }
+
+        let config = tsrs_core::resolve_config_file_name_of_project_reference(
+            &tspath::resolve_path(self.opts.sys.get_current_directory(), &[project]),
+        );
+        let target = *self.tasks.lock().unwrap().get(&self.to_path(&config))?;
+
+        let mut projects: Set<Path> = Set::default();
         add_project_and_references(self, &mut projects, target);
 
         let order: Vec<String> = self
@@ -647,7 +659,7 @@ impl Orchestrator {
                 let _ = write!(project_list, "\r\n    * {}", self.relative_file_name(project));
             }
             self.create_builder_status_reporter(None)(new_compiler_diagnostic(
-                &diagnostics::Projects_in_this_build_Colon_0,
+                &diagnostics::PROJECTS_IN_THIS_BUILD_COLON_0,
                 &[&project_list],
             ));
         }
@@ -684,12 +696,19 @@ impl Orchestrator {
             }
         } else if self.errors.lock().unwrap().is_empty() {
             build_result.statistics.projects = order.len();
-            // Builders pick up projects in Order() (see the header); results are reported in Order(), waiting for each project to finish
+            let schedule_order = if order.len() == self.order.lock().unwrap().len() {
+                self.schedule_order()
+            } else {
+                self.compute_schedule_order(order)
+            };
+            // Builders pick up selected projects in dependency-depth order; reporting preserves the selected build order.
             // (Go: a reporter goroutine; here the calling thread, while rangeTasks runs the builders on their own threads).
             let mut aborted_report = false;
             std::thread::scope(|scope| {
                 let builders = scope.spawn(|| {
-                    self.range_tasks(order, &|path, task| self.build_or_clean_project(task, path));
+                    self.range_tasks(&schedule_order, &|path, task| {
+                        self.build_or_clean_project(task, path);
+                    });
                 });
                 for config in order {
                     let path = self.to_path(config);
@@ -707,7 +726,7 @@ impl Orchestrator {
             assert!(!aborted_report, "build aborted");
         } else {
             // Circularity errors prevent any project from being built
-            build_result.status = Some(ExitStatus::ProjectReferenceCycle_OutputsSkipped);
+            build_result.status = Some(ExitStatus::ProjectReferenceCycleOutputsSkipped);
             let report_diagnostic = self.create_diagnostic_reporter(None);
             for &err in self.errors.lock().unwrap().iter() {
                 report_diagnostic(err);
@@ -788,7 +807,7 @@ impl Orchestrator {
     // orchestrator.go:888
     fn build_or_clean_project(&'static self, task: P<BuildTask>, path: &Path) {
         let builder: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-        *task.result.lock().unwrap() = Some(taskResult::new(builder));
+        *task.result.lock().unwrap() = Some(TaskResult::new(builder));
         let report_status = self.create_builder_status_reporter(Some(task));
         let diagnostic_reporter = self.create_diagnostic_reporter(Some(task));
         {
@@ -797,10 +816,10 @@ impl Orchestrator {
             result.report_status = Some(report_status);
             result.diagnostic_reporter = Some(diagnostic_reporter);
         }
-        if !self.opts.command.build_options.clean.is_true() {
-            task.get().build_project(self, path);
-        } else {
+        if self.opts.command.build_options.clean.is_true() {
             task.clean_project(self, path);
+        } else {
+            task.get().build_project(self, path);
         }
         if self.opts.testing.is_none() {
             // The program is only needed by Testing.OnProgram at report time; drop it now so a task
@@ -811,9 +830,9 @@ impl Orchestrator {
                 (result.program.take(), result.program_regions.take())
             };
             if let (true, Some(program)) = (self.frees_built_programs(), program) {
-                // On the free thread, so that the builder goes on to its next project: freeing inline took 4% of the
-                // wall time of a 3,000-project build at 64 builders on 8 cores.
-                self.freer.run(move || task.free_built_program(program, regions));
+                // Keep the free thread's overlap with building, but bound the completed programs it retains when
+                // builders outpace it. Watch-mode frees still run in FIFO order (`Freer::run`).
+                self.freer.run_bounded(4, move || task.free_built_program(program, regions));
             } else if let (true, Some(program)) = (self.api_mode.load(Ordering::SeqCst), program) {
                 // API builds free each project's program once it is built (its arenas go with the task region when
                 // the orchestrator is freed; this frees the heap side: program, checkers, processed data). It is a
@@ -917,7 +936,7 @@ impl Orchestrator {
             order.iter().map(|config| self.get_task(&self.to_path(config))).collect();
         let before = changed_paths.len();
         changed_paths.retain(|path, kind| {
-            *kind != tsrs_fswatch::EventKind::Update
+            *kind != tsrs_fswatch::EventKind::UPDATE
                 || versions
                     .get(path)
                     .is_none_or(|versions| !self.read_by_every_task(path, versions, &tasks))
@@ -1094,7 +1113,7 @@ impl Orchestrator {
         }
         if let Some(watch_status_reporter) = &self.watch_status_reporter {
             watch_status_reporter(new_compiler_diagnostic(
-                &diagnostics::File_change_detected_Starting_incremental_compilation,
+                &diagnostics::FILE_CHANGE_DETECTED_STARTING_INCREMENTAL_COMPILATION,
                 &[],
             ));
         }
@@ -1383,7 +1402,7 @@ impl Orchestrator {
             return true;
         }
         changed_paths.iter().any(|(changed, &kind)| {
-            kind == tsrs_fswatch::EventKind::Delete
+            kind == tsrs_fswatch::EventKind::DELETE
                 && tspath::contains_path(
                     changed.as_str(),
                     package_json_path.as_str(),
@@ -1585,9 +1604,9 @@ impl Orchestrator {
 }
 
 // Go's `tsc.Watcher` for the test harness.
-struct orchestratorWatcher(&'static Orchestrator);
+struct OrchestratorWatcher(&'static Orchestrator);
 
-impl tsc::Watcher for orchestratorWatcher {
+impl tsc::Watcher for OrchestratorWatcher {
     fn do_cycle(&mut self) {
         self.0.do_cycle();
     }
@@ -1667,7 +1686,7 @@ pub unsafe fn free_api_orchestrator(o: &'static Orchestrator) {
     // (maps of `P<..>` pointers, Arcs); none dereferences arena memory, which is still alive here. Keep it that way:
     // a destructor that reads region memory must run before `drop(regions)`.
     // SAFETY: `new_orchestrator` leaked both from `Box`es, and nothing uses them afterwards (this function's contract).
-    drop(unsafe { Box::from_raw(std::ptr::from_ref::<host>(h).cast_mut()) });
+    drop(unsafe { Box::from_raw(std::ptr::from_ref::<HostImpl>(h).cast_mut()) });
     // SAFETY: as above.
     drop(unsafe { Box::from_raw(std::ptr::from_ref::<Orchestrator>(o).cast_mut()) });
     drop(regions);
@@ -1730,14 +1749,14 @@ pub fn new_orchestrator(opts: Options) -> &'static Orchestrator {
         None,
         None,
     );
-    let h: &'static host = Box::leak(Box::new(host {
+    let h: &'static HostImpl = Box::leak(Box::new(HostImpl {
         orchestrator: OnceLock::new(),
         host: compiler_host,
         cached_fs,
         extended_config_cache: Mutex::new(Arc::new(tsc::ExtendedConfigCache::default())),
-        source_files: parseCache::default(),
+        source_files: ParseCache::default(),
         config_times: Mutex::new(FxHashMap::default()),
-        resolved_references: parseCache::default(),
+        resolved_references: ParseCache::default(),
         m_times: Mutex::new(Arc::new(Mutex::new(FxHashMap::default()))),
         watch_source_files: watch.then(|| Mutex::new(FxHashMap::default())),
         watch_file_regions: crate::watchmem::FileRegions::default(),
@@ -1745,4 +1764,68 @@ pub fn new_orchestrator(opts: Options) -> &'static Orchestrator {
     let _ = h.orchestrator.set(orchestrator);
     let _ = orchestrator.host.set(h);
     orchestrator
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::*;
+    use crate::build::buildtask::UpstreamTask;
+
+    #[test]
+    fn schedules_full_selected_and_references_only_graphs_by_dependency_depth() {
+        let sys: &'static dyn System = Box::leak(Box::new(crate::sys::new_system()));
+        let host = crate::execute::parse_config_host(sys);
+        let command = P::new(tsrs_tsoptions::parse_build_command_line(
+            &["--build".into(), "--builders".into(), "1".into()],
+            host,
+        ));
+        let orchestrator = new_orchestrator(Options { sys, command, testing: None });
+
+        let names = ["Leaf", "Middle", "Independent", "Root", "Other"];
+        let mut tasks = FxHashMap::default();
+        for name in names {
+            let config = format!("/project/{name}/tsconfig.json");
+            let task = P::new(BuildTask::new(config.clone(), true));
+            orchestrator.tasks.lock().unwrap().insert(orchestrator.to_path(&config), task);
+            tasks.insert(name, task);
+            orchestrator.order.lock().unwrap().push(config);
+        }
+        tasks["Middle"]
+            .up_stream
+            .lock()
+            .unwrap()
+            .push(UpstreamTask { task: tasks["Leaf"], ref_index: 0 });
+        tasks["Root"].up_stream.lock().unwrap().extend([
+            UpstreamTask { task: tasks["Middle"], ref_index: 0 },
+            UpstreamTask { task: tasks["Independent"], ref_index: 1 },
+        ]);
+
+        let full = orchestrator.order();
+        let selected = full[..4].to_vec();
+        let references = full[..3].to_vec();
+        let project_names = |order: Vec<String>| -> Vec<String> {
+            order.iter().map(|config| config.split('/').nth(2).unwrap().to_string()).collect()
+        };
+        assert_eq!(
+            project_names(orchestrator.compute_schedule_order(&full)),
+            ["Leaf", "Independent", "Other", "Middle", "Root"]
+        );
+        assert_eq!(
+            project_names(orchestrator.compute_schedule_order(&selected)),
+            ["Leaf", "Independent", "Middle", "Root"]
+        );
+        let schedule = orchestrator.compute_schedule_order(&references);
+        assert_eq!(project_names(schedule.clone()), ["Leaf", "Independent", "Middle"]);
+
+        // A single builder takes exactly the selected projects in their computed order.
+        let dispatched = Mutex::new(Vec::new());
+        orchestrator.range_tasks(&schedule, &|_, task| {
+            dispatched.lock().unwrap().push(task.config.clone());
+        });
+        assert_eq!(
+            project_names(dispatched.into_inner().unwrap()),
+            ["Leaf", "Independent", "Middle"]
+        );
+        assert_eq!(project_names(orchestrator.order()), names);
+    }
 }

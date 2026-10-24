@@ -17,6 +17,7 @@ tsrs_vfs.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]
+codspeed = "6.0.0"
 criterion2.workspace = true
 mimalloc-safe.workspace = true
 
@@ -28,6 +29,13 @@ name = "compiler"
 harness = false
 # A CLI compilation keeps its arenas until exit. CodSpeed runs a bounded number of iterations;
 # ordinary Criterion calibration would keep allocating programs until the process runs out of memory.
+required-features = ["codspeed"]
+
+[[bench]]
+name = "compiler_default"
+harness = false
+# One compilation per process: memory must not include earlier arena-heavy warmups. Walltime samples are child
+# processes.
 required-features = ["codspeed"]
 
 [lib]

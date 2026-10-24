@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::sync::{Mutex, OnceLock};
 
 use rustc_hash::FxHashSet;
+use tsrs_core::json::JsonMap;
 use tsrs_core::tspath;
 
 use crate::error::Error;
@@ -38,17 +39,40 @@ impl DocumentUri {
             panic!("invalid URI: {uri}");
         };
 
+        let (mut path, suffix) = match path.find(['?', '#']) {
+            Some(i) => (&path[..i], &path[i..]),
+            None => (path, ""),
+        };
         let mut authority = "ts-nul-authority";
-        let mut path = path;
+        let mut has_authority = false;
+        let mut has_path = true;
         if let Some(rest) = path.strip_prefix("//") {
-            let Some((a, p)) = rest.split_once('/') else {
-                panic!("invalid URI: {uri}");
-            };
-            authority = a;
-            path = p;
+            has_authority = true;
+            if let Some((a, p)) = rest.split_once('/') {
+                authority = a;
+                path = p;
+            } else {
+                authority = rest;
+                path = "";
+                has_path = false;
+            }
         }
-
-        format!("^/{scheme}/{authority}/{path}")
+        let encoded_authority = if !has_authority {
+            authority.to_string()
+        } else if authority == "ts-nul-authority" {
+            tspath::force_encode_dynamic_uri_path_segment(authority, false)
+        } else {
+            tspath::encode_dynamic_uri_path(authority)
+        };
+        let encoded_path = if has_path {
+            tspath::encode_dynamic_uri_path_with_suffix(path, suffix)
+        } else {
+            tspath::encode_dynamic_uri_no_path(suffix)
+        };
+        format!(
+            "{}{scheme}/{encoded_authority}/{encoded_path}",
+            tspath::DYNAMIC_URI_FILE_NAME_PREFIX
+        )
     }
 
     /// tsrs-only: whether `file_name` can turn this URI into a file name. Go takes any string and panics on one it
@@ -63,6 +87,61 @@ impl DocumentUri {
     pub fn path(&self, use_case_sensitive_file_names: bool) -> tspath::Path {
         let file_name = self.file_name();
         tspath::to_path(&file_name, "", use_case_sensitive_file_names)
+    }
+
+    // lsp.go:65
+    pub fn dynamic_file_name_to_document_uri(file_name: &str) -> Self {
+        Self::try_dynamic_file_name_to_document_uri_worker(file_name, false)
+            .unwrap_or_else(|| panic!("invalid file name: {file_name}"))
+    }
+
+    // lsp.go:73
+    pub fn try_dynamic_file_name_to_document_uri(file_name: &str) -> Option<Self> {
+        Self::try_dynamic_file_name_to_document_uri_worker(file_name, true)
+    }
+
+    fn try_dynamic_file_name_to_document_uri_worker(file_name: &str, strict: bool) -> Option<Self> {
+        let encoded = tspath::is_encoded_dynamic_file_name(file_name);
+        let rest = if encoded {
+            file_name.strip_prefix(tspath::DYNAMIC_URI_FILE_NAME_PREFIX)?
+        } else {
+            file_name.strip_prefix("^/")?
+        };
+        let (scheme, rest) = rest.split_once('/')?;
+        if strict && scheme.is_empty() {
+            return None;
+        }
+        let (encoded_authority, encoded_path) = rest.split_once('/')?;
+        let has_authority = encoded_authority != "ts-nul-authority";
+        let authority = if encoded {
+            if strict {
+                tspath::try_decode_dynamic_uri_path_segment(encoded_authority)?
+            } else {
+                tspath::decode_dynamic_uri_path_segment(encoded_authority)
+            }
+        } else {
+            encoded_authority.to_string()
+        };
+        if encoded
+            && has_authority
+            && let Some(suffix) = tspath::decode_dynamic_uri_no_path(encoded_path)
+        {
+            return Some(Self(format!("{scheme}://{authority}{suffix}")));
+        }
+        let path = if encoded {
+            if strict {
+                tspath::try_decode_dynamic_uri_path(encoded_path)?
+            } else {
+                tspath::decode_dynamic_uri_path(encoded_path)
+            }
+        } else {
+            encoded_path.to_string()
+        };
+        if has_authority {
+            Some(Self(format!("{scheme}://{authority}/{path}")))
+        } else {
+            Some(Self(format!("{scheme}:{path}")))
+        }
     }
 
     pub fn as_str(&self) -> &str {
@@ -121,7 +200,7 @@ fn check_uri(uri: &str) -> Result<(), String> {
         }
         return Ok(());
     }
-    let Some((scheme, path)) = uri.split_once(':') else {
+    let Some((scheme, _path)) = uri.split_once(':') else {
         return Err(format!("invalid URI {uri:?}: no scheme"));
     };
     let mut chars = scheme.chars();
@@ -129,9 +208,6 @@ fn check_uri(uri: &str) -> Result<(), String> {
         || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
     {
         return Err(format!("invalid URI {uri:?}: bad scheme"));
-    }
-    if path.strip_prefix("//").is_some_and(|rest| !rest.contains('/')) {
-        return Err(format!("invalid URI {uri:?}: no path after the authority"));
     }
     Ok(())
 }
@@ -374,7 +450,7 @@ fn unescape(s: &str, mode: Encoding) -> Result<String, String> {
 }
 
 // Go `strconv.Quote` (as `%q` formats a string or byte slice).
-pub(crate) fn go_quote(b: &[u8]) -> String {
+pub fn go_quote(b: &[u8]) -> String {
     tsrs_core::gocompat::quote(b, tsrs_core::gocompat::QuoteStyle::Lsp)
 }
 
@@ -480,10 +556,11 @@ impl IsZero for Method {
 
 // The process-lifetime string for `s` (Go converts a decoded string to a named string type).
 pub fn intern(s: &str) -> &'static str {
+    static TABLE: OnceLock<Mutex<FxHashSet<&'static str>>> = OnceLock::new();
+
     if s.is_empty() {
         return "";
     }
-    static TABLE: OnceLock<Mutex<FxHashSet<&'static str>>> = OnceLock::new();
     let mut table = TABLE.get_or_init(Default::default).lock().unwrap();
     if let Some(interned) = table.get(s) {
         return interned;
@@ -494,32 +571,32 @@ pub fn intern(s: &str) -> &'static str {
 }
 
 // lsp.go:87
-pub(crate) fn err_not_object(k: u8) -> String {
+pub fn err_not_object(k: u8) -> String {
     format!("expected object start, but encountered {}", kind_string(k))
 }
 
 // lsp.go:91
-pub(crate) fn err_null(field: &str) -> String {
+pub fn err_null(field: &str) -> String {
     format!("null value is not allowed for field {}", go_quote(field.as_bytes()))
 }
 
 // lsp.go:95
-pub(crate) fn err_missing(props: &[&str]) -> String {
+pub fn err_missing(props: &[&str]) -> String {
     format!("missing required properties: {}", props.join(", "))
 }
 
 // lsp.go:99
-pub(crate) fn err_invalid_kind(type_name: &str, got: u8) -> String {
+pub fn err_invalid_kind(type_name: &str, got: u8) -> String {
     format!("invalid {}: got {}", type_name, kind_string(got))
 }
 
 // lsp.go:103
-pub(crate) fn err_invalid_value(type_name: &str, data: &Value) -> String {
+pub fn err_invalid_value(type_name: &str, data: &Value) -> String {
     format!("invalid {}: {}", type_name, tsrs_core::json::marshal(data).unwrap_or_default())
 }
 
 // lsp.go:107
-pub(crate) fn err_literal_mismatch(type_name: &str, expected: &str, got: &Value) -> String {
+pub fn err_literal_mismatch(type_name: &str, expected: &str, got: &Value) -> String {
     format!(
         "expected {} value {}, got {}",
         type_name,
@@ -529,22 +606,18 @@ pub(crate) fn err_literal_mismatch(type_name: &str, expected: &str, got: &Value)
 }
 
 // lsp.go:111
-pub(crate) fn assert_only_one(message: &str, count: usize) {
+pub fn assert_only_one(message: &str, count: usize) {
     assert!(count == 1, "{}", message);
 }
 
 // lsp.go:117
-pub(crate) fn assert_at_most_one(message: &str, count: usize) {
+pub fn assert_at_most_one(message: &str, count: usize) {
     assert!(count <= 1, "{}", message);
 }
 
 // lsp.go:131: the value of a top-level field of a JSON object; None if `data` is not an object or has
 // no such field. (Go's jsonKeyCheck compares raw key tokens; decoded keys are compared directly.)
-#[expect(
-    dead_code,
-    reason = "tools/gen-lsproto emits calls for a union with a discriminator field; no generated union has one now (same in Go)"
-)]
-pub(crate) fn json_object_raw_field<'a>(data: &'a Value, field: &str) -> Option<&'a Value> {
+pub fn json_object_raw_field<'a>(data: &'a Value, field: &str) -> Option<&'a Value> {
     let Value::Object(members) = data else {
         return None;
     };
@@ -553,11 +626,11 @@ pub(crate) fn json_object_raw_field<'a>(data: &'a Value, field: &str) -> Option<
 
 // lsp.go:161: the index in `keys` of the first top-level key of the object (in document order) that is
 // one of `keys`.
-pub(crate) fn json_object_has_key(data: &Value, keys: &[&str]) -> Option<usize> {
+pub fn json_object_has_key(data: &Value, keys: &[&str]) -> Option<usize> {
     let Value::Object(members) = data else {
         return None;
     };
-    if let Some(i) = members.keys().find_map(|name| keys.iter().position(|key| name == key)) {
+    if let Some(i) = members.keys().find_map(|name| keys.iter().position(|key| name == *key)) {
         return Some(i);
     }
     None
@@ -655,7 +728,7 @@ impl RequestMessage {
         if T::IS_NO_PARAMS {
             if let Some(raw) = raw {
                 return Err(Error::wrap_code(
-                    ErrorCode::InvalidParams,
+                    ErrorCode::INVALID_PARAMS,
                     Error::new(format!(
                         "expected no params, got {}",
                         tsrs_core::json::marshal(raw).unwrap_or_default()
@@ -669,11 +742,11 @@ impl RequestMessage {
         // (absent, null, or a scalar).
         let Some(raw @ (Value::Object(_) | Value::Array(_))) = raw else {
             return Err(Error::wrap_code(
-                ErrorCode::InvalidParams,
+                ErrorCode::INVALID_PARAMS,
                 Error::new("params must be an object or array"),
             ));
         };
-        T::from_json(raw).map_err(|err| Error::wrap_code(ErrorCode::InvalidParams, err))
+        T::from_json(raw).map_err(|err| Error::wrap_code(ErrorCode::INVALID_PARAMS, err))
     }
 }
 
@@ -710,7 +783,7 @@ impl Json for NoParams {
     const IS_NO_PARAMS: bool = true;
 
     fn to_json(&self) -> Value {
-        Value::Object(tsrs_core::collections::OrderedMap::default())
+        Value::Object(JsonMap::new())
     }
 
     fn from_json(v: &Value) -> Result<Self, JsonError> {
@@ -719,21 +792,21 @@ impl Json for NoParams {
     }
 }
 
-struct clientCapabilitiesKey(std::sync::Arc<crate::ResolvedClientCapabilities>);
+struct ClientCapabilitiesKey(std::sync::Arc<crate::ResolvedClientCapabilities>);
 
 // lsp.go:289
 pub fn with_client_capabilities(
     ctx: &tsrs_core::context::Context,
     caps: std::sync::Arc<crate::ResolvedClientCapabilities>,
 ) -> tsrs_core::context::Context {
-    ctx.with_value(clientCapabilitiesKey(caps))
+    ctx.with_value(ClientCapabilitiesKey(caps))
 }
 
 // lsp.go:293
 pub fn get_client_capabilities(
     ctx: &tsrs_core::context::Context,
 ) -> std::sync::Arc<crate::ResolvedClientCapabilities> {
-    if let Some(caps) = ctx.value::<clientCapabilitiesKey>() {
+    if let Some(caps) = ctx.value::<ClientCapabilitiesKey>() {
         return std::sync::Arc::clone(&caps.0);
     }
     std::sync::Arc::new(crate::ResolvedClientCapabilities::default())
@@ -754,7 +827,7 @@ impl Json for EmptyObject {
     const GO_TYPE: &'static str = "struct {}";
 
     fn to_json(&self) -> Value {
-        Value::Object(tsrs_core::collections::OrderedMap::default())
+        Value::Object(JsonMap::new())
     }
 
     fn from_json(v: &Value) -> Result<Self, JsonError> {
@@ -770,7 +843,7 @@ pub fn preferred_markup_kind(formats: &[MarkupKind]) -> MarkupKind {
     if !formats.is_empty() {
         return formats[0];
     }
-    MarkupKind::PlainText
+    MarkupKind::PLAIN_TEXT
 }
 
 impl CodeActionKind {
@@ -778,14 +851,15 @@ impl CodeActionKind {
     // Contains reports whether other is this code action kind or one of its children.
     pub fn contains(self, other: CodeActionKind) -> bool {
         self == other
-            || self == CodeActionKind::Empty
+            || self == CodeActionKind::EMPTY
             || other.0.strip_prefix(self.0).is_some_and(|rest| rest.starts_with('.'))
     }
 
     // lsp.go:316
-    pub const SourceFixAllTs: CodeActionKind = CodeActionKind("source.fixAll.ts");
-    pub const SourceOrganizeImportsTs: CodeActionKind = CodeActionKind("source.organizeImports.ts");
-    pub const SourceRemoveUnusedImportsTs: CodeActionKind =
+    pub const SOURCE_FIX_ALL_TS: CodeActionKind = CodeActionKind("source.fixAll.ts");
+    pub const SOURCE_ORGANIZE_IMPORTS_TS: CodeActionKind =
+        CodeActionKind("source.organizeImports.ts");
+    pub const SOURCE_REMOVE_UNUSED_IMPORTS_TS: CodeActionKind =
         CodeActionKind("source.removeUnusedImports.ts");
-    pub const SourceSortImportsTs: CodeActionKind = CodeActionKind("source.sortImports.ts");
+    pub const SOURCE_SORT_IMPORTS_TS: CodeActionKind = CodeActionKind("source.sortImports.ts");
 }

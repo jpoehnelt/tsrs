@@ -18,7 +18,7 @@ use tsrs_core::P;
 use tsrs_core::arena::Region;
 
 use crate::checkerpool::Context;
-use crate::emitter::{EmitOnly, emitter};
+use crate::emitter::{EmitOnly, Emitter};
 use crate::program::Program;
 use crate::programlike::{ProgramLike, get_diagnostics_of_any_program_like};
 use tsrs_tsoptions::outputpaths::{self, ForceEmitPaths};
@@ -67,7 +67,7 @@ pub struct SourceMapEmitResult {
 // The print row includes building the source-map mappings (the printer feeds the generator as it prints); the source
 // map row is serializing the map and computing its URL.
 #[derive(Clone, Copy)]
-pub(crate) enum EmitPhase {
+pub enum EmitPhase {
     ScriptTransform,
     DeclarationTransform,
     Print,
@@ -121,14 +121,14 @@ impl PendingPrints {
 }
 
 #[derive(Default)]
-pub(crate) struct EmitTimes {
+pub struct EmitTimes {
     enabled: bool,
     times: [AtomicU64; 5],
     writers: Mutex<usize>,
     writer_done: Condvar,
 }
 
-pub(crate) struct WritePermit<'a>(&'a EmitTimes);
+pub struct WritePermit<'a>(&'a EmitTimes);
 
 impl Drop for WritePermit<'_> {
     fn drop(&mut self) {
@@ -223,12 +223,13 @@ impl Program {
         // printed and written; the checker escapes to its own arena (`CheckerSlot::with`), and so do diagnostics
         // and the program's caches (`EmitHost`).
         let transform =
-            |c: &mut tsrs_checker::Checker, source_file: P<SourceFile>| -> (emitter, Region) {
-                let emit_resolver = c.get_emit_resolver();
+            |c: &mut tsrs_checker::Checker, source_file: P<SourceFile>| -> (Emitter, Region) {
                 let outer_before = if mem_log { tsrs_core::ptr::arena_used_bytes() } else { 0 };
                 let region = Region::new_scratch(EMIT_REGION_FIRST_CHUNK);
                 let e = {
                     let _scratch = region.enter_scratch();
+                    let emit_context = tsrs_printer::new_scratch_emit_context();
+                    let emit_resolver = c.new_emit_resolver(emit_context);
                     let checker_slot = P::new(tsrs_checker::CheckerSlot::default());
                     let host = crate::emithost::new_emit_host(self, emit_resolver, checker_slot);
                     let paths = outputpaths::get_output_paths_for(
@@ -242,7 +243,7 @@ impl Program {
                                 && options.emit_only == EmitOnly::EmitOnlyDts,
                         },
                     );
-                    let mut e = emitter {
+                    let mut e = Emitter {
                         host,
                         emit_only: options.emit_only,
                         emitter_diagnostics: tsrs_ast::DiagnosticsCollection::default(),
@@ -255,6 +256,7 @@ impl Program {
                         pending_js: None,
                         declaration_diagnostics: Vec::new(),
                         pending_declaration: None,
+                        emit_context,
                     };
                     checker_slot.lend(c, || e.transform());
                     e
@@ -271,7 +273,7 @@ impl Program {
                 }
                 (e, region)
             };
-        let print = |(mut e, region): (emitter, Region), index: usize| {
+        let print = |(mut e, region): (Emitter, Region), index: usize| {
             let outer_before = if mem_log { tsrs_core::ptr::arena_used_bytes() } else { 0 };
             let used_before = if mem_log { region.used_bytes() } else { 0 };
             let result = {

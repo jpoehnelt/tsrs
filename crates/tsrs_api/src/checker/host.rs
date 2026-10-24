@@ -118,6 +118,15 @@ pub trait CheckerHost {
     /// `{ fileName, path, contentHash, parseOptionsKey, scriptKind, nodeId }`.
     fn source_file_descriptor(&self, file: P<SourceFile>) -> CheckerResult<Value>;
 
+    /// `source_file_descriptor(file) == descriptor`, which a host may answer without building the descriptor.
+    fn source_file_descriptor_matches(
+        &self,
+        file: P<SourceFile>,
+        descriptor: &Value,
+    ) -> CheckerResult<bool> {
+        Ok(self.source_file_descriptor(file)? == *descriptor)
+    }
+
     /// Go `sourceFileNodeID(file)` (used for `CompactSymbolReference.file`).
     fn source_file_node_id(&self, file: P<SourceFile>) -> CheckerResult<u64>;
 
@@ -141,4 +150,8 @@ pub trait CheckerHost {
         base: &Snapshot,
         file_name: &str,
     ) -> CheckerResult<Arc<Snapshot>>;
+
+    /// Go `if s.projectSession != nil { s.projectSession.TryAdoptSnapshotInBackground(base, prepared) }`: an
+    /// LSP-attached session offers the snapshot it prepared for auto-imports to the language server.
+    fn try_adopt_snapshot_in_background(&self, base: &Arc<Snapshot>, prepared: &Arc<Snapshot>);
 }

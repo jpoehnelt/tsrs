@@ -1,7 +1,7 @@
 use tsrs_core::collections::Set;
 use tsrs_lsproto as lsproto;
 
-pub(crate) const excessiveChangeThreshold: usize = 1000;
+pub const EXCESSIVE_CHANGE_THRESHOLD: usize = 1000;
 
 pub trait FileChangeExpander {
     fn expand_file_changes(&self, summary: FileChangeSummary) -> FileChangeSummary;
@@ -80,19 +80,18 @@ impl FileChangeSummary {
     pub fn has_excessive_watch_events(&self) -> bool {
         self.invalidate_all
             || self.created.len() + self.deleted.len() + self.changed.len()
-                > excessiveChangeThreshold
+                > EXCESSIVE_CHANGE_THRESHOLD
     }
 
     // filechange.go:74
     pub fn has_excessive_non_create_watch_events(&self) -> bool {
-        self.invalidate_all || self.deleted.len() + self.changed.len() > excessiveChangeThreshold
+        self.invalidate_all || self.deleted.len() + self.changed.len() > EXCESSIVE_CHANGE_THRESHOLD
     }
 }
 
 // filechange.go:79
 // mergeFileChangeSummary merges src into dst, combining their change sets.
-#[expect(dead_code, reason = "Go's caller Session.APIUpdate (project/api.go) is not ported yet")]
-pub(crate) fn merge_file_change_summary(dst: &mut FileChangeSummary, src: &FileChangeSummary) {
+pub fn merge_file_change_summary(dst: &mut FileChangeSummary, src: &FileChangeSummary) {
     if src.is_empty() {
         return;
     }

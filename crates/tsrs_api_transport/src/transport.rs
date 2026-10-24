@@ -1,10 +1,6 @@
-// Port of tsc/internal/ipc/transport.go (+ transport_unix.go) and the connection setup in
-// tsc/internal/api/server.go Run: stdio or a Unix domain socket (`--pipe <path>`), MessagePack +
-// SyncConn by default, JSON-RPC + AsyncConn with `--async`.
-//
-// Windows named pipes (transport_windows.go) are not implemented: `--pipe` returns an explicit
-// Unsupported error on non-Unix targets. The pinned sync Node client uses `--pipe` on Windows, so
-// the sync client is unsupported on Windows until named pipes are added.
+// Port of tsc/internal/ipc/transport.go and the connection setup in tsc/internal/api/server.go.
+// Run on stdio or a private Unix socket directory / Windows named pipe (`--pipe <path>`),
+// MessagePack + SyncConn by default, JSON-RPC + AsyncConn with `--async`.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -17,6 +13,50 @@ use crate::jsonrpc::{FrameReader, FrameWriter};
 use crate::message::{DEFAULT_MAX_FRAME_BYTES, TransportError};
 use crate::msgpack::{MessagePackReader, MessagePackWriter};
 use crate::protocol::WireProtocol;
+
+#[cfg(unix)]
+#[path = "transport_unix.rs"]
+mod pipe_os;
+#[cfg(windows)]
+#[path = "transport_windows.rs"]
+mod pipe_os;
+#[cfg(not(any(unix, windows)))]
+mod pipe_os {
+    use std::io;
+    use std::path::{Path, PathBuf};
+
+    pub(super) struct PipeListener {
+        path: PathBuf,
+    }
+
+    impl PipeListener {
+        pub(super) fn bind(path: &Path) -> io::Result<Self> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "--pipe {}: pipe transport is not supported on this platform",
+                    path.display()
+                ),
+            ))
+        }
+
+        pub(super) fn bind_private(name: &str) -> io::Result<Self> {
+            Self::bind(Path::new(name))
+        }
+
+        pub(super) fn path(&self) -> &Path {
+            &self.path
+        }
+
+        #[expect(
+            clippy::unused_self,
+            reason = "Matches the platform listener API; bind always rejects this target."
+        )]
+        pub(super) fn accept(&self) -> io::Result<super::Stream> {
+            unreachable!("PipeListener cannot be bound on this platform")
+        }
+    }
+}
 
 /// One accepted bidirectional stream.
 pub struct Stream {
@@ -37,70 +77,41 @@ impl Stream {
     }
 }
 
-/// `PipeTransport`: listens on `path` (removing a stale socket file first) and accepts one connection.
+/// `PipeTransport`: listens on a private Unix socket or Windows named pipe and accepts one connection.
 pub struct PipeListener {
-    #[cfg(unix)]
-    listener: std::os::unix::net::UnixListener,
-    path: PathBuf,
+    inner: pipe_os::PipeListener,
 }
 
 impl PipeListener {
-    #[cfg(unix)]
     pub fn bind(path: &Path) -> std::io::Result<PipeListener> {
-        let _ = std::fs::remove_file(path);
-        let listener = std::os::unix::net::UnixListener::bind(path)?;
-        Ok(PipeListener { listener, path: path.to_path_buf() })
+        pipe_os::PipeListener::bind(path).map(|inner| PipeListener { inner })
     }
 
-    #[cfg(not(unix))]
-    pub fn bind(path: &Path) -> std::io::Result<PipeListener> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            format!(
-                "--pipe {}: named pipe transport is not supported on this platform",
-                path.display()
-            ),
-        ))
+    /// Creates a private socket path in the system temporary directory on Unix, or a named pipe
+    /// under `\\.\pipe\` on Windows.
+    pub fn bind_private(name: &str) -> std::io::Result<PipeListener> {
+        pipe_os::PipeListener::bind_private(name).map(|inner| PipeListener { inner })
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        self.inner.path()
     }
 
-    #[cfg(unix)]
     pub fn accept(&self) -> std::io::Result<Stream> {
-        let (stream, _) = self.listener.accept()?;
-        let reader = stream.try_clone()?;
-        let closer = stream.try_clone()?;
-        Ok(Stream {
-            reader: Box::new(reader),
-            writer: Box::new(stream),
-            closer: Some(Box::new(move || {
-                let _ = closer.shutdown(std::net::Shutdown::Both);
-            })),
-        })
-    }
-
-    #[cfg(not(unix))]
-    #[expect(
-        clippy::unused_self,
-        reason = "Shares the Unix listener API; bind always returns Unsupported on this target."
-    )]
-    pub fn accept(&self) -> std::io::Result<Stream> {
-        unreachable!("PipeListener cannot be bound on this platform")
+        self.inner.accept()
     }
 }
 
-#[cfg(unix)]
-impl Drop for PipeListener {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-/// ipc.GeneratePipePath (Unix): `<tmpdir>/<name>`.
+/// ipc.GeneratePipePath: `<tmpdir>/<name>` on Unix, `\\.\pipe\<name>` on Windows.
 pub fn generate_pipe_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(name)
+    #[cfg(windows)]
+    {
+        PathBuf::from(format!(r"\\.\pipe\{name}"))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::temp_dir().join(name)
+    }
 }
 
 /// A caller slot filled once the connection exists (Go: `SetConnection` after Accept), so the session and

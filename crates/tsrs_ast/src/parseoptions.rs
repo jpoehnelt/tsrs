@@ -36,7 +36,7 @@ pub fn get_external_module_indicator_options(
         // If jsx is react-jsx or react-jsxdev then jsx tags force module-ness
         // otherwise, the presence of import or export statments (or import.meta) implies module-ness
         ModuleDetectionKind::Auto => ExternalModuleIndicatorOptions {
-            jsx: options.jsx == JsxEmit::ReactJSX || options.jsx == JsxEmit::ReactJSXDev,
+            jsx: options.jsx == JsxEmit::REACT_JSX || options.jsx == JsxEmit::REACT_JSX_DEV,
             force: is_file_forced_to_be_module_by_format(file_name, options, metadata),
         },
         ModuleDetectionKind::None => crate::parseoptions::ExternalModuleIndicatorOptions::default(),
@@ -55,7 +55,7 @@ fn is_file_forced_to_be_module_by_format(
     // for back compat purposes. The only non-declaration files _not_ forced to be a module are `.js` files
     // that aren't esm-mode (meaning not in a `type: module` scope).
     get_implied_node_format_for_emit_worker(file_name, options.get_emit_module_kind(), metadata)
-        == ModuleKind::ESNext
+        == ModuleKind::ES_NEXT
         || tspath::file_extension_is_one_of(
             file_name,
             IS_FILE_FORCED_TO_BE_MODULE_BY_FORMAT_EXTENSIONS,
@@ -82,10 +82,10 @@ fn get_external_module_indicator(
         return None;
     }
 
-    if opts.jsx {
-        if let Some(node) = is_file_module_from_using_jsx_tag(file) {
-            return Some(node);
-        }
+    if opts.jsx
+        && let Some(node) = is_file_module_from_using_jsx_tag(file)
+    {
+        return Some(node);
     }
 
     if opts.force {

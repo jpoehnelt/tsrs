@@ -1,4 +1,4 @@
-// @generated from pinned tsc/internal/api/proto.go (microsoft/TypeScript b85298b6). One row per Method constant.
+// @generated from tsc/internal/api/proto.go through microsoft/TypeScript c0ca4744c9. One row per Method constant.
 // Lane: Checker = owned by the checker lane; Ls = language-service backed (unassigned, needs core decision); Other = owned by another lane.
 use super::coverage_types::{Lane::*, Row, Status::*};
 
@@ -7,6 +7,7 @@ pub const PINNED_METHODS: &[Row] = &[
     Row { method: "releaseSourceFile", lane: Other, status: NotOwned },
     Row { method: "retainSourceFile", lane: Other, status: NotOwned },
     Row { method: "getCachedSourceFile", lane: Other, status: NotOwned },
+    Row { method: "getSymbolOfDeclaration", lane: Other, status: NotOwned },
     Row { method: "batchRequests", lane: Other, status: NotOwned },
     Row { method: "initialize", lane: Other, status: NotOwned },
     Row { method: "createSnapshot", lane: Other, status: NotOwned },
@@ -136,6 +137,10 @@ pub const PINNED_METHODS: &[Row] = &[
     Row { method: "getAliasedSymbol", lane: Checker, status: Tested },
     Row { method: "getImmediateAliasedSymbol", lane: Checker, status: Tested },
     Row { method: "getTargetSymbol", lane: Checker, status: Tested },
+    Row { method: "getMergedSymbol", lane: Checker, status: Tested },
+    Row { method: "getSymbolOfNode", lane: Checker, status: Tested },
+    Row { method: "getSymbolOfDeclarationForChecker", lane: Checker, status: Tested },
+    Row { method: "getParentOfSymbolForChecker", lane: Checker, status: Tested },
     Row { method: "getExportSymbolOfSymbolForChecker", lane: Checker, status: Tested },
     Row { method: "getFullyQualifiedName", lane: Checker, status: Tested },
     Row { method: "getExportsOfModule", lane: Checker, status: Tested },
@@ -148,6 +153,7 @@ pub const PINNED_METHODS: &[Row] = &[
     Row { method: "getReferencedSymbolsForNode", lane: Checker, status: Tested },
     Row { method: "getSignatureUsages", lane: Checker, status: Tested },
     Row { method: "getCompletionsAtPosition", lane: Checker, status: Tested },
+    Row { method: "formatNodeForInsertion", lane: Other, status: NotOwned },
     Row { method: "getSyntacticDiagnostics", lane: Other, status: NotOwned },
     Row { method: "getBindDiagnostics", lane: Other, status: NotOwned },
     Row { method: "getSemanticDiagnostics", lane: Other, status: NotOwned },
@@ -157,7 +163,6 @@ pub const PINNED_METHODS: &[Row] = &[
     Row { method: "getGlobalDiagnostics", lane: Other, status: NotOwned },
     Row { method: "getConfigFileParsingDiagnostics", lane: Other, status: NotOwned },
     Row { method: "printNode", lane: Other, status: NotOwned },
-    Row { method: "formatNodeForInsertion", lane: Other, status: NotOwned },
     Row { method: "emit", lane: Other, status: NotOwned },
     Row { method: "emitToString", lane: Other, status: NotOwned },
     Row { method: "getJavaScriptEmit", lane: Other, status: NotOwned },

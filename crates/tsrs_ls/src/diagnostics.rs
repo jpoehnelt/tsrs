@@ -13,7 +13,7 @@ use crate::spanmap::Fidelity;
 // getAllDiagnostics collects all diagnostics for a file: syntactic, semantic,
 // suggestion, and (when declarations are emitted) declaration diagnostics.
 // diagnostics.go:18
-pub(crate) fn get_all_diagnostics(
+pub fn get_all_diagnostics(
     ctx: &Context,
     program: &'static Program,
     file: P<SourceFile>,
@@ -150,7 +150,7 @@ fn aggregate_synthesized_diagnostics(
     let aggregate = ast::new_diagnostic(
         Some(file),
         TextRange::new(0, 0),
-        &diagnostics::Virtual_code_produced_by_the_content_mapper_0_has_problems_with_no_corresponding_location_in_this_file,
+        &diagnostics::VIRTUAL_CODE_PRODUCED_BY_THE_CONTENT_MAPPER_0_HAS_PROBLEMS_WITH_NO_CORRESPONDING_LOCATION_IN_THIS_FILE,
         &[&file.content_mapper()],
     );
     let aggregate = aggregate.set_related_info(diags);

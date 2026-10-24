@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 
 use hashbrown::HashTable;
 use rustc_hash::FxBuildHasher;
-use tsrs_core::{FrozenCell, OwnedCell, OwnedPSliceCell, OwnedTaggedStrCell, P, PKey};
+use tsrs_core::{FrozenCell, OwnedCell, OwnedTaggedStrCell, P, PKey, ThinSlice};
 
 use crate::ast::{Node, SourceFile};
 use crate::checkflags::CheckFlags;
@@ -22,17 +22,32 @@ use crate::*;
 // 10.88M / 2.31M of 13.2M; another node in 23K), so a bit says "the first declaration" and only another node is
 // kept in the tail (`value_declaration()` / `set_value_declaration()`; a declarations write that replaces the
 // first declaration moves it to the tail first). Both bits (`TAG_TABLES`, `TAG_VALUE_FIRST`) are the tag bits of
-// the name word (`OwnedTaggedStrCell`: pointer, length and tags in one word). `declarations` is an
-// `OwnedPSliceCell`: 40 bytes, 32 with compressed pointers (handle-sized parent, 8-byte declarations).
+// the name word (`OwnedTaggedStrCell`: pointer, length and tags in one word).
+// Ordinary symbols allocate a header and an inline SymbolData payload. Instantiated symbols allocate
+// only the header and store their ordinary data owner's key in parent_or_tables. The private high bit
+// of check_flags_and_kind selects that layout independently of the semantic flags and symbol id.
 
-#[derive(Default)]
+#[repr(C, align(8))]
 pub struct Symbol {
     pub flags: OwnedCell<SymbolFlags>,
-    pub check_flags: OwnedCell<CheckFlags>, // Non-zero only in transient symbols created by Checker
-    pub name: OwnedTaggedStrCell,
-    declarations: OwnedPSliceCell<P<Node>>, // Go slice: shared by copies, replaced (not mutated) on append
-    pub(crate) id: AtomicU32,               // Go uint64; ids above u32::MAX panic in get_symbol_id
-    parent_or_tables: OwnedCell<PKey>, // `P::key` of the parent or (with `TAG_TABLES`) of the tail; 0 = none
+    check_flags_and_kind: OwnedCell<u32>,
+    pub(crate) id: AtomicU32, // Low 31 bits for ordinary ids; high bit tags Go's reserved block range.
+    parent_or_tables: OwnedCell<PKey>, // parent, table tail, or shared data owner; 0 = none
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct SymbolData {
+    name: OwnedTaggedStrCell,
+    // Go slice: shared by copies, replaced (not mutated) on append. ThinSlice keeps this 8 bytes
+    // with compressed and plain pointers, with a long form for unusually large declaration lists.
+    declarations: OwnedCell<ThinSlice<P<Node>>>,
+}
+
+#[repr(C)]
+struct SymbolWithData {
+    symbol: Symbol,
+    data: SymbolData,
 }
 
 #[derive(Default)]
@@ -47,11 +62,22 @@ struct SymbolTables {
     lazy: OwnedCell<Option<P<crate::lazylist::LazyNodeList>>>,
 }
 
+const SHARED_DATA: u32 = 1 << 31;
+const _: () = assert!(CheckFlags::all().bits() & SHARED_DATA == 0);
+const _: () = assert!(std::mem::offset_of!(SymbolWithData, symbol) == 0);
+const _: () = assert!(std::mem::offset_of!(SymbolWithData, data) == std::mem::size_of::<Symbol>());
 #[cfg(target_pointer_width = "64")]
-const _: () =
-    assert!(std::mem::size_of::<Symbol>() == if tsrs_core::COMPRESSED_PTRS { 32 } else { 40 });
+const _: () = {
+    assert!(std::mem::size_of::<Symbol>() == if tsrs_core::COMPRESSED_PTRS { 16 } else { 24 });
+    assert!(
+        std::mem::size_of::<SymbolWithData>() == if tsrs_core::COMPRESSED_PTRS { 32 } else { 40 }
+    );
+};
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(std::mem::size_of::<Symbol>() == 32);
+const _: () = {
+    assert!(std::mem::size_of::<Symbol>() == 16);
+    assert!(std::mem::size_of::<SymbolWithData>() == 32);
+};
 
 /// `parent_or_tables` holds the `SymbolTables` tail.
 const TAG_TABLES: u8 = 1;
@@ -61,15 +87,74 @@ const TAG_VALUE_FIRST: u8 = 2;
 impl Symbol {
     /// Allocates a fresh symbol (Go `&ast.Symbol{Flags: flags, Name: name}`).
     pub fn new(flags: SymbolFlags, name: &'static str) -> P<Symbol> {
+        let allocation = P::new(SymbolWithData {
+            symbol: Symbol {
+                flags: OwnedCell::new(flags),
+                check_flags_and_kind: OwnedCell::new(0),
+                id: AtomicU32::new(0),
+                parent_or_tables: OwnedCell::new(0),
+            },
+            data: SymbolData { name: OwnedTaggedStrCell::new(name), ..Default::default() },
+        });
+        // SAFETY: SymbolWithData is repr(C) with the 8-aligned Symbol header first.
+        let s = unsafe { allocation.cast::<Symbol>() };
+        if tsrs_core::sharedgraph::on_seed_thread() {
+            crate::get_symbol_id(s);
+        }
+        s
+    }
+
+    /// A transient symbol with its own flags, check flags and id, sharing the source's data.
+    /// Go `newSharedDataSymbol` stores the same `symbolData` pointer on both symbols.
+    pub fn new_shared_data(source: P<Symbol>) -> P<Symbol> {
+        let data = if source.shares_data() {
+            // SAFETY: a shared symbol stores its live data owner's key here.
+            unsafe { P::from_key(source.parent_or_tables.get()) }
+        } else {
+            source
+        };
         let s = P::new(Symbol {
-            flags: OwnedCell::new(flags),
-            name: OwnedTaggedStrCell::new(name),
-            ..Default::default()
+            flags: OwnedCell::new(source.flags() | SymbolFlags::Transient),
+            check_flags_and_kind: OwnedCell::new(SHARED_DATA),
+            id: AtomicU32::new(0),
+            parent_or_tables: OwnedCell::new(data.key()),
         });
         if tsrs_core::sharedgraph::on_seed_thread() {
             crate::get_symbol_id(s);
         }
         s
+    }
+
+    #[inline]
+    fn shares_data(&self) -> bool {
+        self.check_flags_and_kind.get() & SHARED_DATA != 0
+    }
+
+    /// Inline payload of an ordinary data owner; shared instances never call this on themselves.
+    #[inline]
+    fn own_data(&self) -> &SymbolData {
+        debug_assert!(!self.shares_data());
+        // SAFETY: only new and new_shared_data construct Symbol. An ordinary header is the first
+        // field of SymbolWithData, whose live payload is at this offset in the same arena allocation.
+        unsafe {
+            tsrs_core::ptr::arena_neighbor(
+                self,
+                std::mem::offset_of!(SymbolWithData, data) as isize,
+            )
+        }
+    }
+
+    #[inline]
+    fn data_owner(&self) -> &Symbol {
+        if self.shares_data() {
+            let key = self.parent_or_tables.get();
+            assert_ne!(key, 0, "instantiated symbol has no shared data");
+            // SAFETY: `new_shared_data` stores the key of the live data owner, flattening
+            // nested instances. The arena object outlives this instance.
+            unsafe { P::<Symbol>::from_key(key) }.get()
+        } else {
+            self
+        }
     }
 
     #[inline]
@@ -82,15 +167,26 @@ impl Symbol {
     }
     #[inline]
     pub fn check_flags(&self) -> CheckFlags {
-        self.check_flags.get()
+        CheckFlags::from_bits_retain(self.check_flags_and_kind.get() & !SHARED_DATA)
+    }
+    /// Updates semantic check flags without changing the immutable allocation layout.
+    #[inline]
+    pub fn set_check_flags(&self, flags: CheckFlags) {
+        assert_eq!(flags.bits() & SHARED_DATA, 0, "check flags overlap the symbol layout tag");
+        let kind = self.check_flags_and_kind.get() & SHARED_DATA;
+        self.check_flags_and_kind.set(flags.bits() | kind);
     }
     #[inline]
     pub fn name(&self) -> &'static str {
-        self.name.get()
+        self.data_owner().own_data().name.get()
+    }
+    #[inline]
+    pub fn set_name(&self, name: &'static str) {
+        self.data_owner().own_data().name.set(name);
     }
     #[inline]
     pub fn declarations(&self) -> &'static [P<Node>] {
-        self.declarations.get()
+        self.data_owner().own_data().declarations.get().get()
     }
     /// Go `symbol.Declarations = slices.Clone(declarations)`-like: stores a copy.
     #[inline]
@@ -99,27 +195,28 @@ impl Symbol {
     }
     /// Go `symbol.Declarations = declarations` (shares the slice).
     pub fn set_declarations_static(&self, declarations: &'static [P<Node>]) {
-        let tags = self.name.tags();
+        let data = self.data_owner();
+        let tags = data.own_data().name.tags();
         if tags & TAG_VALUE_FIRST != 0 {
-            let value_declaration = self.declarations.get()[0];
+            let value_declaration = data.own_data().declarations.get().get()[0];
             if declarations.first() != Some(&value_declaration) {
-                self.name.set_tags(tags & !TAG_VALUE_FIRST);
-                self.tables_for_write().value_declaration.set(Some(value_declaration));
+                data.own_data().name.set_tags(tags & !TAG_VALUE_FIRST);
+                data.tables_for_write().value_declaration.set(Some(value_declaration));
             }
         }
-        self.declarations.set(declarations);
+        data.own_data().declarations.set(ThinSlice::new(declarations));
     }
     /// Go `append(symbol.Declarations, declarations...)`.
     pub fn append_declarations(&self, declarations: &[P<Node>]) {
         if declarations.is_empty() {
             return;
         }
-        if self.declarations.get().is_empty() {
+        if self.declarations().is_empty() {
             self.set_declarations(declarations);
             return;
         }
-        let mut result = Vec::with_capacity(self.declarations.get().len() + declarations.len());
-        result.extend_from_slice(self.declarations.get());
+        let mut result = Vec::with_capacity(self.declarations().len() + declarations.len());
+        result.extend_from_slice(self.declarations());
         result.extend_from_slice(declarations);
         self.set_declarations_static(tsrs_core::alloc_vec(result));
     }
@@ -129,48 +226,52 @@ impl Symbol {
         reason = "indexing with a bounds check: +0.7% instructions, one checker (notes/mem-small.md)"
     )]
     pub fn value_declaration(&self) -> Option<P<Node>> {
-        if self.name.tags() & TAG_VALUE_FIRST != 0 {
-            let declarations = self.declarations.get();
+        let data = self.data_owner();
+        if data.own_data().name.tags() & TAG_VALUE_FIRST != 0 {
+            let declarations = data.own_data().declarations.get().get();
             debug_assert_ne!(declarations, []);
             // SAFETY: the bit is set only while the declarations are non-empty (`set_value_declaration`,
             // `set_declarations_static`).
             return Some(unsafe { *declarations.get_unchecked(0) });
         }
-        self.tables()?.value_declaration.get()
+        data.tables()?.value_declaration.get()
     }
     pub fn set_value_declaration(&self, value_declaration: Option<P<Node>>) {
-        let tags = self.name.tags();
+        let data = self.data_owner();
+        let tags = data.own_data().name.tags();
         if value_declaration.is_some()
-            && self.declarations.get().first().copied() == value_declaration
+            && data.own_data().declarations.get().get().first().copied() == value_declaration
         {
-            self.name.set_tags(tags | TAG_VALUE_FIRST);
-            if let Some(tables) = self.tables() {
+            data.own_data().name.set_tags(tags | TAG_VALUE_FIRST);
+            if let Some(tables) = data.tables() {
                 tables.value_declaration.set(None);
             }
             return;
         }
-        self.name.set_tags(tags & !TAG_VALUE_FIRST);
-        if value_declaration.is_some() || self.tables().is_some() {
-            self.tables_for_write().value_declaration.set(value_declaration);
+        data.own_data().name.set_tags(tags & !TAG_VALUE_FIRST);
+        if value_declaration.is_some() || data.tables().is_some() {
+            data.tables_for_write().value_declaration.set(value_declaration);
         }
     }
     #[inline]
     fn tables(&self) -> Option<P<SymbolTables>> {
+        let data = self.data_owner();
         // SAFETY: with the tag, the field holds the key of the tail made by `tables_for_write` (never freed).
-        (self.name.tags() & TAG_TABLES != 0)
-            .then(|| unsafe { P::from_key(self.parent_or_tables.get()) })
+        (data.own_data().name.tags() & TAG_TABLES != 0)
+            .then(|| unsafe { P::from_key(data.parent_or_tables.get()) })
     }
     #[inline]
     fn tables_for_write(&self) -> P<SymbolTables> {
-        if let Some(tables) = self.tables() {
+        let data = self.data_owner();
+        if let Some(tables) = data.tables() {
             tables
         } else {
             let tables = P::new(SymbolTables {
-                parent: OwnedCell::new(self.parent()),
+                parent: OwnedCell::new(data.parent()),
                 ..Default::default()
             });
-            self.parent_or_tables.set(tables.key());
-            self.name.set_tags(self.name.tags() | TAG_TABLES);
+            data.parent_or_tables.set(tables.key());
+            data.own_data().name.set_tags(data.own_data().name.tags() | TAG_TABLES);
             tables
         }
     }
@@ -191,10 +292,10 @@ impl Symbol {
     #[inline]
     pub fn exports(&self) -> Option<P<SymbolTable>> {
         let t = self.tables()?;
-        if let Some(lazy) = t.lazy.get() {
-            if lazy.fills_exports() {
-                lazy.ensure();
-            }
+        if let Some(lazy) = t.lazy.get()
+            && lazy.fills_exports()
+        {
+            lazy.ensure();
         }
         t.exports.get()
     }
@@ -219,17 +320,19 @@ impl Symbol {
     }
     #[inline]
     pub fn parent(&self) -> Option<P<Symbol>> {
-        match self.tables() {
+        let data = self.data_owner();
+        match data.tables() {
             Some(tables) => tables.parent.get(),
             // SAFETY: without the tag, the field is 0 or the key of the parent (a live symbol).
-            None => unsafe { P::from_key_opt(self.parent_or_tables.get()) },
+            None => unsafe { P::from_key_opt(data.parent_or_tables.get()) },
         }
     }
     #[inline]
     pub fn set_parent(&self, parent: Option<P<Symbol>>) {
-        match self.tables() {
+        let data = self.data_owner();
+        match data.tables() {
             Some(tables) => tables.parent.set(parent),
-            None => self.parent_or_tables.set(P::key_opt(parent)),
+            None => data.parent_or_tables.set(P::key_opt(parent)),
         }
     }
     #[inline]
@@ -245,7 +348,7 @@ impl Symbol {
 
     pub fn is_external_module(&self) -> bool {
         self.flags.get().intersects(SymbolFlags::Module)
-            && is_ambient_module_symbol_name(self.name.get())
+            && is_ambient_module_symbol_name(self.name())
     }
 
     pub fn is_static(&self) -> bool {
@@ -974,6 +1077,12 @@ impl SymbolTable {
         P::new(SymbolTable(FrozenCell::new(self.0.borrow().clone())))
     }
 
+    /// Empties the table and frees its heap buffers (an arena table no one reads again: arena objects are never
+    /// dropped, so its entry buffer and index would otherwise stay allocated).
+    pub fn clear_and_free(&self) {
+        drop(self.0.replace(SymbolMap::default()));
+    }
+
     /// Go `table[name]`. On a `P<SymbolTable>` receiver `table.get(name)` resolves to `P::get`, so use
     /// `table.lookup(name)` (same thing) there.
     #[inline]
@@ -1068,46 +1177,46 @@ impl SymbolTable {
 // (DEL): a single byte, so `name.as_bytes()[0]` / `name.as_bytes()[1]` checks translate one to one, and it
 // cannot occur in an IdentifierName. Translate Go `name[0] == '\xFE'` to
 // `name.as_bytes().first() == Some(&InternalSymbolNamePrefixByte)`.
-pub const InternalSymbolNamePrefix: &str = "\u{7f}";
-pub const InternalSymbolNamePrefixByte: u8 = 0x7f;
+pub const INTERNAL_SYMBOL_NAME_PREFIX: &str = "\u{7f}";
+pub const INTERNAL_SYMBOL_NAME_PREFIX_BYTE: u8 = 0x7f;
 
-pub const InternalSymbolNameCall: &str = "\u{7f}call"; // Call signatures
-pub const InternalSymbolNameConstructor: &str = "\u{7f}constructor"; // Constructor implementations
-pub const InternalSymbolNameNew: &str = "\u{7f}new"; // Constructor signatures
-pub const InternalSymbolNameIndex: &str = "\u{7f}index"; // Index signatures
-pub const InternalSymbolNameExportStar: &str = "\u{7f}export"; // Module export * declarations
-pub const InternalSymbolNameGlobal: &str = "\u{7f}global"; // Global self-reference
-pub const InternalSymbolNameMissing: &str = "\u{7f}missing"; // Indicates missing symbol
-pub const InternalSymbolNameType: &str = "\u{7f}type"; // Anonymous type literal symbol
-pub const InternalSymbolNameObject: &str = "\u{7f}object"; // Anonymous object literal declaration
-pub const InternalSymbolNameJSXAttributes: &str = "\u{7f}jsxAttributes"; // Anonymous JSX attributes object literal declaration
-pub const InternalSymbolNameClass: &str = "\u{7f}class"; // Unnamed class expression
-pub const InternalSymbolNameFunction: &str = "\u{7f}function"; // Unnamed function expression
-pub const InternalSymbolNameComputed: &str = "\u{7f}computed"; // Computed property name declaration with dynamic name
-pub const InternalSymbolNameAssignmentDeclaration: &str = "\u{7f}assignment"; // Assignment declarations
-pub const InternalSymbolNameInstantiationExpression: &str = "\u{7f}instantiationExpression"; // Instantiation expressions
-pub const InternalSymbolNameImportAttributes: &str = "\u{7f}importAttributes";
-pub const InternalSymbolNameExportEquals: &str = "export="; // Export assignment symbol
-pub const InternalSymbolNameDefault: &str = "default"; // Default export symbol (technically not wholly internal, but included here for usability)
-pub const InternalSymbolNameThis: &str = "this";
-pub const InternalSymbolNameModuleExports: &str = "module.exports";
+pub const INTERNAL_SYMBOL_NAME_CALL: &str = "\u{7f}call"; // Call signatures
+pub const INTERNAL_SYMBOL_NAME_CONSTRUCTOR: &str = "\u{7f}constructor"; // Constructor implementations
+pub const INTERNAL_SYMBOL_NAME_NEW: &str = "\u{7f}new"; // Constructor signatures
+pub const INTERNAL_SYMBOL_NAME_INDEX: &str = "\u{7f}index"; // Index signatures
+pub const INTERNAL_SYMBOL_NAME_EXPORT_STAR: &str = "\u{7f}export"; // Module export * declarations
+pub const INTERNAL_SYMBOL_NAME_GLOBAL: &str = "\u{7f}global"; // Global self-reference
+pub const INTERNAL_SYMBOL_NAME_MISSING: &str = "\u{7f}missing"; // Indicates missing symbol
+pub const INTERNAL_SYMBOL_NAME_TYPE: &str = "\u{7f}type"; // Anonymous type literal symbol
+pub const INTERNAL_SYMBOL_NAME_OBJECT: &str = "\u{7f}object"; // Anonymous object literal declaration
+pub const INTERNAL_SYMBOL_NAME_JSX_ATTRIBUTES: &str = "\u{7f}jsxAttributes"; // Anonymous JSX attributes object literal declaration
+pub const INTERNAL_SYMBOL_NAME_CLASS: &str = "\u{7f}class"; // Unnamed class expression
+pub const INTERNAL_SYMBOL_NAME_FUNCTION: &str = "\u{7f}function"; // Unnamed function expression
+pub const INTERNAL_SYMBOL_NAME_COMPUTED: &str = "\u{7f}computed"; // Computed property name declaration with dynamic name
+pub const INTERNAL_SYMBOL_NAME_ASSIGNMENT_DECLARATION: &str = "\u{7f}assignment"; // Assignment declarations
+pub const INTERNAL_SYMBOL_NAME_INSTANTIATION_EXPRESSION: &str = "\u{7f}instantiationExpression"; // Instantiation expressions
+pub const INTERNAL_SYMBOL_NAME_IMPORT_ATTRIBUTES: &str = "\u{7f}importAttributes";
+pub const INTERNAL_SYMBOL_NAME_EXPORT_EQUALS: &str = "export="; // Export assignment symbol
+pub const INTERNAL_SYMBOL_NAME_DEFAULT: &str = "default"; // Default export symbol (technically not wholly internal, but included here for usability)
+pub const INTERNAL_SYMBOL_NAME_THIS: &str = "this";
+pub const INTERNAL_SYMBOL_NAME_MODULE_EXPORTS: &str = "module.exports";
 
 pub fn symbol_name(symbol: P<Symbol>) -> &'static str {
-    if let Some(value_declaration) = symbol.value_declaration() {
-        if is_private_identifier_class_element_declaration(value_declaration) {
-            return value_declaration.name().unwrap().text();
-        }
+    if let Some(value_declaration) = symbol.value_declaration()
+        && is_private_identifier_class_element_declaration(value_declaration)
+    {
+        return value_declaration.name().unwrap().text();
     }
-    symbol.name.get()
+    symbol.name()
 }
 
 // EscapeAllInternalSymbolNames replaces internal symbol name markers with "__".
 pub fn escape_all_internal_symbol_names(name: &str) -> String {
-    name.replace(InternalSymbolNamePrefix, "__")
+    name.replace(INTERNAL_SYMBOL_NAME_PREFIX, "__")
 }
 
 pub fn escape_internal_symbol_name(name: &str) -> String {
-    if let Some(rest) = name.strip_prefix(InternalSymbolNamePrefix) {
+    if let Some(rest) = name.strip_prefix(INTERNAL_SYMBOL_NAME_PREFIX) {
         return format!("__{rest}");
     }
     name.to_string()
@@ -1118,7 +1227,7 @@ pub fn escape_internal_symbol_name(name: &str) -> String {
 // and user names that already begin with "__" gain an extra leading underscore
 // so they can be distinguished from internal names.
 pub fn escape_symbol_name(name: &str) -> String {
-    if let Some(rest) = name.strip_prefix(InternalSymbolNamePrefix) {
+    if let Some(rest) = name.strip_prefix(INTERNAL_SYMBOL_NAME_PREFIX) {
         return format!("__{rest}");
     }
     let b = name.as_bytes();
@@ -1131,6 +1240,163 @@ pub fn escape_symbol_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_symbol_tables_allocate_only_for_values() {
+        let source = Symbol::new(SymbolFlags::Class, "source");
+        let alias = Symbol::new_shared_data(source);
+        let parent = Symbol::new(SymbolFlags::Module, "parent");
+        source.set_parent(Some(parent));
+
+        alias.set_members(None);
+        source.set_exports(None);
+        alias.set_export_symbol(None);
+        assert!(source.tables().is_none());
+        assert!(alias.tables().is_none());
+        assert_eq!(alias.parent(), Some(parent));
+
+        let members = SymbolTable::new();
+        alias.set_members(Some(members));
+        let tail = source.tables().unwrap();
+        assert_eq!(alias.tables(), Some(tail));
+        assert_eq!(source.members(), Some(members));
+        assert_eq!(source.parent(), Some(parent));
+
+        let exports = SymbolTable::new();
+        let export_symbol = Symbol::new(SymbolFlags::Alias, "export");
+        source.set_exports(Some(exports));
+        alias.set_export_symbol(Some(export_symbol));
+        assert_eq!(source.tables(), Some(tail));
+        assert_eq!(alias.exports(), Some(exports));
+        assert_eq!(source.export_symbol(), Some(export_symbol));
+
+        source.set_members(None);
+        alias.set_exports(None);
+        source.set_export_symbol(None);
+        assert_eq!(source.tables(), Some(tail));
+        assert_eq!(alias.members(), None);
+        assert_eq!(source.exports(), None);
+        assert_eq!(alias.export_symbol(), None);
+    }
+
+    #[test]
+    fn instantiated_symbol_shares_data_but_not_identity_or_flags() {
+        let factory = NodeFactory::default();
+        let first = factory.new_identifier("first");
+        let second = factory.new_identifier("second");
+        let source = Symbol::new(SymbolFlags::Property, "original");
+        let parent = Symbol::new(SymbolFlags::Class, "parent");
+        let export = Symbol::new(SymbolFlags::Alias, "export");
+        source.set_declarations(&[first]);
+        source.set_value_declaration(Some(first));
+        source.set_parent(Some(parent));
+        source.set_export_symbol(Some(export));
+
+        let instance = Symbol::new_shared_data(source);
+        let nested = Symbol::new_shared_data(instance);
+        assert_eq!(instance.parent_or_tables.get(), source.key());
+        assert_eq!(nested.parent_or_tables.get(), source.key());
+        assert_ne!(source, instance);
+        assert_ne!(instance, nested);
+        assert_ne!(get_symbol_id(source), get_symbol_id(instance));
+        assert_ne!(get_symbol_id(instance), get_symbol_id(nested));
+        assert_eq!(instance.flags(), SymbolFlags::Property | SymbolFlags::Transient);
+        assert_eq!(instance.check_flags(), CheckFlags::None);
+        assert_eq!(instance.name(), "original");
+        assert_eq!(instance.declarations(), &[first]);
+        assert_eq!(instance.value_declaration(), Some(first));
+        assert_eq!(instance.parent(), Some(parent));
+        assert_eq!(instance.export_symbol(), Some(export));
+
+        // Lazy table creation through either symbol changes the same data.
+        assert_eq!(get_members(instance), get_members(source));
+        assert_eq!(get_exports(source), get_exports(instance));
+        let members = SymbolTable::new();
+        let exports = SymbolTable::new();
+        instance.set_members(Some(members));
+        source.set_exports(Some(exports));
+        assert_eq!(source.members(), Some(members));
+        assert_eq!(instance.exports(), Some(exports));
+
+        source.set_name("renamed");
+        instance.set_declarations(&[second]);
+        assert_eq!(instance.name(), "renamed");
+        assert_eq!(nested.name(), "renamed");
+        assert_eq!(source.declarations(), &[second]);
+        // Replacing the first declaration preserves the old value declaration in the tail.
+        assert_eq!(instance.value_declaration(), Some(first));
+        instance.set_value_declaration(Some(second));
+        assert_eq!(source.value_declaration(), Some(second));
+        instance.set_parent(None);
+        source.set_export_symbol(None);
+        assert_eq!(source.parent(), None);
+        assert_eq!(instance.export_symbol(), None);
+
+        source.set_flags(SymbolFlags::Class);
+        source.set_check_flags(CheckFlags::Readonly);
+        instance.set_check_flags(CheckFlags::None);
+        assert_eq!(instance.name(), "renamed");
+        assert_eq!(instance.declarations(), &[second]);
+        instance.set_check_flags(CheckFlags::Instantiated | CheckFlags::Late);
+        assert_eq!(source.flags(), SymbolFlags::Class);
+        assert_eq!(instance.flags(), SymbolFlags::Property | SymbolFlags::Transient);
+        assert_eq!(source.check_flags(), CheckFlags::Readonly);
+        assert_eq!(instance.check_flags(), CheckFlags::Instantiated | CheckFlags::Late);
+
+        // Neither kind of semantic flags determines the allocation layout.
+        instance.set_flags(SymbolFlags::None);
+        nested.set_check_flags(CheckFlags::all());
+        nested.set_check_flags(CheckFlags::None);
+        source.set_check_flags(CheckFlags::all());
+        assert_eq!(nested.check_flags().bits(), 0);
+        assert_eq!(source.check_flags(), CheckFlags::all());
+        assert_eq!(nested.name(), "renamed");
+        assert_eq!(instance.declarations(), &[second]);
+        assert!(source.tables().is_some());
+        assert!(!source.shares_data());
+        assert!(instance.shares_data());
+    }
+
+    #[test]
+    fn symbol_check_flags_reject_layout_bit_without_changing_data() {
+        for symbol in [
+            Symbol::new(SymbolFlags::None, ""),
+            Symbol::new_shared_data(Symbol::new(SymbolFlags::Property, "source")),
+        ] {
+            symbol.set_check_flags(CheckFlags::Readonly);
+            let name = symbol.name();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                symbol.set_check_flags(CheckFlags::from_bits_retain(SHARED_DATA));
+            }));
+            assert!(result.is_err());
+            assert_eq!(symbol.check_flags(), CheckFlags::Readonly);
+            assert_eq!(symbol.name(), name);
+        }
+    }
+
+    #[test]
+    fn shared_symbol_keeps_long_declarations_and_value_declaration() {
+        let factory = NodeFactory::default();
+        let first = factory.new_identifier("first");
+        let second = factory.new_identifier("second");
+        let source = Symbol::new(SymbolFlags::Property, "long");
+        let declarations = tsrs_core::alloc_vec(vec![first; 65536]);
+        source.set_declarations_static(declarations);
+        source.set_value_declaration(Some(first));
+        let instance = Symbol::new_shared_data(source);
+        assert_eq!(instance.declarations().as_ptr(), declarations.as_ptr());
+        assert_eq!(instance.declarations().len(), declarations.len());
+        #[cfg(target_pointer_width = "64")]
+        assert!(source.own_data().declarations.get().is_long());
+        instance.append_declarations(&[second]);
+        assert_eq!(source.declarations().len(), 65537);
+        assert_eq!(source.declarations()[65536], second);
+        instance.set_declarations_static(&[]);
+        assert_eq!(source.declarations(), &[]);
+        assert_eq!(instance.value_declaration(), Some(first));
+        instance.set_value_declaration(None);
+        assert_eq!(source.value_declaration(), None);
+    }
 
     #[test]
     fn name_filter_keeps_every_key() {

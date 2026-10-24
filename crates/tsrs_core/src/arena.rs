@@ -1492,13 +1492,13 @@ mod retired {
         for (start, end) in std::mem::take(&mut s.pending) {
             let (mut lo, mut hi) = (start, end);
             let mut absorbed: Vec<(usize, usize)> = Vec::new();
-            if let Some((&ps, &pe)) = s.spans.range(..=start).next_back() {
-                if pe >= start {
-                    absorbed.push((ps, pe));
-                    lo = ps;
-                    hi = hi.max(pe);
-                    s.spans.remove(&ps);
-                }
+            if let Some((&ps, &pe)) = s.spans.range(..=start).next_back()
+                && pe >= start
+            {
+                absorbed.push((ps, pe));
+                lo = ps;
+                hi = hi.max(pe);
+                s.spans.remove(&ps);
             }
             while let Some((&ns, &ne)) = s.spans.range(lo..).next() {
                 if ns > hi {
@@ -1657,7 +1657,7 @@ mod tests {
     fn miri_rejects_freeing_a_reference_parameter() {
         fn recycle_list(s: &'static [u64]) {
             // SAFETY: deliberately wrong: `s` is a protected borrow of the block for this whole call.
-            unsafe { free_slice!(s) }; // source.py: deliberate
+            unsafe { free_slice!(s) }; // source.mjs: deliberate
         }
         recycle_list(alloc_slice_recycled(&[1u64, 2, 3]));
     }

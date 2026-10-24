@@ -28,22 +28,22 @@ use crate::watchmanager::{self, DirWatchSet, WatchManager, WatchState};
 use crate::watchmem::{FileRegions, Freer};
 
 #[derive(Clone, Copy)]
-struct cachedSourceFile {
+struct CachedSourceFile {
     file: P<SourceFile>,
     mod_time: Option<SystemTime>,
 }
 
-type SourceFileCache = Arc<SyncMap<Path, cachedSourceFile>>;
+type SourceFileCache = Arc<SyncMap<Path, CachedSourceFile>>;
 
 /// Go `watchCompilerHost`: the compiler host, with parsed files reused while their modification time is unchanged.
-struct watchCompilerHost {
+struct WatchCompilerHost {
     inner: Arc<dyn CompilerHost>,
     cache: SourceFileCache,
     // tsrs-only: each parsed file gets a region of its own (watchmem.rs).
     regions: Arc<FileRegions>,
 }
 
-impl CompilerHost for watchCompilerHost {
+impl CompilerHost for WatchCompilerHost {
     fn fs(&self) -> &dyn FS {
         self.inner.fs()
     }
@@ -70,7 +70,7 @@ impl CompilerHost for watchCompilerHost {
         match file {
             Some(file) => {
                 if let Some(info) = info {
-                    self.cache.store(path, cachedSourceFile { file, mod_time: info.mod_time() });
+                    self.cache.store(path, CachedSourceFile { file, mod_time: info.mod_time() });
                 }
             }
             None => self.cache.delete(&path),
@@ -278,7 +278,7 @@ impl Watcher {
             wm.ensure_default_backend(&mut state);
         }
         (self.report_watch_status)(new_compiler_diagnostic(
-            &diagnostics::Starting_compilation_in_watch_mode,
+            &diagnostics::STARTING_COMPILATION_IN_WATCH_MODE,
             &[],
         ));
         self.watch_set_dirty = true;
@@ -549,11 +549,10 @@ impl Watcher {
                         self.watch_set_dirty = true;
                         self.force_full_rebuild = true;
                     }
-                    Some(_) => {}
                     // A non-source build dependency changed (a package.json or a previously-missing module path):
                     // module resolution may now differ, so the single-file fast path is unsafe.
                     None if self.seen_files.contains(&p) => self.force_full_rebuild = true,
-                    None => {}
+                    Some(_) | None => {}
                 }
             }
             if content_mapper_config_changed
@@ -561,7 +560,7 @@ impl Watcher {
                 && project.refresh().is_err()
             {
                 (self.report_diagnostic)(new_compiler_diagnostic(
-                    &diagnostics::The_content_mapper_process_could_not_be_started_or_initialized,
+                    &diagnostics::THE_CONTENT_MAPPER_PROCESS_COULD_NOT_BE_STARTED_OR_INITIALIZED,
                     &[],
                 ));
                 return;
@@ -589,7 +588,7 @@ impl Watcher {
         self.stop_signature_job();
         self.report_status(|| {
             new_compiler_diagnostic(
-                &diagnostics::File_change_detected_Starting_incremental_compilation,
+                &diagnostics::FILE_CHANGE_DETECTED_STARTING_INCREMENTAL_COMPILATION,
                 &[],
             )
         });
@@ -648,7 +647,7 @@ impl Watcher {
         let fs = self.sys.fs();
         let before = changed_paths.len();
         changed_paths.retain(|event_path, kind| {
-            if *kind != EventKind::Update {
+            if *kind != EventKind::UPDATE {
                 return true;
             }
             let Some(cached) = self.source_file_cache.load(&self.to_path(event_path)) else {
@@ -697,7 +696,7 @@ impl Watcher {
             // recursive wildcard directory (an editor's swap file, a log, a .md), so each write to one rebuilt the
             // program. Only a directory (or a deleted path, which may have been one) can bring in files that match.
             let maybe_directory = || {
-                changed_paths[event_path] == EventKind::Delete || fs.directory_exists(event_path)
+                changed_paths[event_path] == EventKind::DELETE || fs.directory_exists(event_path)
             };
             content_mapper_watched_files.contains(&p)
                 || self.seen_files.contains(&p)
@@ -754,7 +753,7 @@ impl Watcher {
         {
             let cached = Arc::new(cachedvfs::from(self.sys.fs()));
             let inner_host = self.new_compiler_host(Arc::clone(&cached) as Arc<dyn FS>);
-            let host: Arc<dyn CompilerHost> = Arc::new(watchCompilerHost {
+            let host: Arc<dyn CompilerHost> = Arc::new(WatchCompilerHost {
                 inner: inner_host,
                 cache: Arc::clone(&self.source_file_cache),
                 regions: Arc::clone(&self.file_regions),
@@ -779,7 +778,7 @@ impl Watcher {
         let cached = Arc::new(cachedvfs::from(self.sys.fs()));
         let tfs = Arc::new(trackingvfs::FS::new(Arc::clone(&cached)));
         let inner_host = self.new_compiler_host(Arc::clone(&tfs) as Arc<dyn FS>);
-        let host: Arc<dyn CompilerHost> = Arc::new(watchCompilerHost {
+        let host: Arc<dyn CompilerHost> = Arc::new(WatchCompilerHost {
             inner: inner_host,
             cache: Arc::clone(&self.source_file_cache),
             regions: Arc::clone(&self.file_regions),
@@ -869,10 +868,10 @@ impl Watcher {
     fn report_error_count(&self, error_count: usize) {
         self.report_status(|| {
             if error_count == 1 {
-                new_compiler_diagnostic(&diagnostics::Found_1_error_Watching_for_file_changes, &[])
+                new_compiler_diagnostic(&diagnostics::FOUND_1_ERROR_WATCHING_FOR_FILE_CHANGES, &[])
             } else {
                 new_compiler_diagnostic(
-                    &diagnostics::Found_0_errors_Watching_for_file_changes,
+                    &diagnostics::FOUND_0_ERRORS_WATCHING_FOR_FILE_CHANGES,
                     &[&error_count],
                 )
             }
@@ -1107,13 +1106,32 @@ impl Watcher {
         &self,
         changed_paths: &FxHashMap<String, EventKind>,
     ) -> bool {
+        let options = self.compare_paths_options();
+        let mut changed_path_keys: Option<FxHashSet<Path>> = None;
         self.config
             .content_mappers()
             .iter()
             .filter(|m| !m.package_directory.is_empty() && m.contribution_id.is_empty())
             .any(|m| {
-                changed_paths
-                    .contains_key(&tspath::combine_paths(&m.package_directory, &["package.json"]))
+                let keys = changed_path_keys.get_or_insert_with(|| {
+                    changed_paths
+                        .keys()
+                        .map(|path| {
+                            tspath::to_path(
+                                path,
+                                &options.current_directory,
+                                options.use_case_sensitive_file_names,
+                            )
+                        })
+                        .collect()
+                });
+                let manifest = tspath::combine_paths(&m.package_directory, &["package.json"]);
+                let manifest_key = tspath::to_path(
+                    &manifest,
+                    &options.current_directory,
+                    options.use_case_sensitive_file_names,
+                );
+                keys.contains(&manifest_key)
             })
     }
 
@@ -1205,15 +1223,7 @@ fn sorted_keys(changed_paths: &FxHashMap<String, EventKind>) -> Vec<&String> {
     keys
 }
 
-// Go `reflect.DeepEqual(w.config.ParsedConfig, configParseResult.ParsedConfig)`: the compiler options by value
-// (`P`'s equality is identity).
+// Go `w.config.ParsedConfig.Equals(configParseResult.ParsedConfig)`.
 fn parsed_configs_equal(a: &ParsedCommandLine, b: &ParsedCommandLine) -> bool {
-    let (a, b) = (&a.parsed_config, &b.parsed_config);
-    a.compiler_options.as_deref() == b.compiler_options.as_deref()
-        && a.watch_options == b.watch_options
-        && a.type_acquisition == b.type_acquisition
-        && a.file_names == b.file_names
-        && a.project_references == b.project_references
-        && a.project_references_is_nil == b.project_references_is_nil
-        && a.content_mappers == b.content_mappers
+    a.parsed_config.equals(&b.parsed_config)
 }

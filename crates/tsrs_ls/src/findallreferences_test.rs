@@ -14,12 +14,12 @@ use crate::lsutil::{UserPreferences, new_default_user_preferences};
 use crate::sourcemap::ECMALineInfo;
 use crate::{Host, new_language_service};
 
-struct testHost {
+struct TestHost {
     fs: Arc<dyn FS>,
     converters: Arc<Converters>,
 }
 
-impl Host for testHost {
+impl Host for TestHost {
     fn use_case_sensitive_file_names(&self) -> bool {
         false
     }
@@ -60,11 +60,11 @@ impl Host for testHost {
     }
 }
 
-struct parseConfigHost {
+struct ParseConfigHostImpl {
     fs: Arc<dyn FS>,
 }
 
-impl ParseConfigHost for parseConfigHost {
+impl ParseConfigHost for ParseConfigHostImpl {
     fn fs(&self) -> &dyn FS {
         &*self.fs
     }
@@ -86,6 +86,8 @@ impl ParseConfigHost for parseConfigHost {
 // findallreferences_test.go:35
 #[test]
 fn test_implementations_worklist_does_not_blow_up() {
+    const K: usize = 40;
+
     let measure = |k: usize| -> (usize, usize) {
         let mut b = String::new();
         b.push_str("interface I { m(): void; }\n");
@@ -105,8 +107,8 @@ fn test_implementations_worklist_does_not_blow_up() {
             false, /*useCaseSensitiveFileNames*/
         )));
 
-        let config_host: &'static parseConfigHost =
-            Box::leak(Box::new(parseConfigHost { fs: std::sync::Arc::clone(&fs) }));
+        let config_host: &'static ParseConfigHostImpl =
+            Box::leak(Box::new(ParseConfigHostImpl { fs: std::sync::Arc::clone(&fs) }));
         let (parsed, errors) = tsoptions::get_parsed_command_line_of_config_file(
             "/tsconfig.json",
             None,
@@ -137,7 +139,7 @@ fn test_implementations_worklist_does_not_blow_up() {
         let l = new_language_service(
             ProjectID("/tsconfig.json".to_string()),
             program,
-            Arc::new(testHost { fs, converters: std::sync::Arc::clone(&converters) }),
+            Arc::new(TestHost { fs, converters: std::sync::Arc::clone(&converters) }),
             "/repro.ts",
         );
 
@@ -164,7 +166,6 @@ fn test_implementations_worklist_does_not_blow_up() {
         (refs, data.symbols_and_entries.len())
     };
 
-    const K: usize = 40;
     let (small_refs, small_groups) = measure(K);
     let (large_refs, large_groups) = measure(2 * K);
 

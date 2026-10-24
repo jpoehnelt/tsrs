@@ -6,7 +6,8 @@ Reproduce only; do not diagnose or edit tracked source files. Always write
 ## Decide whether to continue
 
 Read the issue body and all comments, with later maintainer or reporter
-clarifications taking precedence.
+clarifications taking precedence. Finish this screening before any build or
+installation. Write the report and return immediately for a supported skip.
 
 Return a skipped result when:
 
@@ -30,14 +31,18 @@ try its minimal reproduction against the checkout.
 Build tsrs from the repository root:
 
 ```sh
-cargo build --release --locked -p tsrs_cli
+cargo build --profile dev --locked -p tsrs_cli -p tsrs_testrunner
 ```
 
 Compare it with the TypeScript Go compiler at the exact
 `workspace.metadata.typescript.commit` in `Cargo.toml`. Reuse a matching
-checkout in `<triageDir>/ts-ref` when present. Otherwise make a sparse checkout
-there, then build `./cmd/tsc` from its `tsc` directory with `GOTOOLCHAIN=auto`.
-Keep generated binaries and scratch data under `triageDir`.
+checkout and binary in `<triageDir>/ts-ref` when present. Otherwise make a sparse
+checkout there, then build `./cmd/tsc` from its `tsc` directory with
+`GOTOOLCHAIN=auto GOWORK=off`. Keep generated binaries and scratch data under
+`triageDir`.
+
+Use `target/debug/` binaries consistently. Reserve release builds for
+performance measurements or a demonstrated profile-specific failure.
 
 ## Run the reproduction
 

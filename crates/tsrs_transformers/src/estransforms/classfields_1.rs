@@ -9,6 +9,7 @@ bitflags::bitflags! {
     // classfields.go:18
     // classFacts tracks various facts about a class being transformed.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+    #[expect(non_camel_case_types, reason = "Keep the upstream bitflags type name.")]
     pub(crate) struct classFacts: u32 {
         const None = 0;
         const ClassWasDecorated = 1 << 0;
@@ -22,7 +23,7 @@ bitflags::bitflags! {
 // classfields.go:31
 // privateIdentifierKind represents the kind of private identifier declaration.
 // privateIdentifierInfo stores information about a private identifier during transformation.
-pub(crate) struct privateIdentifierInfo {
+pub struct PrivateIdentifierInfo {
     pub(crate) kind: PrivateIdentifierKind,
     // brandCheckIdentifier can contain:
     //  - For instance field: The WeakMap that will be the storage for the field.
@@ -47,7 +48,7 @@ pub(crate) struct privateIdentifierInfo {
 // classfields.go:54
 // privateEnvironmentData stores class-scoped environment data for private identifiers.
 #[derive(Default)]
-pub(crate) struct privateEnvironmentData {
+pub struct PrivateEnvironmentData {
     // className is used for prefixing generated variable names.
     pub(crate) class_name: Cell<Option<P<Node>>>,
     // weakSetName is used for brand check on private methods.
@@ -60,16 +61,16 @@ pub(crate) struct privateEnvironmentData {
 // and one for generated identifiers (keyed by original AST node). This prevents collisions
 // when different auto-accessors produce generated backing field names with the same text.
 #[derive(Default)]
-pub(crate) struct privateEnvironment {
-    pub(crate) data: privateEnvironmentData,
-    pub(crate) members: RefCell<FxHashMap<String, P<privateIdentifierInfo>>>,
-    pub(crate) generated_identifiers: RefCell<FxHashMap<P<Node>, P<privateIdentifierInfo>>>,
+pub struct PrivateEnvironment {
+    pub(crate) data: PrivateEnvironmentData,
+    pub(crate) members: RefCell<FxHashMap<String, P<PrivateIdentifierInfo>>>,
+    pub(crate) generated_identifiers: RefCell<FxHashMap<P<Node>, P<PrivateIdentifierInfo>>>,
 }
 
 // classfields.go:72
 // classLexicalEnvironment stores information about the lexical environment of a class.
 #[derive(Default)]
-pub(crate) struct classLexicalEnvironment {
+pub struct ClassLexicalEnvironment {
     pub(crate) facts: Cell<classFacts>,
     // classConstructor is used for brand checks on static members, and `this` references in static initializers.
     pub(crate) class_constructor: Cell<Option<P<Node>>>,
@@ -80,14 +81,14 @@ pub(crate) struct classLexicalEnvironment {
 
 // classfields.go:82
 // classLexicalEnv is a linked list of class lexical environments.
-pub(crate) struct classLexicalEnv {
-    pub(crate) previous: Option<P<classLexicalEnv>>,
-    pub(crate) data: Cell<Option<P<classLexicalEnvironment>>>,
-    pub(crate) private_env: Cell<Option<P<privateEnvironment>>>,
+pub struct ClassLexicalEnv {
+    pub(crate) previous: Option<P<ClassLexicalEnv>>,
+    pub(crate) data: Cell<Option<P<ClassLexicalEnvironment>>>,
+    pub(crate) private_env: Cell<Option<P<PrivateEnvironment>>>,
 }
 
 // classfields.go:88
-pub struct classFieldsTransformer {
+pub struct ClassFieldsTransformer {
     pub base: Transformer,
     pub(crate) compiler_options: P<CompilerOptions>,
     pub(crate) resolver: ReferenceResolverRef,
@@ -109,7 +110,7 @@ pub struct classFieldsTransformer {
     // pendingStatements tracks what computed name expression statements and static property
     // initializers must be emitted at the next execution site, in document order (for decorated classes).
     pub(crate) pending_statements: RefCell<Vec<P<Node>>>,
-    pub(crate) lexical_environment: Cell<Option<P<classLexicalEnv>>>,
+    pub(crate) lexical_environment: Cell<Option<P<ClassLexicalEnv>>>,
     pub(crate) current_class_container: Cell<Option<P<Node>>>,
     pub(crate) current_class_element: Cell<Option<P<Node>>>,
     // classAliases maps class declarations to alias identifiers for substituting class name
@@ -145,11 +146,11 @@ pub fn new_class_fields_transformer(opts: &TransformOptions) -> Option<P<Transfo
     // When targeting ESNext+ with useDefineForClassFields (the default), there are no class
     // field transformations to perform and no prior transform sets EFTransformPrivateStaticElements,
     // so every node would be returned unchanged. Skip entirely.
-    if language_version >= ScriptTarget::ESNext && use_define_for_class_fields {
+    if language_version >= ScriptTarget::ES_NEXT && use_define_for_class_fields {
         return None;
     }
 
-    let tx = P::new(classFieldsTransformer {
+    let tx = P::new(ClassFieldsTransformer {
         base: Transformer::default(),
         compiler_options: opts.compiler_options,
         resolver: opts.resolver,
@@ -202,7 +203,7 @@ pub fn new_class_fields_transformer(opts: &TransformOptions) -> Option<P<Transfo
 
     // We need to transform `accessor` fields when target < ESNext.
     // We may need to transform `accessor` fields when `useDefineForClassFields: false`
-    tx.should_transform_auto_accessors.set(language_version < ScriptTarget::ESNext);
+    tx.should_transform_auto_accessors.set(language_version < ScriptTarget::ES_NEXT);
 
     // We need to transform `this` in a static initializer into a reference to the class
     // when target < ES2022 since the assignment will be moved outside of the class body.
@@ -249,7 +250,7 @@ pub fn new_class_fields_transformer(opts: &TransformOptions) -> Option<P<Transfo
     Some(result)
 }
 
-impl classFieldsTransformer {
+impl ClassFieldsTransformer {
     pub(crate) fn emit_context(&self) -> P<EmitContext> {
         self.base.emit_context()
     }
@@ -390,7 +391,10 @@ impl classFieldsTransformer {
         if node.kind() == Kind::PropertyAccessExpression
             && ast::is_identifier(node.as_property_access_expression().name())
         {
-            return Some(self.visit_property_access_expression_for_substitution(node));
+            return Some(self.visit_property_access_expression_for_substitution(
+                node,
+                self.substitution_visitor(),
+            ));
         }
         self.substitution_visitor().visit_each_child(Some(node))
     }
@@ -630,13 +634,13 @@ impl classFieldsTransformer {
         );
         if let Some(declaration) = declaration {
             let alias = self.class_aliases.borrow().get(&declaration).copied();
-            if let Some(alias) = alias {
-                if self.enclosing_class_declarations.borrow().contains(&declaration) {
-                    let clone = alias.clone_node(self.factory());
-                    self.emit_context().set_source_map_range(clone, node.loc());
-                    self.emit_context().set_comment_range(clone, node.loc());
-                    return clone;
-                }
+            if let Some(alias) = alias
+                && self.enclosing_class_declarations.borrow().contains(&declaration)
+            {
+                let clone = alias.clone_node(self.factory());
+                self.emit_context().set_source_map_range(clone, node.loc());
+                self.emit_context().set_comment_range(clone, node.loc());
+                return clone;
             }
         }
         node
@@ -927,9 +931,13 @@ impl classFieldsTransformer {
         }
 
         // leave invalid code untransformed
-        let info = self.access_private_identifier(node.name().unwrap());
+        let info = self.get_private_identifier(
+            self.get_private_identifier_environment(),
+            node.name().unwrap(),
+        );
         assert!(info.is_some(), "Undeclared private name for property declaration.");
-        if !info.unwrap().is_valid {
+        let info = info.unwrap();
+        if info.kind == PrivateIdentifierKind::Untransformed || !info.is_valid {
             return Some(node);
         }
 
@@ -1032,8 +1040,9 @@ impl classFieldsTransformer {
     ) -> Option<P<Node>> {
         if self.current_class_element.get().is_some() {
             let original = self.emit_context().most_original(Some(node));
-            if original != Some(node) && self.current_class_container.get().is_some() {
-                if let Some(result) =
+            if original != Some(node)
+                && self.current_class_container.get().is_some()
+                && let Some(result) =
                     self.current_class_container.get().unwrap().members().iter().find_map(
                         |member| {
                             if self.emit_context().most_original(Some(*member)) == original
@@ -1051,9 +1060,8 @@ impl classFieldsTransformer {
                             None
                         },
                     )
-                {
-                    return result;
-                }
+            {
+                return result;
             }
         }
         self.set_current_class_element_and(None, Self::visit_each_child_of_node, node)
@@ -1212,12 +1220,15 @@ impl classFieldsTransformer {
     pub(crate) fn transform_private_field_initializer(&self, mut node: P<Node>) -> Option<P<Node>> {
         if self.should_transform_class_element_to_weak_map(node) {
             // If we are transforming private elements into WeakMap/WeakSet, we should elide the node.
-            let info = self.access_private_identifier(node.name().unwrap());
+            let info = self.get_private_identifier(
+                self.get_private_identifier_environment(),
+                node.name().unwrap(),
+            );
             assert!(info.is_some(), "Undeclared private name for property declaration.");
             let info = info.unwrap();
 
             // Leave invalid code untransformed
-            if !info.is_valid {
+            if info.kind == PrivateIdentifierKind::Untransformed || !info.is_valid {
                 return Some(node);
             }
 
@@ -1384,7 +1395,7 @@ impl classFieldsTransformer {
     // classfields.go:1022
     pub(crate) fn create_private_identifier_access(
         &self,
-        info: P<privateIdentifierInfo>,
+        info: P<PrivateIdentifierInfo>,
         receiver: P<Node>,
     ) -> P<Node> {
         let receiver = self.visitor().visit_node(Some(receiver)).unwrap();
@@ -1394,7 +1405,7 @@ impl classFieldsTransformer {
     // classfields.go:1027
     pub(crate) fn create_private_identifier_access_helper(
         &self,
-        info: P<privateIdentifierInfo>,
+        info: P<PrivateIdentifierInfo>,
         receiver: P<Node>,
     ) -> P<Node> {
         self.emit_context().set_comment_range(
@@ -1478,7 +1489,9 @@ impl classFieldsTransformer {
         // Private identifier names are still visited through VisitEachChild so they can be
         // transformed by visitPrivateIdentifier.
         if ast::is_identifier(pa.name()) {
-            return Some(self.visit_property_access_expression_for_substitution(node));
+            return Some(
+                self.visit_property_access_expression_for_substitution(node, self.visitor()),
+            );
         }
         self.visitor().visit_each_child(Some(node))
     }
@@ -1490,9 +1503,10 @@ impl classFieldsTransformer {
     pub(crate) fn visit_property_access_expression_for_substitution(
         &self,
         node: P<Node>,
+        mut visitor: NodeVisitor,
     ) -> P<Node> {
         let pa = node.as_property_access_expression();
-        let expression = self.visitor().visit_node(Some(pa.expression)).unwrap();
+        let expression = visitor.visit_node(Some(pa.expression)).unwrap();
         if expression != pa.expression {
             return self.factory().update_property_access_expression(
                 node,
@@ -1927,12 +1941,12 @@ impl classFieldsTransformer {
                 let result = self.visitor().visit_node(body_statements.nodes()[0].expression());
                 // If the generated `_classThis` assignment is a noop (i.e., `_classThis = _classThis`), we can
                 // eliminate the expression
-                if let Some(r) = result {
-                    if ast::is_assignment_expression(r, true /*excludeCompoundAssignment*/) {
-                        let binary = r.as_binary_expression();
-                        if binary.left == binary.right() {
-                            return None;
-                        }
+                if let Some(r) = result
+                    && ast::is_assignment_expression(r, true /*excludeCompoundAssignment*/)
+                {
+                    let binary = r.as_binary_expression();
+                    if binary.left == binary.right() {
+                        return None;
                     }
                 }
                 return result;
@@ -2032,12 +2046,12 @@ impl classFieldsTransformer {
                 self.visitor().visit_node(Some(b.right())).unwrap(),
             );
 
-            let result: P<Node> = if !self.pending_expressions.borrow().is_empty() {
+            let result: P<Node> = if self.pending_expressions.borrow().is_empty() {
+                updated
+            } else {
                 let mut exprs = self.pending_expressions.borrow().clone();
                 exprs.push(updated);
                 self.factory().inline_expressions(&exprs).unwrap()
-            } else {
-                updated
             };
             *self.pending_expressions.borrow_mut() = saved_pending_expressions;
             return Some(result);
@@ -2240,7 +2254,7 @@ impl classFieldsTransformer {
     // classfields.go:1627
     pub(crate) fn create_private_identifier_assignment(
         &self,
-        info: P<privateIdentifierInfo>,
+        info: P<PrivateIdentifierInfo>,
         receiver: P<Node>,
         right: P<Node>,
         operator: Kind,
@@ -2325,10 +2339,8 @@ impl classFieldsTransformer {
         member: P<Node>,
         class_decl: P<Node>,
     ) -> bool {
-        let class_original = self.emit_context().most_original(Some(class_decl));
-        let class_name = ast::get_name_of_declaration(class_decl);
         fn check(
-            tx: &classFieldsTransformer,
+            tx: &ClassFieldsTransformer,
             class_original: Option<P<Node>>,
             class_name: Option<P<Node>>,
             n: P<Node>,
@@ -2346,6 +2358,9 @@ impl classFieldsTransformer {
             }
             n.for_each_child(&mut |c| check(tx, class_original, class_name, c))
         }
+
+        let class_original = self.emit_context().most_original(Some(class_decl));
+        let class_name = ast::get_name_of_declaration(class_decl);
         // Check only the body/initializer of the member, not the name (which may be
         // a computed property name that shouldn't trigger alias substitution).
         if ast::is_class_static_block_declaration(member) {
@@ -2355,18 +2370,18 @@ impl classFieldsTransformer {
             }
         } else {
             let body = member.body();
-            if let Some(body) = body {
-                if check(self, class_original, class_name, body) {
-                    return true;
-                }
+            if let Some(body) = body
+                && check(self, class_original, class_name, body)
+            {
+                return true;
             }
         }
         if ast::is_property_declaration(member) {
             let init = member.initializer();
-            if let Some(init) = init {
-                if check(self, class_original, class_name, init) {
-                    return true;
-                }
+            if let Some(init) = init
+                && check(self, class_original, class_name, init)
+            {
+                return true;
             }
         }
         false
@@ -2435,11 +2450,10 @@ impl classFieldsTransformer {
                     }
                     if self.should_transform_super_in_static_initializers.get()
                         && member.subtree_facts().intersects(SubtreeFacts::ContainsLexicalSuper)
+                        && !facts.intersects(classFacts::ClassWasDecorated)
                     {
-                        if !facts.intersects(classFacts::ClassWasDecorated) {
-                            facts |= classFacts::NeedsClassConstructorReference
-                                | classFacts::NeedsClassSuperReference;
-                        }
+                        facts |= classFacts::NeedsClassConstructorReference
+                            | classFacts::NeedsClassSuperReference;
                     }
                 }
             } else if !ast::has_abstract_modifier(
@@ -2533,29 +2547,29 @@ impl classFieldsTransformer {
             let name = ast::get_name_of_declaration(node);
             if let Some(name) = name.filter(|n| ast::is_identifier(*n)) {
                 self.get_private_identifier_environment().data.class_name.set(Some(name));
-            } else if let Some(assigned_name) = self.emit_context().assigned_name(node) {
-                if ast::is_string_literal(assigned_name) {
-                    // If the assigned name has a textSourceNode that is an identifier, use it directly.
-                    if let Some(text_source_node) = self
-                        .emit_context()
-                        .text_source(assigned_name)
-                        .filter(|t| ast::is_identifier(*t))
-                    {
-                        self.get_private_identifier_environment()
-                            .data
-                            .class_name
-                            .set(Some(text_source_node));
-                    } else if scanner::is_identifier_text(
-                        assigned_name.text(),
-                        tsrs_core::LanguageVariant::Standard,
-                    ) {
-                        // If the text is a valid identifier, create an identifier from it.
-                        let prefix_name = self.factory().new_identifier(assigned_name.text());
-                        self.get_private_identifier_environment()
-                            .data
-                            .class_name
-                            .set(Some(prefix_name));
-                    }
+            } else if let Some(assigned_name) = self.emit_context().assigned_name(node)
+                && ast::is_string_literal(assigned_name)
+            {
+                // If the assigned name has a textSourceNode that is an identifier, use it directly.
+                if let Some(text_source_node) = self
+                    .emit_context()
+                    .text_source(assigned_name)
+                    .filter(|t| ast::is_identifier(*t))
+                {
+                    self.get_private_identifier_environment()
+                        .data
+                        .class_name
+                        .set(Some(text_source_node));
+                } else if scanner::is_identifier_text(
+                    assigned_name.text(),
+                    tsrs_core::LanguageVariant::Standard,
+                ) {
+                    // If the text is a valid identifier, create an identifier from it.
+                    let prefix_name = self.factory().new_identifier(assigned_name.text());
+                    self.get_private_identifier_environment()
+                        .data
+                        .class_name
+                        .set(Some(prefix_name));
                 }
             }
         }

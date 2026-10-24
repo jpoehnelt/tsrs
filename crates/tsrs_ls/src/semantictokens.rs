@@ -22,44 +22,44 @@ use crate::utilities::get_meaning_from_location;
 // tokenTypes defines the order of token types for encoding
 // semantictokens.go:21
 const TOKEN_TYPES: [SemanticTokenType; 23] = [
-    SemanticTokenType::Namespace,
-    SemanticTokenType::Class,
-    SemanticTokenType::Enum,
-    SemanticTokenType::Interface,
-    SemanticTokenType::Struct,
-    SemanticTokenType::TypeParameter,
-    SemanticTokenType::Type,
-    SemanticTokenType::Parameter,
-    SemanticTokenType::Variable,
-    SemanticTokenType::Property,
-    SemanticTokenType::EnumMember,
-    SemanticTokenType::Decorator,
-    SemanticTokenType::Event,
-    SemanticTokenType::Function,
-    SemanticTokenType::Method,
-    SemanticTokenType::Macro,
-    SemanticTokenType::Label,
-    SemanticTokenType::Comment,
-    SemanticTokenType::String,
-    SemanticTokenType::Keyword,
-    SemanticTokenType::Number,
-    SemanticTokenType::Regexp,
-    SemanticTokenType::Operator,
+    SemanticTokenType::NAMESPACE,
+    SemanticTokenType::CLASS,
+    SemanticTokenType::ENUM,
+    SemanticTokenType::INTERFACE,
+    SemanticTokenType::STRUCT,
+    SemanticTokenType::TYPE_PARAMETER,
+    SemanticTokenType::TYPE,
+    SemanticTokenType::PARAMETER,
+    SemanticTokenType::VARIABLE,
+    SemanticTokenType::PROPERTY,
+    SemanticTokenType::ENUM_MEMBER,
+    SemanticTokenType::DECORATOR,
+    SemanticTokenType::EVENT,
+    SemanticTokenType::FUNCTION,
+    SemanticTokenType::METHOD,
+    SemanticTokenType::MACRO,
+    SemanticTokenType::LABEL,
+    SemanticTokenType::COMMENT,
+    SemanticTokenType::STRING,
+    SemanticTokenType::KEYWORD,
+    SemanticTokenType::NUMBER,
+    SemanticTokenType::REGEXP,
+    SemanticTokenType::OPERATOR,
 ];
 
 // tokenModifiers defines the order of token modifiers for encoding
 // semantictokens.go:48
 const TOKEN_MODIFIERS: [SemanticTokenModifier; 11] = [
-    SemanticTokenModifier::Declaration,
-    SemanticTokenModifier::Definition,
-    SemanticTokenModifier::Readonly,
-    SemanticTokenModifier::Static,
-    SemanticTokenModifier::Deprecated,
-    SemanticTokenModifier::Abstract,
-    SemanticTokenModifier::Async,
-    SemanticTokenModifier::Modification,
-    SemanticTokenModifier::Documentation,
-    SemanticTokenModifier::DefaultLibrary,
+    SemanticTokenModifier::DECLARATION,
+    SemanticTokenModifier::DEFINITION,
+    SemanticTokenModifier::READONLY,
+    SemanticTokenModifier::STATIC,
+    SemanticTokenModifier::DEPRECATED,
+    SemanticTokenModifier::ABSTRACT,
+    SemanticTokenModifier::ASYNC,
+    SemanticTokenModifier::MODIFICATION,
+    SemanticTokenModifier::DOCUMENTATION,
+    SemanticTokenModifier::DEFAULT_LIBRARY,
     SemanticTokenModifier("local"),
 ];
 
@@ -436,18 +436,18 @@ impl SemanticTokensVisitor<'_> {
             {
                 token_modifier |= TOKEN_MODIFIER_LOCAL;
             }
-            if let Some(decl_source_file) = ast::get_source_file_of_node(decl) {
-                if self.program.is_source_file_default_library(decl_source_file.path()) {
-                    token_modifier |= TOKEN_MODIFIER_DEFAULT_LIBRARY;
-                }
+            if let Some(decl_source_file) = ast::get_source_file_of_node(decl)
+                && self.program.is_source_file_default_library(decl_source_file.path())
+            {
+                token_modifier |= TOKEN_MODIFIER_DEFAULT_LIBRARY;
             }
         } else if !symbol.declarations().is_empty() {
             for &decl in symbol.declarations() {
-                if let Some(decl_source_file) = ast::get_source_file_of_node(decl) {
-                    if self.program.is_source_file_default_library(decl_source_file.path()) {
-                        token_modifier |= TOKEN_MODIFIER_DEFAULT_LIBRARY;
-                        break;
-                    }
+                if let Some(decl_source_file) = ast::get_source_file_of_node(decl)
+                    && self.program.is_source_file_default_library(decl_source_file.path())
+                {
+                    token_modifier |= TOKEN_MODIFIER_DEFAULT_LIBRARY;
+                    break;
                 }
             }
         }
@@ -497,20 +497,21 @@ fn token_from_declaration_mapping(kind: Kind) -> Option<TokenType> {
     Some(match kind {
         Kind::VariableDeclaration => TOKEN_TYPE_VARIABLE,
         Kind::Parameter => TOKEN_TYPE_PARAMETER,
-        Kind::PropertyDeclaration => TOKEN_TYPE_PROPERTY,
+        Kind::PropertyDeclaration
+        | Kind::GetAccessor
+        | Kind::SetAccessor
+        | Kind::PropertySignature
+        | Kind::PropertyAssignment
+        | Kind::ShorthandPropertyAssignment => TOKEN_TYPE_PROPERTY,
         Kind::ModuleDeclaration => TOKEN_TYPE_NAMESPACE,
         Kind::EnumDeclaration => TOKEN_TYPE_ENUM,
         Kind::EnumMember => TOKEN_TYPE_ENUM_MEMBER,
         Kind::ClassDeclaration | Kind::ClassExpression => TOKEN_TYPE_CLASS,
-        Kind::MethodDeclaration => TOKEN_TYPE_METHOD,
+        Kind::MethodDeclaration | Kind::MethodSignature => TOKEN_TYPE_METHOD,
         Kind::FunctionDeclaration | Kind::FunctionExpression => TOKEN_TYPE_FUNCTION,
-        Kind::MethodSignature => TOKEN_TYPE_METHOD,
-        Kind::GetAccessor | Kind::SetAccessor => TOKEN_TYPE_PROPERTY,
-        Kind::PropertySignature => TOKEN_TYPE_PROPERTY,
         Kind::InterfaceDeclaration => TOKEN_TYPE_INTERFACE,
         Kind::TypeAliasDeclaration => TOKEN_TYPE_TYPE,
         Kind::TypeParameter => TOKEN_TYPE_TYPE_PARAMETER,
-        Kind::PropertyAssignment | Kind::ShorthandPropertyAssignment => TOKEN_TYPE_PROPERTY,
         _ => return None,
     })
 }
@@ -574,13 +575,13 @@ fn is_local_declaration(decl: P<Node>, source_file: P<SourceFile>) -> bool {
             if ast::is_catch_clause(parent) {
                 return ast::get_source_file_of_node(decl) == Some(source_file);
             }
-            if ast::is_variable_declaration_list(parent) {
-                if let Some(grandparent) = parent.parent() {
-                    let great_grandparent = grandparent.parent();
-                    return (!great_grandparent.is_some_and(ast::is_source_file)
-                        || ast::is_catch_clause(grandparent))
-                        && ast::get_source_file_of_node(decl) == Some(source_file);
-                }
+            if ast::is_variable_declaration_list(parent)
+                && let Some(grandparent) = parent.parent()
+            {
+                let great_grandparent = grandparent.parent();
+                return (!great_grandparent.is_some_and(ast::is_source_file)
+                    || ast::is_catch_clause(grandparent))
+                    && ast::get_source_file_of_node(decl) == Some(source_file);
             }
         }
     } else if ast::is_function_declaration(decl) {
@@ -685,10 +686,10 @@ fn encode_semantic_tokens(
         client_modifier_mask = TOKEN_MODIFIERS.iter().enumerate().fold(
             client_modifier_mask,
             |mut client_modifier_mask, (i, server_modifier)| {
-                if token.token_modifier & (1 << i) != 0 {
-                    if let Some(&client_bit) = modifier_mapping.get(server_modifier) {
-                        client_modifier_mask |= 1 << client_bit;
-                    }
+                if token.token_modifier & (1 << i) != 0
+                    && let Some(&client_bit) = modifier_mapping.get(server_modifier)
+                {
+                    client_modifier_mask |= 1 << client_bit;
                 }
 
                 client_modifier_mask

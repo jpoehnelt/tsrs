@@ -138,10 +138,10 @@ pub fn decode_message(data: &[u8]) -> Result<Message, TransportError> {
     crate::strictjson::validate(data).map_err(TransportError::Protocol)?;
     let wire: WireMessage<'_> = serde_json::from_slice(data)
         .map_err(|e| TransportError::Protocol(format!("jsonrpc: {e}")))?;
-    if let Some(version) = wire.jsonrpc {
-        if version.get() != "\"2.0\"" {
-            return Err(TransportError::Protocol("invalid JSON-RPC version".to_string()));
-        }
+    if let Some(version) = wire.jsonrpc
+        && version.get() != "\"2.0\""
+    {
+        return Err(TransportError::Protocol("invalid JSON-RPC version".to_string()));
     }
     let id = match wire.id {
         None => None,
@@ -230,6 +230,9 @@ pub fn encode_response(id: &Id, result: &Response) -> Result<Vec<u8>, TransportE
         Response::Json(json) => {
             out.push_str(validate_json(json).map_err(TransportError::Protocol)?);
         }
+        Response::ValidJson(json) => out.push_str(
+            std::str::from_utf8(json).map_err(|e| TransportError::Protocol(e.to_string()))?,
+        ),
         // json.Marshal([]byte) is a base64 string; a nil RawBinary marshals as null.
         Response::Binary(raw) => {
             out.push('"');

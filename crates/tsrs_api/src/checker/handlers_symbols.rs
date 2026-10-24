@@ -18,7 +18,7 @@ fn setup<'h>(host: &'h dyn CheckerHost, p: &Params) -> CheckerResult<Setup<'h>> 
     Setup::new(host, p.u64("snapshot")?, p.project()?)
 }
 
-pub(crate) fn get_symbol_at_position(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_symbol_at_position(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let file = s.source_file(&p.document("file")?)?;
     let node = touching_property_name_at_utf16(file, p.u32("position")?);
@@ -26,77 +26,65 @@ pub(crate) fn get_symbol_at_position(host: &dyn CheckerHost, p: &Params) -> Chec
     s.opt_symbol_response(symbol)
 }
 
-pub(crate) fn get_symbols_at_positions(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_symbols_at_positions(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let file = s.source_file(&p.document("file")?)?;
     let positions = p.u32_array("positions")?;
     let mut out = Vec::with_capacity(positions.len());
-    out = positions.into_iter().try_fold(out, |mut out, pos| {
+    for pos in positions {
         let node = touching_property_name_at_utf16(file, pos);
         let symbol = s.c().get_symbol_at_location_exported(node);
         out.push(s.opt_symbol_response(symbol)?);
-
-        Ok::<_, CheckerError>(out)
-    })?;
+    }
     Ok(Value::Array(out))
 }
 
-pub(crate) fn get_symbol_at_location(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_symbol_at_location(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let node = s.resolve_node(p.string("location")?)?;
     let symbol = s.c().get_symbol_at_location_exported(node);
     s.opt_symbol_response(symbol)
 }
 
-pub(crate) fn get_symbols_at_locations(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_symbols_at_locations(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let locations = p.string_array("locations")?;
     let mut out = Vec::with_capacity(locations.len());
-    out = locations.into_iter().try_fold(out, |mut out, loc| {
+    for loc in locations {
         let node = s.resolve_node(loc)?;
         let symbol = s.c().get_symbol_at_location_exported(node);
         out.push(s.opt_symbol_response(symbol)?);
-
-        Ok::<_, CheckerError>(out)
-    })?;
+    }
     Ok(Value::Array(out))
 }
 
-pub(crate) fn get_symbol_of_source_file(
-    host: &dyn CheckerHost,
-    p: &Params,
-) -> CheckerResult<Value> {
+pub fn get_symbol_of_source_file(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let file = s.source_file(&p.document("file")?)?;
     let symbol = s.c().get_symbol_at_location_exported(file.as_node());
     s.opt_symbol_response(symbol)
 }
 
-pub(crate) fn get_symbols_of_source_files(
-    host: &dyn CheckerHost,
-    p: &Params,
-) -> CheckerResult<Value> {
+pub fn get_symbols_of_source_files(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let files = p.documents("files")?;
     let mut out = Vec::with_capacity(files.len());
-    out = files.iter().try_fold(out, |mut out, f| {
+    for f in &files {
         let file = s.source_file(f)?;
         let symbol = s.c().get_symbol_at_location_exported(file.as_node());
         out.push(s.opt_symbol_response(symbol)?);
-
-        Ok::<_, CheckerError>(out)
-    })?;
+    }
     Ok(Value::Array(out))
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum SymbolTypeQuery {
+pub enum SymbolTypeQuery {
     TypeOf,
     DeclaredType,
     NonMissingType,
 }
 
-pub(crate) fn get_type_of_symbol(
+pub fn get_type_of_symbol(
     host: &dyn CheckerHost,
     p: &Params,
     query: SymbolTypeQuery,
@@ -111,21 +99,19 @@ pub(crate) fn get_type_of_symbol(
     s.type_response(t)
 }
 
-pub(crate) fn get_types_of_symbols(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_types_of_symbols(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let refs = p.symbol_refs("symbols")?;
     let mut out = Vec::with_capacity(refs.len());
-    out = refs.iter().try_fold(out, |mut out, r| {
+    for r in &refs {
         let symbol = s.resolve_symbol(r)?;
         let t = s.c().get_type_of_symbol_exported(symbol);
         out.push(s.type_response(t)?);
-
-        Ok::<_, CheckerError>(out)
-    })?;
+    }
     Ok(Value::Array(out))
 }
 
-pub(crate) fn resolve_name(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn resolve_name(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let file = p.opt_document("file")?;
     let location =
@@ -138,7 +124,7 @@ pub(crate) fn resolve_name(host: &dyn CheckerHost, p: &Params) -> CheckerResult<
     s.opt_symbol_response(symbol)
 }
 
-pub(crate) fn get_symbols_in_scope(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_symbols_in_scope(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let file = p.opt_document("file")?;
     let location =
@@ -151,7 +137,7 @@ pub(crate) fn get_symbols_in_scope(host: &dyn CheckerHost, p: &Params) -> Checke
     s.symbols_response(&symbols)
 }
 
-pub(crate) fn get_shorthand_assignment_value_symbol(
+pub fn get_shorthand_assignment_value_symbol(
     host: &dyn CheckerHost,
     p: &Params,
 ) -> CheckerResult<Value> {
@@ -161,7 +147,7 @@ pub(crate) fn get_shorthand_assignment_value_symbol(
     s.opt_symbol_response(symbol)
 }
 
-pub(crate) fn get_export_specifier_local_target_symbol(
+pub fn get_export_specifier_local_target_symbol(
     host: &dyn CheckerHost,
     p: &Params,
 ) -> CheckerResult<Value> {
@@ -172,36 +158,51 @@ pub(crate) fn get_export_specifier_local_target_symbol(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum AliasQuery {
+pub enum AliasQuery {
     Aliased,
     ImmediateAliased,
     Target,
+    Merged,
+    Parent,
     ExportSymbol,
 }
 
-pub(crate) fn alias_query(
-    host: &dyn CheckerHost,
-    p: &Params,
-    query: AliasQuery,
-) -> CheckerResult<Value> {
+pub fn alias_query(host: &dyn CheckerHost, p: &Params, query: AliasQuery) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let symbol = s.resolve_symbol(&p.symbol_ref("symbol")?)?;
     let result = match query {
         AliasQuery::Aliased => Some(s.c().get_aliased_symbol(symbol)),
         AliasQuery::ImmediateAliased => s.c().get_immediate_aliased_symbol_exported(symbol),
         AliasQuery::Target => s.c().get_target_symbol_exported(symbol),
+        AliasQuery::Merged => Some(s.c().get_merged_symbol_exported(symbol)),
+        AliasQuery::Parent => s.c().get_parent_of_symbol_exported(symbol),
         AliasQuery::ExportSymbol => Some(s.c().get_export_symbol_of_symbol(symbol)),
     };
     s.opt_symbol_response(result)
 }
 
-pub(crate) fn get_fully_qualified_name(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_symbol_of_node(
+    host: &dyn CheckerHost,
+    p: &Params,
+    declaration: bool,
+) -> CheckerResult<Value> {
+    let mut s = setup(host, p)?;
+    let node = s.resolve_node(p.string("location")?)?;
+    let symbol = if declaration {
+        s.c().get_symbol_of_declaration_exported(node)
+    } else {
+        s.c().get_symbol_of_node_exported(node)
+    };
+    s.opt_symbol_response(symbol)
+}
+
+pub fn get_fully_qualified_name(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let symbol = s.resolve_symbol(&p.symbol_ref("symbol")?)?;
     Ok(Value::String(s.c().get_fully_qualified_name_exported(symbol)))
 }
 
-pub(crate) fn get_exports_of_module(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_exports_of_module(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let symbol = s.resolve_symbol(&p.symbol_ref("symbol")?)?;
     let mut exports = s.c().get_exports_of_module_exported(symbol);
@@ -212,17 +213,14 @@ pub(crate) fn get_exports_of_module(host: &dyn CheckerHost, p: &Params) -> Check
     s.symbols_response(&exports)
 }
 
-pub(crate) fn get_member_in_module_exports(
-    host: &dyn CheckerHost,
-    p: &Params,
-) -> CheckerResult<Value> {
+pub fn get_member_in_module_exports(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let symbol = s.resolve_symbol(&p.symbol_ref("symbol")?)?;
     let member = s.c().try_get_member_in_module_exports(p.string("name")?, symbol);
     s.opt_symbol_response(member)
 }
 
-pub(crate) fn get_jsdoc_tags(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn get_jsdoc_tags(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let s = setup(host, p)?;
     let symbol = s.resolve_symbol(&p.symbol_ref("symbol")?)?;
     let tags = tsrs_ls::get_symbol_jsdoc_tags(Some(symbol));
@@ -239,23 +237,20 @@ pub(crate) fn get_jsdoc_tags(host: &dyn CheckerHost, p: &Params) -> CheckerResul
     Ok(Value::Array(out))
 }
 
-pub(crate) fn get_documentation_comment(
-    host: &dyn CheckerHost,
-    p: &Params,
-) -> CheckerResult<Value> {
+pub fn get_documentation_comment(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let symbol = s.resolve_symbol(&p.symbol_ref("symbol")?)?;
     Ok(Value::String(tsrs_ls::get_symbol_documentation_comment(s.c(), Some(symbol))))
 }
 
-pub(crate) fn is_readonly_symbol(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
+pub fn is_readonly_symbol(host: &dyn CheckerHost, p: &Params) -> CheckerResult<Value> {
     let mut s = setup(host, p)?;
     let symbol = s.resolve_symbol(&p.symbol_ref("symbol")?)?;
     Ok(Value::Bool(s.c().is_readonly_symbol_exported(symbol)))
 }
 
 /// Go `handleGetReferencesToSymbolInFile`.
-pub(crate) fn get_references_to_symbol_in_file(
+pub fn get_references_to_symbol_in_file(
     host: &dyn CheckerHost,
     p: &Params,
 ) -> CheckerResult<Value> {
@@ -329,7 +324,7 @@ fn resolve_symbol_reference<'h>(
             if r.file.is_some() || r.snapshot == 0 || r.project.is_empty() {
                 return Err(CheckerError::client("invalid snapshot symbol reference"));
             }
-            let sd = SnapshotCtx::new(host, r.snapshot, &r.project)?;
+            let sd = SnapshotCtx::new(host, r.snapshot, r.project)?;
             let symbol = sd.scope.registry.resolve_symbol(r.id)?;
             Ok((symbol, Owner::Snapshot(sd)))
         }
@@ -338,13 +333,13 @@ fn resolve_symbol_reference<'h>(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum SymbolProperty {
+pub enum SymbolProperty {
     Parent,
     ExportSymbol,
 }
 
 /// Go `resolveSymbolPropertyOfSymbol`.
-pub(crate) fn symbol_property(
+pub fn symbol_property(
     host: &dyn CheckerHost,
     p: &Params,
     property: SymbolProperty,
@@ -361,13 +356,13 @@ pub(crate) fn symbol_property(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum SymbolTableProperty {
+pub enum SymbolTableProperty {
     Members,
     Exports,
 }
 
 /// Go `resolveSymbolTablePropertyOfSymbol`.
-pub(crate) fn symbol_table_property(
+pub fn symbol_table_property(
     host: &dyn CheckerHost,
     p: &Params,
     property: SymbolTableProperty,
@@ -400,7 +395,7 @@ pub(crate) fn symbol_table_property(
         Owner::Snapshot(sd) => {
             drop(sd);
             // Tables of snapshot-owned symbols may contain symbols from several files: checker ordering.
-            let mut s = Setup::new(host, r.snapshot, &r.project)?;
+            let mut s = Setup::new(host, r.snapshot, r.project)?;
             sort_by_checker(&mut s, &mut symbols);
             s.symbols_response(&symbols)
         }
@@ -414,7 +409,7 @@ pub(crate) fn symbol_table_property(
 fn compare_file_symbols(left: &P<Symbol>, right: &P<Symbol>) -> Ordering {
     let (ld, rd) = (left.declarations(), right.declarations());
     if ld.is_empty() != rd.is_empty() {
-        return if !ld.is_empty() { Ordering::Less } else { Ordering::Greater };
+        return if ld.is_empty() { Ordering::Greater } else { Ordering::Less };
     }
     if !ld.is_empty() {
         let order = ld[0].pos().cmp(&rd[0].pos());

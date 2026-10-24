@@ -90,8 +90,6 @@ impl CompilerHost for CachedCompilerHost {
 }
 
 fn test_lib_folder_map() -> Vec<(String, String)> {
-    let root = compiler_runner::testdata_path().join("tests/lib");
-    let mut out = Vec::new();
     fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -109,6 +107,9 @@ fn test_lib_folder_map() -> Vec<(String, String)> {
             }
         }
     }
+
+    let root = compiler_runner::testdata_path().join("tests/lib");
+    let mut out = Vec::new();
     walk(&root, &root, &mut out);
     out
 }
@@ -295,11 +296,18 @@ fn compile_files_ex(
 
     let config_file = tsconfig.and_then(|t| t.config_file);
     let errors = tsconfig.map(|t| t.errors.clone()).unwrap_or_default();
+    let base_directory = tsconfig
+        .map(|t| t.get_current_directory().to_string())
+        .filter(|directory| !directory.is_empty())
+        .unwrap_or_else(|| current_directory.to_string());
     let mut config = tsoptions::new_parsed_command_line(
         P::new(compiler_options),
         program_file_names,
         Vec::new(),
-        ComparePathsOptions::default(),
+        ComparePathsOptions {
+            current_directory: base_directory,
+            use_case_sensitive_file_names: harness_options.use_case_sensitive_file_names,
+        },
     );
     config.config_file = config_file;
     config.errors = errors;
@@ -332,11 +340,11 @@ fn compile_files_ex(
 }
 
 // harnessutil.go:953 testBuildInfoReader: reads the build info as if this compiler had written it.
-struct testBuildInfoReader {
+struct TestBuildInfoReader {
     inner: Box<dyn tsrs_incremental::BuildInfoReader>,
 }
 
-impl tsrs_incremental::BuildInfoReader for testBuildInfoReader {
+impl tsrs_incremental::BuildInfoReader for TestBuildInfoReader {
     fn read_build_info(&self, config: &ParsedCommandLine) -> Option<tsrs_incremental::BuildInfo> {
         let mut r = self.inner.read_build_info(config)?;
         r.version = tsrs_core::version().to_string();
@@ -352,7 +360,7 @@ fn create_program_like(
 ) -> &'static dyn compiler::ProgramLike {
     let program = create_program(Arc::clone(&host), config);
     if config.compiler_options().unwrap().incremental.is_true() {
-        let reader = testBuildInfoReader {
+        let reader = TestBuildInfoReader {
             inner: tsrs_incremental::new_build_info_reader(Arc::clone(&host)),
         };
         let old_program = tsrs_incremental::read_build_info_program(config, &reader, &*host);

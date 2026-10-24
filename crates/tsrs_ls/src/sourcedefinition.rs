@@ -101,25 +101,37 @@ impl LanguageService {
 
         let (origin_selection_range, _) = self.create_lsp_range_from_node(node, file);
 
+        let containing_module_specifier = find_containing_module_specifier(node);
+        if containing_module_specifier
+            .is_some_and(|specifier| specifier.parent().is_some_and(ast::is_source_phase_import))
+        {
+            return Ok(self.provide_definition_at_position(
+                ctx,
+                program,
+                file,
+                text_pos,
+                client_supports_link,
+            ));
+        }
+
         // If the cursor is directly on a module specifier string, resolve to the
         // implementation file's entry point.
-        let containing_module_specifier = find_containing_module_specifier(node);
         if Some(node) == containing_module_specifier {
             let containing_module_specifier = containing_module_specifier.unwrap();
             let specifier_mode =
                 program.get_mode_for_usage_location(file, containing_module_specifier);
             let implementation_file =
                 resolver.resolve_implementation(containing_module_specifier.text(), specifier_mode);
-            if !implementation_file.is_empty() {
-                if let Some(source_file) = resolver.get_or_parse_source_file(&implementation_file) {
-                    return Ok(self.create_definition_locations(
-                        origin_selection_range,
-                        client_supports_link,
-                        &get_source_definition_entry_declarations(source_file),
-                        None,
-                        Feature::Definition,
-                    ));
-                }
+            if !implementation_file.is_empty()
+                && let Some(source_file) = resolver.get_or_parse_source_file(&implementation_file)
+            {
+                return Ok(self.create_definition_locations(
+                    origin_selection_range,
+                    client_supports_link,
+                    &get_source_definition_entry_declarations(source_file),
+                    None,
+                    Feature::Definition,
+                ));
             }
             return Ok(self.provide_definition_at_position(
                 ctx,
@@ -184,16 +196,15 @@ impl LanguageService {
             if containing_module_specifier.is_some()
                 && !resolved_impl_file.is_empty()
                 && !has_concrete_source_declarations(&checker_declarations)
+                && let Some(source_file) = resolver.get_or_parse_source_file(&resolved_impl_file)
             {
-                if let Some(source_file) = resolver.get_or_parse_source_file(&resolved_impl_file) {
-                    return Ok(self.create_definition_locations(
-                        origin_selection_range,
-                        client_supports_link,
-                        &get_source_definition_entry_declarations(source_file),
-                        None,
-                        Feature::Definition,
-                    ));
-                }
+                return Ok(self.create_definition_locations(
+                    origin_selection_range,
+                    client_supports_link,
+                    &get_source_definition_entry_declarations(source_file),
+                    None,
+                    Feature::Definition,
+                ));
             }
             return Ok(self.provide_definition_at_position(
                 ctx,
@@ -215,9 +226,9 @@ impl LanguageService {
 
 // Go passes `program.Host()` (a compiler.CompilerHost, which has the FS/GetCurrentDirectory methods of
 // module.ResolutionHost) to module.NewResolver; Rust needs the explicit adapter.
-struct compilerHostResolutionHost(&'static dyn CompilerHost);
+struct CompilerHostResolutionHost(&'static dyn CompilerHost);
 
-impl ResolutionHost for compilerHostResolutionHost {
+impl ResolutionHost for CompilerHostResolutionHost {
     fn fs(&self) -> &dyn FS {
         self.0.fs()
     }
@@ -238,7 +249,7 @@ struct SourceDefResolver<'a> {
     options: P<CompilerOptions>,
     program: &'static Program, // Go `getSourceFile func(string) *ast.SourceFile` (program.GetSourceFile)
     resolve_from: String,
-    resolver: module::DefaultResolver,
+    resolver: module::DefaultResolver<'static>,
     parsed_files: RefCell<FxHashMap<String, Option<P<SourceFile>>>>,
 }
 
@@ -253,8 +264,8 @@ impl LanguageService {
         let mut no_dts_options: CompilerOptions = (*options).clone();
         no_dts_options.no_dts_resolution = Tristate::True;
         let host: &'static dyn CompilerHost = &**program.host();
-        let resolution_host: &'static compilerHostResolutionHost =
-            tsrs_core::alloc(compilerHostResolutionHost(host));
+        let resolution_host: &'static CompilerHostResolutionHost =
+            tsrs_core::alloc(CompilerHostResolutionHost(host));
         SourceDefResolver {
             ls: self,
             fs: host.fs(),
@@ -336,12 +347,13 @@ fn get_source_def_checker_info(
     let mut declarations = get_declarations_from_location(c, node);
     let is_property_name =
         node.parent().is_some_and(|p| ast::is_access_expression(p) && p.name() == Some(node));
-    if declarations.is_empty() && is_property_name {
-        if let Some(left) = node.parent().unwrap().expression() {
-            let t = c.get_type_at_location(left);
-            if let Some(prop) = c.get_property_of_type_exported(t, node.text()) {
-                declarations = prop.declarations().to_vec();
-            }
+    if declarations.is_empty()
+        && is_property_name
+        && let Some(left) = node.parent().unwrap().expression()
+    {
+        let t = c.get_type_at_location(left);
+        if let Some(prop) = c.get_property_of_type_exported(t, node.text()) {
+            declarations = prop.declarations().to_vec();
         }
     }
     if let Some(called_declaration) = try_get_signature_declaration(c, node) {
@@ -517,10 +529,10 @@ impl SourceDefResolver<'_> {
         let (file, start_pos) = get_file_and_start_pos_from_declaration(declaration);
         let file_name = file.file_name();
 
-        if let Some(mapped) = self.ls.try_get_source_position(file_name, start_pos) {
-            if let Some(source_file) = self.get_or_parse_source_file(&mapped.file_name) {
-                return vec![find_closest_declaration_node(source_file, mapped.pos)];
-            }
+        if let Some(mapped) = self.ls.try_get_source_position(file_name, start_pos)
+            && let Some(source_file) = self.get_or_parse_source_file(&mapped.file_name)
+        {
+            return vec![find_closest_declaration_node(source_file, mapped.pos)];
         }
 
         if !tspath::is_declaration_file_name(file_name) {
@@ -615,22 +627,20 @@ impl SourceDefResolver<'_> {
         preferred_mode: ResolutionMode,
     ) -> String {
         let mut modes = vec![preferred_mode];
-        if preferred_mode != ModuleKind::ESNext {
-            modes.push(ModuleKind::ESNext);
+        if preferred_mode != ModuleKind::ES_NEXT {
+            modes.push(ModuleKind::ES_NEXT);
         }
-        if preferred_mode != ModuleKind::CommonJS {
-            modes.push(ModuleKind::CommonJS);
+        if preferred_mode != ModuleKind::COMMON_JS {
+            modes.push(ModuleKind::COMMON_JS);
         }
 
         if let Some(result) = modes.into_iter().find_map(|mode| {
             if let Ok((resolved, _)) =
                 self.resolver.resolve_module_name(module_name, resolve_from_file, mode, None)
+                && resolved.is_resolved()
+                && !tspath::is_declaration_file_name(resolved.resolved_file_name)
             {
-                if resolved.is_resolved()
-                    && !tspath::is_declaration_file_name(resolved.resolved_file_name)
-                {
-                    return Some(resolved.resolved_file_name.to_string());
-                }
+                return Some(resolved.resolved_file_name.to_string());
             }
 
             None
@@ -675,10 +685,10 @@ impl SourceDefResolver<'_> {
         let mut package_json_type = String::new();
         let scope =
             self.resolver.get_package_scope_for_path(&tspath::get_directory_path(file_name));
-        if scope.exists() {
-            if let Some(value) = scope.unwrap().contents.unwrap().fields.type_.get_value() {
-                package_json_type.clone_from(value);
-            }
+        if scope.exists()
+            && let Some(value) = scope.unwrap().contents.unwrap().fields.type_.get_value()
+        {
+            package_json_type.clone_from(value);
         }
         ast::get_implied_node_format_for_file(file_name, &package_json_type)
     }
@@ -688,15 +698,13 @@ impl SourceDefResolver<'_> {
 fn find_containing_module_specifier(node: P<Node>) -> Option<P<Node>> {
     let current = Some(node);
     if let Some(result) = std::iter::successors(current, |cur| cur.parent()).find_map(|cur| {
-        if ast::is_any_import_or_re_export(cur)
+        if (ast::is_any_import_or_re_export(cur)
             || ast::is_require_call(cur, true /*requireStringLiteralLikeArgument*/)
-            || ast::is_import_call(cur)
+            || ast::is_import_call(cur))
+            && let Some(module_specifier) = ast::get_external_module_name(cur)
+            && ast::is_string_literal_like(module_specifier)
         {
-            if let Some(module_specifier) = ast::get_external_module_name(cur) {
-                if ast::is_string_literal_like(module_specifier) {
-                    return Some(Some(module_specifier));
-                }
-            }
+            return Some(Some(module_specifier));
         }
 
         None
@@ -759,7 +767,7 @@ impl SourceDefResolver<'_> {
                 source_file.file_name(),
                 preferred_mode,
             );
-            if !implementation_file.is_empty() { Some(implementation_file) } else { None }
+            if implementation_file.is_empty() { None } else { Some(implementation_file) }
         }));
         deduplicate(files)
     }
@@ -798,10 +806,10 @@ fn get_candidate_source_declaration_names(
         {
             names.push("default".to_string());
         }
-        if ast::is_import_specifier(declaration) || ast::is_export_specifier(declaration) {
-            if let Some(prop_name) = declaration.property_name() {
-                names.push(prop_name.text().to_string());
-            }
+        if (ast::is_import_specifier(declaration) || ast::is_export_specifier(declaration))
+            && let Some(prop_name) = declaration.property_name()
+        {
+            names.push(prop_name.text().to_string());
         }
     }
     if let Some(original_node) = original_node {
@@ -811,12 +819,11 @@ fn get_candidate_source_declaration_names(
         if is_default_import_name(Some(original_node)) {
             names.push("default".to_string());
         }
-        if let Some(parent) = original_node.parent() {
-            if ast::is_import_specifier(parent) || ast::is_export_specifier(parent) {
-                if let Some(prop_name) = parent.property_name() {
-                    names.push(prop_name.text().to_string());
-                }
-            }
+        if let Some(parent) = original_node.parent()
+            && (ast::is_import_specifier(parent) || ast::is_export_specifier(parent))
+            && let Some(prop_name) = parent.property_name()
+        {
+            names.push(prop_name.text().to_string());
         }
     }
     names
@@ -824,27 +831,10 @@ fn get_candidate_source_declaration_names(
 
 // sourcedefinition.go:572
 fn find_declaration_nodes_by_name(source_file: P<SourceFile>, names: &[String]) -> Vec<P<Node>> {
-    let names = deduplicate(names.iter().filter(|name| !name.is_empty()).cloned().collect());
-    if names.is_empty() {
-        return Vec::new();
-    }
-
-    let mut wanted: FxHashSet<String> = FxHashSet::default();
-    let mut want_default = false;
-    for name in names {
-        if name == "default" {
-            want_default = true;
-            continue;
-        }
-        wanted.insert(name);
-    }
-
     struct Candidate {
         node: P<Node>,
         depth: usize,
     }
-    let mut candidates: Vec<Candidate> = Vec::new();
-    let mut min_depth: Option<usize> = None;
 
     fn visit(
         node: P<Node>,
@@ -878,6 +868,25 @@ fn find_declaration_nodes_by_name(source_file: P<SourceFile>, names: &[String]) 
         }
         node.for_each_child(&mut |child| visit(child, wanted, want_default, candidates, min_depth))
     }
+
+    let names = deduplicate(names.iter().filter(|name| !name.is_empty()).cloned().collect());
+    if names.is_empty() {
+        return Vec::new();
+    }
+
+    let mut wanted: FxHashSet<String> = FxHashSet::default();
+    let mut want_default = false;
+    for name in names {
+        if name == "default" {
+            want_default = true;
+            continue;
+        }
+        wanted.insert(name);
+    }
+
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut min_depth: Option<usize> = None;
+
     source_file.as_node().for_each_child(&mut |child| {
         visit(child, &wanted, want_default, &mut candidates, &mut min_depth)
     });

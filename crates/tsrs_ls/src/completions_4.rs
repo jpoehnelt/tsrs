@@ -123,6 +123,7 @@ impl LanguageService {
                         self.format_options(),
                         &self.converters,
                         self.user_preferences(),
+                        false, /*include_symbol_name_in_description*/
                     );
             item.additional_text_edits = Some(edits);
             item.detail = str_ptr_to(&description);
@@ -136,9 +137,9 @@ impl LanguageService {
 
         if let Some(request) = symbol_completion.request {
             match request {
-                CompletionData::JSDocTagName => create_simple_details(item, &data.name, doc_format),
-                CompletionData::JSDocTag => create_simple_details(item, &data.name, doc_format),
-                CompletionData::JSDocParameterName(_) => {
+                CompletionData::JSDocTagName
+                | CompletionData::JSDocTag
+                | CompletionData::JSDocParameterName(_) => {
                     create_simple_details(item, &data.name, doc_format)
                 }
                 CompletionData::Keyword(request) => {
@@ -180,8 +181,8 @@ impl LanguageService {
 
 // completions.go:5609
 #[derive(Default)]
-struct detailsData {
-    symbol: Option<symbolDetails>,
+struct DetailsData {
+    symbol: Option<SymbolDetails>,
     request: Option<CompletionData>,
     literal: Option<LiteralValue>,
     cases: Option<()>,
@@ -192,13 +193,13 @@ struct detailsData {
     dead_code,
     reason = "Go reads only symbol and location too; the rest wait for `!!! fill in additionalTextEdits from code actions` (completions.go:5712)"
 )]
-struct symbolDetails {
+struct SymbolDetails {
     symbol: P<Symbol>,
     location: P<Node>,
-    origin: Option<symbolOriginInfo>,
+    origin: Option<SymbolOriginInfo>,
     previous_token: Option<P<Node>>,
     context_token: Option<P<Node>>,
-    jsx_initializer: jsxInitializer,
+    jsx_initializer: JsxInitializer,
     is_type_only_location: bool,
 }
 
@@ -211,9 +212,9 @@ impl LanguageService {
         file: P<SourceFile>,
         position: u32,
         item_data: &lsproto::CompletionItemData,
-    ) -> detailsData {
+    ) -> DetailsData {
         if item_data.source == SOURCE_SWITCH_CASES {
-            return detailsData { cases: Some(()), ..Default::default() };
+            return DetailsData { cases: Some(()), ..Default::default() };
         }
 
         let preferences = self.user_preferences().clone();
@@ -230,13 +231,13 @@ impl LanguageService {
         };
 
         let Some(completion_data) = completion_data else {
-            return detailsData::default();
+            return DetailsData::default();
         };
 
         let data = match completion_data {
             CompletionData::Data(data) => data,
             other => {
-                return detailsData { request: Some(other), ..Default::default() };
+                return DetailsData { request: Some(other), ..Default::default() };
             }
         };
 
@@ -248,7 +249,7 @@ impl LanguageService {
             })
             .copied();
         if literal.is_some() {
-            return detailsData { literal, ..Default::default() };
+            return DetailsData { literal, ..Default::default() };
         }
 
         // Find the symbol with the matching entry name.
@@ -273,8 +274,8 @@ impl LanguageService {
                     || get_source_from_origin(origin) == item_data.source
                     || item_data.source == COMPLETION_SOURCE_OBJECT_LITERAL_MEMBER_WITH_COMMA)
             {
-                return Some(detailsData {
-                    symbol: Some(symbolDetails {
+                return Some(DetailsData {
+                    symbol: Some(SymbolDetails {
                         symbol,
                         location: data.location,
                         origin: origin.cloned(),
@@ -291,7 +292,7 @@ impl LanguageService {
         }) {
             return result;
         }
-        detailsData::default()
+        DetailsData::default()
     }
 }
 
@@ -305,7 +306,7 @@ fn create_simple_details(
 }
 
 // completions.go:5706
-pub(crate) fn create_completion_details(
+pub fn create_completion_details(
     mut item: lsproto::CompletionItem,
     detail: &str,
     documentation: &str,
@@ -332,7 +333,7 @@ pub(crate) fn create_completion_details(
     dead_code,
     reason = "Go has no user yet either: `!!! fill in additionalTextEdits from code actions` (completions.go:5712)"
 )]
-struct codeAction {
+struct CodeAction {
     // Description of the code action to display in the UI of the editor
     description: String,
     // Text changes to apply to each file as part of the code action
@@ -366,8 +367,8 @@ impl LanguageService {
         &self,
         context_token: P<Node>,
         source_file: P<SourceFile>,
-    ) -> importStatementCompletionInfo {
-        let mut result = importStatementCompletionInfo::default();
+    ) -> ImportStatementCompletionInfo {
+        let mut result = ImportStatementCompletionInfo::default();
         let mut candidate: Option<P<Node>> = None;
         let parent = context_token.parent().unwrap();
         if ast::is_import_equals_declaration(parent) {
@@ -617,14 +618,14 @@ fn is_module_specifier_missing_or_empty(specifier: Option<P<Node>>) -> bool {
 }
 
 // completions.go:5935
-pub(crate) fn has_doc_comment(file: P<SourceFile>, position: u32) -> bool {
+pub fn has_doc_comment(file: P<SourceFile>, position: u32) -> bool {
     let token = astnav::get_token_at_position(file, position);
     ast::find_ancestor(token, |n| n.is_jsdoc()).is_some()
 }
 
 // Get the corresponding JSDocTag node if the position is in a JSDoc comment
 // completions.go:5941
-pub(crate) fn get_jsdoc_tag_at_position(node: P<Node>, position: u32) -> Option<P<Node>> {
+pub fn get_jsdoc_tag_at_position(node: P<Node>, position: u32) -> Option<P<Node>> {
     ast::find_ancestor_or_quit(node, |n| {
         if ast::is_jsdoc_tag(n) && n.loc().contains_inclusive(position.into()) {
             return FindAncestorResult::True;
@@ -637,17 +638,17 @@ pub(crate) fn get_jsdoc_tag_at_position(node: P<Node>, position: u32) -> Option<
 }
 
 // completions.go:5953
-pub(crate) fn try_get_type_expression_from_tag(tag: P<Node>) -> Option<P<Node>> {
+pub fn try_get_type_expression_from_tag(tag: P<Node>) -> Option<P<Node>> {
     if is_tag_with_type_expression(tag) {
         let type_expression = if ast::is_jsdoc_template_tag(tag) {
             tag.as_jsdoc_template_tag().constraint
         } else {
             tag.type_expression()
         };
-        if let Some(type_expression) = type_expression {
-            if type_expression.kind() == Kind::JSDocTypeExpression {
-                return Some(type_expression);
-            }
+        if let Some(type_expression) = type_expression
+            && type_expression.kind() == Kind::JSDocTypeExpression
+        {
+            return Some(type_expression);
         }
     }
     if ast::is_jsdoc_augments_tag(tag) || ast::is_jsdoc_implements_tag(tag) {
@@ -789,7 +790,7 @@ fn js_doc_tag_name_completion_items() -> &'static [lsproto::CompletionItem] {
         let mut items = Vec::with_capacity(JS_DOC_TAG_NAMES.len());
         items.extend(JS_DOC_TAG_NAMES.iter().map(|tag_name| lsproto::CompletionItem {
             label: tag_name.to_string(),
-            kind: Some(lsproto::CompletionItemKind::Keyword),
+            kind: Some(lsproto::CompletionItemKind::KEYWORD),
             sort_text: Some(SORT_TEXT_LOCATION_PRIORITY.to_string()),
             ..Default::default()
         }));
@@ -804,7 +805,7 @@ fn js_doc_tag_completion_items() -> &'static [lsproto::CompletionItem] {
         let mut items = Vec::with_capacity(JS_DOC_TAG_NAMES.len());
         items.extend(JS_DOC_TAG_NAMES.iter().map(|tag_name| lsproto::CompletionItem {
             label: format!("@{tag_name}"),
-            kind: Some(lsproto::CompletionItemKind::Keyword),
+            kind: Some(lsproto::CompletionItemKind::KEYWORD),
             sort_text: Some(SORT_TEXT_LOCATION_PRIORITY.to_string()),
             ..Default::default()
         }));
@@ -813,17 +814,17 @@ fn js_doc_tag_completion_items() -> &'static [lsproto::CompletionItem] {
 }
 
 // completions.go:6118
-pub(crate) fn get_jsdoc_tag_name_completions() -> Vec<CompletionItem> {
+pub fn get_jsdoc_tag_name_completions() -> Vec<CompletionItem> {
     clone_items(js_doc_tag_name_completion_items())
 }
 
 // completions.go:6122
-pub(crate) fn get_jsdoc_tag_completions() -> Vec<CompletionItem> {
+pub fn get_jsdoc_tag_completions() -> Vec<CompletionItem> {
     clone_items(js_doc_tag_completion_items())
 }
 
 // completions.go:6126
-pub(crate) fn get_jsdoc_parameter_completions(
+pub fn get_jsdoc_parameter_completions(
     _ctx: &Context,
     file: P<SourceFile>,
     position: u32,
@@ -864,6 +865,7 @@ pub(crate) fn get_jsdoc_parameter_completions(
         .count();
 
     let mut result = Vec::new();
+    let mut emit_context: Option<P<EmitContext>> = None;
     for (param_index, &param) in fun.parameters().iter().enumerate() {
         if param_index < param_tag_count {
             // This parameter is already annotated.
@@ -874,6 +876,7 @@ pub(crate) fn get_jsdoc_parameter_completions(
             let mut tabstop_counter = 1;
             let param_name = param.name().unwrap().text();
             let mut display_text = get_jsdoc_param_annotation(
+                &mut emit_context,
                 param_name,
                 param.initializer(),
                 param.as_parameter_declaration().dot_dot_dot_token(),
@@ -888,6 +891,7 @@ pub(crate) fn get_jsdoc_parameter_completions(
             let mut snippet_text = String::new();
             if is_snippet {
                 snippet_text = get_jsdoc_param_annotation(
+                    &mut emit_context,
                     param_name,
                     param.initializer(),
                     param.as_parameter_declaration().dot_dot_dot_token(),
@@ -910,11 +914,11 @@ pub(crate) fn get_jsdoc_parameter_completions(
 
             result.push(CompletionItem::new(lsproto::CompletionItem {
                 label: display_text,
-                kind: Some(lsproto::CompletionItemKind::Variable),
+                kind: Some(lsproto::CompletionItemKind::VARIABLE),
                 sort_text: Some(SORT_TEXT_LOCATION_PRIORITY.to_string()),
                 insert_text: str_ptr_to(&snippet_text),
                 insert_text_format: if is_snippet {
-                    Some(lsproto::InsertTextFormat::Snippet)
+                    Some(lsproto::InsertTextFormat::SNIPPET)
                 } else {
                     None
                 },
@@ -924,6 +928,7 @@ pub(crate) fn get_jsdoc_parameter_completions(
             // Destructuring parameter; do it positionally
             let param_path = format!("param{param_index}");
             let display_text_result = generate_jsdoc_param_tags_for_destructuring(
+                &mut emit_context,
                 &param_path,
                 param.name().unwrap(),
                 param.initializer(),
@@ -937,6 +942,7 @@ pub(crate) fn get_jsdoc_parameter_completions(
             let mut snippet_text = String::new();
             if is_snippet {
                 let snippet_text_result = generate_jsdoc_param_tags_for_destructuring(
+                    &mut emit_context,
                     &param_path,
                     param.name().unwrap(),
                     param.initializer(),
@@ -959,11 +965,11 @@ pub(crate) fn get_jsdoc_parameter_completions(
             }
             result.push(CompletionItem::new(lsproto::CompletionItem {
                 label: display_text,
-                kind: Some(lsproto::CompletionItemKind::Variable),
+                kind: Some(lsproto::CompletionItemKind::VARIABLE),
                 sort_text: Some(SORT_TEXT_LOCATION_PRIORITY.to_string()),
                 insert_text: str_ptr_to(&snippet_text),
                 insert_text_format: if is_snippet {
-                    Some(lsproto::InsertTextFormat::Snippet)
+                    Some(lsproto::InsertTextFormat::SNIPPET)
                 } else {
                     None
                 },
@@ -976,6 +982,7 @@ pub(crate) fn get_jsdoc_parameter_completions(
 
 // completions.go:6269
 fn get_jsdoc_param_annotation(
+    emit_context: &mut Option<P<EmitContext>>,
     param_name: &str,
     initializer: Option<P<Node>>,
     dot_dot_dot_token: Option<P<Node>>,
@@ -1024,7 +1031,8 @@ fn get_jsdoc_param_annotation(
                         None, /*idToSymbol*/
                     );
                     if let Some(type_node) = type_node {
-                        let emit_context = printer::new_emit_context();
+                        let emit_context =
+                            *emit_context.get_or_insert_with(printer::new_emit_context);
                         // !!! snippet p
                         let mut p = printer::new_printer(
                             PrinterOptions {
@@ -1083,6 +1091,7 @@ fn get_jsdoc_param_name_with_initializer(param_name: &str, initializer: P<Node>)
 
 // completions.go:6360
 fn generate_jsdoc_param_tags_for_destructuring(
+    emit_context: &mut Option<P<EmitContext>>,
     path: &str,
     pattern: P<Node>,
     initializer: Option<P<Node>>,
@@ -1096,6 +1105,7 @@ fn generate_jsdoc_param_tags_for_destructuring(
     let mut tabstop_counter = 1;
     if !is_js {
         return vec![get_jsdoc_param_annotation(
+            emit_context,
             path,
             initializer,
             dot_dot_dot_token,
@@ -1109,6 +1119,7 @@ fn generate_jsdoc_param_tags_for_destructuring(
         )];
     }
     js_doc_param_pattern_worker(
+        emit_context,
         path,
         pattern,
         initializer,
@@ -1124,6 +1135,7 @@ fn generate_jsdoc_param_tags_for_destructuring(
 
 // completions.go:6400
 fn js_doc_param_pattern_worker(
+    emit_context: &mut Option<P<EmitContext>>,
     path: &str,
     pattern: P<Node>,
     initializer: Option<P<Node>>,
@@ -1138,6 +1150,7 @@ fn js_doc_param_pattern_worker(
     if ast::is_object_binding_pattern(pattern) && dot_dot_dot_token.is_none() {
         let mut child_counter = *counter;
         let root_param = get_jsdoc_param_annotation(
+            emit_context,
             path,
             initializer,
             dot_dot_dot_token,
@@ -1152,6 +1165,7 @@ fn js_doc_param_pattern_worker(
         let mut child_tags: Vec<String> = Vec::new();
         for &element in pattern.elements() {
             let element_tags = js_doc_param_element_worker(
+                emit_context,
                 path,
                 element,
                 initializer,
@@ -1177,6 +1191,7 @@ fn js_doc_param_pattern_worker(
         }
     }
     vec![get_jsdoc_param_annotation(
+        emit_context,
         path,
         initializer,
         dot_dot_dot_token,
@@ -1194,6 +1209,7 @@ fn js_doc_param_pattern_worker(
 // We can't deeply annotate an array binding pattern.
 // completions.go:6469
 fn js_doc_param_element_worker(
+    emit_context: &mut Option<P<EmitContext>>,
     path: &str,
     element: P<Node>,
     _initializer: Option<P<Node>>,
@@ -1217,6 +1233,7 @@ fn js_doc_param_element_worker(
         }
         let param_name = format!("{path}.{property_name}");
         return vec![get_jsdoc_param_annotation(
+            emit_context,
             &param_name,
             element.initializer(),
             element.as_binding_element().dot_dot_dot_token(),
@@ -1236,6 +1253,7 @@ fn js_doc_param_element_worker(
             return Vec::new();
         }
         return js_doc_param_pattern_worker(
+            emit_context,
             &format!("{path}.{property_name}"),
             element.name().unwrap(),
             element.initializer(),
@@ -1252,7 +1270,7 @@ fn js_doc_param_element_worker(
 }
 
 // completions.go:6527
-pub(crate) fn get_jsdoc_parameter_name_completions(tag: P<Node>) -> Vec<CompletionItem> {
+pub fn get_jsdoc_parameter_name_completions(tag: P<Node>) -> Vec<CompletionItem> {
     if !ast::is_identifier(tag.name().unwrap()) {
         return Vec::new();
     }
@@ -1287,7 +1305,7 @@ pub(crate) fn get_jsdoc_parameter_name_completions(tag: P<Node>) -> Vec<Completi
 
         Some(CompletionItem::new(lsproto::CompletionItem {
             label: name.to_string(),
-            kind: Some(lsproto::CompletionItemKind::Variable),
+            kind: Some(lsproto::CompletionItemKind::VARIABLE),
             sort_text: Some(SORT_TEXT_LOCATION_PRIORITY.to_string()),
             ..Default::default()
         }))
@@ -1469,12 +1487,12 @@ impl LanguageService {
 
             return Ok(Some(lsproto::CompletionItem {
                 label: name.clone(),
-                kind: Some(lsproto::CompletionItemKind::Snippet),
+                kind: Some(lsproto::CompletionItemKind::SNIPPET),
                 sort_text: Some(SORT_TEXT_GLOBALS_OR_KEYWORDS.to_string()),
                 insert_text: str_ptr_to(&insert_text),
                 additional_text_edits,
                 insert_text_format: if client_supports_item_snippet(ctx) {
-                    Some(lsproto::InsertTextFormat::Snippet)
+                    Some(lsproto::InsertTextFormat::SNIPPET)
                 } else {
                     None
                 },
@@ -1613,14 +1631,14 @@ fn entity_name_to_expression(
 
 // completions.go:6785 (Go keeps `baseWriter` and `writer.ChangeTrackerWriter` as the same pointer; here the base
 // writer lives inside `writer`)
-pub(crate) struct snippetPrinter {
+pub struct SnippetPrinter {
     pub(crate) emit_context: P<EmitContext>,
     printer: Printer,
-    writer: snippetEmitTextWriter,
+    writer: SnippetEmitTextWriter,
     pub(crate) factory: NodeFactory,
 }
 
-impl snippetPrinter {
+impl SnippetPrinter {
     // completions.go:6802
     pub(crate) fn print_unescaped_node(&mut self, node: P<Node>) -> String {
         self.writer.escapes.clear();
@@ -1686,17 +1704,17 @@ impl snippetPrinter {
 }
 
 // completions.go:6836
-pub(crate) fn create_snippet_printer(
+pub fn create_snippet_printer(
     options: PrinterOptions,
     emit_context: Option<P<EmitContext>>,
-) -> snippetPrinter {
+) -> SnippetPrinter {
     let emit_context = emit_context.unwrap_or_else(printer::new_emit_context);
     let base_writer =
         printer::new_change_tracker_writer(options.new_line.get_new_line_character(), None);
     let printer =
         printer::new_printer(options, base_writer.get_print_handlers(), Some(emit_context));
-    let writer = snippetEmitTextWriter { base: base_writer, escapes: Vec::new() };
-    snippetPrinter {
+    let writer = SnippetEmitTextWriter { base: base_writer, escapes: Vec::new() };
+    SnippetPrinter {
         emit_context,
         printer,
         writer,
@@ -1706,12 +1724,12 @@ pub(crate) fn create_snippet_printer(
 
 // Override base writer methods to perform snippet escaping.
 // completions.go:6855
-struct snippetEmitTextWriter {
+struct SnippetEmitTextWriter {
     base: ChangeTrackerWriter,
     escapes: Vec<TextChange>,
 }
 
-impl snippetEmitTextWriter {
+impl SnippetEmitTextWriter {
     // The formatter/scanner will have issues with snippet-escaped text,
     // so instead of writing the escaped text directly to the writer,
     // generate a set of changes that can be applied to the unescaped text
@@ -1719,19 +1737,19 @@ impl snippetEmitTextWriter {
     // completions.go:6888
     fn escaping_write(&mut self, s: &str, write: impl FnOnce(&mut ChangeTrackerWriter)) {
         let escaped = escape_snippet_text(s);
-        if escaped != s {
+        if escaped == s {
+            write(&mut self.base);
+        } else {
             let start = self.base.get_text_pos();
             write(&mut self.base);
             let end = self.base.get_text_pos();
             self.escapes
                 .push(TextChange { new_text: escaped, text_range: TextRange::new(start, end) });
-        } else {
-            write(&mut self.base);
         }
     }
 }
 
-impl EmitTextWriter for snippetEmitTextWriter {
+impl EmitTextWriter for SnippetEmitTextWriter {
     // completions.go:6860
     fn write(&mut self, s: &str) {
         self.escaping_write(s, |w| w.write(s));

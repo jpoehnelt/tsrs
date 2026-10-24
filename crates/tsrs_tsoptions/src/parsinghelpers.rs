@@ -1,11 +1,10 @@
 use rustc_hash::FxHashSet;
 use tsrs_ast::Diagnostic;
-use tsrs_core::collections::{OrderedMap, OrderedMapExt};
+use tsrs_core::collections::OrderedMap;
 use tsrs_core::tspath;
 use tsrs_core::{
     BuildOptions, CompilerOptions, JsxEmit, ModuleDetectionKind, ModuleKind, ModuleResolutionKind,
     NewLineKind, P, PluginImport, ProjectReference, ScriptTarget, Tristate, TypeAcquisition,
-    WatchOptions,
 };
 use tsrs_diagnostics as diagnostics;
 use tsrs_diagnostics::Message;
@@ -41,7 +40,7 @@ pub fn parse_string_array(value: &CompilerOptionsValue) -> Option<Vec<String>> {
     None
 }
 
-pub(crate) fn parse_string_map(
+pub fn parse_string_map(
     value: &CompilerOptionsValue,
 ) -> Option<OrderedMap<String, Option<Vec<String>>>> {
     if let CompilerOptionsValue::Object(m) = value {
@@ -59,16 +58,8 @@ pub fn parse_string(value: &CompilerOptionsValue) -> String {
     String::new()
 }
 
-pub(crate) fn parse_number(value: &CompilerOptionsValue) -> Option<i32> {
-    match value {
-        CompilerOptionsValue::Int(num) => Some(*num as i32),
-        CompilerOptionsValue::Float(num) => Some(*num as i32),
-        _ => None,
-    }
-}
-
 // parseNumber into a Go `*int` (64-bit) option.
-pub(crate) fn parse_number_int(value: &CompilerOptionsValue) -> Option<i64> {
+pub fn parse_number_int(value: &CompilerOptionsValue) -> Option<i64> {
     match value {
         CompilerOptionsValue::Int(num) => Some(*num),
         CompilerOptionsValue::Float(num) => Some(*num as i64),
@@ -76,7 +67,7 @@ pub(crate) fn parse_number_int(value: &CompilerOptionsValue) -> Option<i64> {
     }
 }
 
-pub(crate) struct ProjectReferenceParseResult {
+pub struct ProjectReferenceParseResult {
     pub(crate) reference: ProjectReference,
     pub(crate) has_path: bool,
     pub(crate) path_valid: bool,
@@ -84,9 +75,7 @@ pub(crate) struct ProjectReferenceParseResult {
     pub(crate) circular_valid: bool,
 }
 
-pub(crate) fn parse_project_reference(
-    json: &CompilerOptionsValue,
-) -> Option<ProjectReferenceParseResult> {
+pub fn parse_project_reference(json: &CompilerOptionsValue) -> Option<ProjectReferenceParseResult> {
     if let CompilerOptionsValue::Object(v) = json {
         let mut result = ProjectReferenceParseResult {
             reference: ProjectReference::default(),
@@ -114,9 +103,7 @@ pub(crate) fn parse_project_reference(
     None
 }
 
-pub(crate) fn parse_content_mapper(
-    value: &CompilerOptionsValue,
-) -> (Option<Mapper>, Vec<P<Diagnostic>>) {
+pub fn parse_content_mapper(value: &CompilerOptionsValue) -> (Option<Mapper>, Vec<P<Diagnostic>>) {
     let CompilerOptionsValue::Object(v) = value else {
         return (None, Vec::new());
     };
@@ -128,13 +115,13 @@ pub(crate) fn parse_content_mapper(
                 mapper.definition.package.clone_from(str);
             }
             _ => errors.push(new_compiler_diagnostic(
-                &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
+                &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
                 &[&"contentMapper.package", &"string"],
             )),
         }
     } else {
         errors.push(new_compiler_diagnostic(
-            &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
+            &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
             &[&"contentMapper.package", &"string"],
         ));
     }
@@ -143,24 +130,37 @@ pub(crate) fn parse_content_mapper(
             mapper.definition.extensions = strs;
         } else {
             errors.push(new_compiler_diagnostic(
-                &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
+                &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
                 &[&"contentMapper.extensions", &"string[]"],
             ));
         }
     } else {
         errors.push(new_compiler_diagnostic(
-            &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
+            &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
             &[&"contentMapper.extensions", &"string[]"],
         ));
     }
-    if let Some(options) = v.get("options") {
-        if !matches!(options, CompilerOptionsValue::Object(_)) {
+    if let Some(output_extensions) = v.get("outputExtensions")
+        && !matches!(output_extensions, CompilerOptionsValue::Null)
+    {
+        if let Some(values) = parse_string_string_map_strict(output_extensions) {
+            mapper.definition.output_extensions = values;
+            mapper.definition.output_extensions_present = true;
+        } else {
             errors.push(new_compiler_diagnostic(
-                &diagnostics::Compiler_option_0_requires_a_value_of_type_1,
+                &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
+                &[&"contentMapper.outputExtensions", &"object or null"],
+            ));
+        }
+    }
+    if let Some(options) = v.get("options") {
+        if matches!(options, CompilerOptionsValue::Object(_)) {
+            mapper.definition.options = crate::tsconfigparsing::stringify_json(options);
+        } else {
+            errors.push(new_compiler_diagnostic(
+                &diagnostics::COMPILER_OPTION_0_REQUIRES_A_VALUE_OF_TYPE_1,
                 &[&"contentMapper.options", &"object"],
             ));
-        } else {
-            mapper.definition.options = crate::tsconfigparsing::stringify_json(options);
         }
     }
     if !errors.is_empty() {
@@ -169,9 +169,25 @@ pub(crate) fn parse_content_mapper(
     (Some(mapper), errors)
 }
 
+fn parse_string_string_map_strict(
+    value: &CompilerOptionsValue,
+) -> Option<rustc_hash::FxHashMap<String, String>> {
+    let CompilerOptionsValue::Object(map) = value else {
+        return None;
+    };
+    let mut result = rustc_hash::FxHashMap::default();
+    for (key, value) in map {
+        let CompilerOptionsValue::String(value) = value else {
+            return None;
+        };
+        result.insert(key.clone(), value.clone());
+    }
+    Some(result)
+}
+
 // parseStringArrayStrict returns the string slice and true only if value is an array whose
 // elements are all strings. A missing element or wrong element type yields false.
-pub(crate) fn parse_string_array_strict(value: &CompilerOptionsValue) -> Option<Vec<String>> {
+pub fn parse_string_array_strict(value: &CompilerOptionsValue) -> Option<Vec<String>> {
     let CompilerOptionsValue::Array(arr) = value else {
         return None;
     };
@@ -187,55 +203,55 @@ pub(crate) fn parse_string_array_strict(value: &CompilerOptionsValue) -> Option<
     Some(result)
 }
 
-pub(crate) fn parse_json_to_string_key(
+pub fn parse_json_to_string_key(
     json: &CompilerOptionsValue,
 ) -> OrderedMap<String, CompilerOptionsValue> {
     let mut result = OrderedMap::with_capacity_and_hasher(6, rustc_hash::FxBuildHasher);
     if let CompilerOptionsValue::Object(m) = json {
         if let Some(v) = m.get("include") {
-            result.set("include".to_string(), v.clone());
+            result.insert("include".to_string(), v.clone());
         }
         if let Some(v) = m.get("exclude") {
-            result.set("exclude".to_string(), v.clone());
+            result.insert("exclude".to_string(), v.clone());
         }
         if let Some(v) = m.get("files") {
-            result.set("files".to_string(), v.clone());
+            result.insert("files".to_string(), v.clone());
         }
         if let Some(v) = m.get("references") {
-            result.set("references".to_string(), v.clone());
+            result.insert("references".to_string(), v.clone());
         }
         if let Some(v) = m.get("contentMappers") {
-            result.set("contentMappers".to_string(), v.clone());
+            result.insert("contentMappers".to_string(), v.clone());
         }
         if let Some(v) = m.get("extends") {
             if let CompilerOptionsValue::String(str) = v {
-                result.set(
+                result.insert(
                     "extends".to_string(),
                     CompilerOptionsValue::Array(vec![CompilerOptionsValue::String(str.clone())]),
                 );
             }
-            result.set("extends".to_string(), v.clone());
+            result.insert("extends".to_string(), v.clone());
         }
         if let Some(v) = m.get("compilerOptions") {
-            result.set("compilerOptions".to_string(), v.clone());
+            result.insert("compilerOptions".to_string(), v.clone());
         }
         if let Some(v) = m.get("excludes") {
-            result.set("excludes".to_string(), v.clone());
+            result.insert("excludes".to_string(), v.clone());
         }
         if let Some(v) = m.get("typeAcquisition") {
-            result.set("typeAcquisition".to_string(), v.clone());
+            result.insert("typeAcquisition".to_string(), v.clone());
         }
     }
     result
 }
 
-pub(crate) trait OptionParser {
+pub trait OptionParser {
     fn parse_option(&mut self, key: &str, value: &CompilerOptionsValue) -> Vec<P<Diagnostic>>;
     fn unknown_option_diagnostic(&self) -> &'static Message;
     fn unknown_did_you_mean_diagnostic(&self) -> &'static Message;
 }
 
-pub(crate) struct CompilerOptionsParser(pub(crate) CompilerOptions);
+pub struct CompilerOptionsParser(pub(crate) CompilerOptions);
 
 impl OptionParser for CompilerOptionsParser {
     fn parse_option(&mut self, key: &str, value: &CompilerOptionsValue) -> Vec<P<Diagnostic>> {
@@ -251,23 +267,7 @@ impl OptionParser for CompilerOptionsParser {
     }
 }
 
-pub(crate) struct WatchOptionsParser(pub(crate) WatchOptions);
-
-impl OptionParser for WatchOptionsParser {
-    fn parse_option(&mut self, key: &str, value: &CompilerOptionsValue) -> Vec<P<Diagnostic>> {
-        parse_watch_options(key, value, &mut self.0)
-    }
-
-    fn unknown_option_diagnostic(&self) -> &'static Message {
-        extra_key_diagnostics("watchOptions").unwrap()
-    }
-
-    fn unknown_did_you_mean_diagnostic(&self) -> &'static Message {
-        extra_key_did_you_mean_diagnostics("watchOptions").unwrap()
-    }
-}
-
-pub(crate) struct TypeAcquisitionParser(pub(crate) TypeAcquisition);
+pub struct TypeAcquisitionParser(pub(crate) TypeAcquisition);
 
 impl OptionParser for TypeAcquisitionParser {
     fn parse_option(&mut self, key: &str, value: &CompilerOptionsValue) -> Vec<P<Diagnostic>> {
@@ -283,7 +283,7 @@ impl OptionParser for TypeAcquisitionParser {
     }
 }
 
-pub(crate) struct BuildOptionsParser(pub(crate) BuildOptions);
+pub struct BuildOptionsParser(pub(crate) BuildOptions);
 
 impl OptionParser for BuildOptionsParser {
     fn parse_option(&mut self, key: &str, value: &CompilerOptionsValue) -> Vec<P<Diagnostic>> {
@@ -313,7 +313,7 @@ pub fn parse_compiler_options(
 }
 
 // Go `parseCompilerOptions`.
-pub(crate) fn parse_compiler_options_worker(
+pub fn parse_compiler_options_worker(
     key: &str,
     value: &CompilerOptionsValue,
     all_options: &mut CompilerOptions,
@@ -406,16 +406,13 @@ pub(crate) fn parse_compiler_options_worker(
         "locale" => all_options.locale = parse_string(value),
         "mapRoot" => all_options.map_root = parse_string(value),
         "module" => all_options.module = float_or_int32_to_module_kind(value),
-        "moduleDetectionKind" => {
+        "moduleDetectionKind" | "moduleDetection" => {
             all_options.module_detection = float_or_int32_to_module_detection_kind(value);
         }
         "moduleResolution" => {
             all_options.module_resolution = float_or_int32_to_module_resolution_kind(value);
         }
         "moduleSuffixes" => all_options.module_suffixes = parse_string_array(value),
-        "moduleDetection" => {
-            all_options.module_detection = float_or_int32_to_module_detection_kind(value);
-        }
         "noCheck" => all_options.no_check = parse_tristate(value),
         "noFallthroughCasesInSwitch" => {
             all_options.no_fallthrough_cases_in_switch = parse_tristate(value);
@@ -583,45 +580,6 @@ float_or_int32_to_flag!(
 float_or_int32_to_flag!(float_or_int32_to_script_target, ScriptTarget, TARGET_OPTION_MAP);
 float_or_int32_to_flag!(float_or_int32_to_new_line_kind, NewLineKind, NEW_LINE_OPTION_MAP);
 
-pub fn parse_watch_options(
-    key: &str,
-    value: &CompilerOptionsValue,
-    all_options: &mut WatchOptions,
-) -> Vec<P<Diagnostic>> {
-    match key {
-        "watchInterval" => all_options.interval = parse_number(value),
-        "watchFile" => {
-            if !value.is_null() {
-                let CompilerOptionsValue::WatchFileKind(v) = value else {
-                    panic!("interface conversion")
-                };
-                all_options.file_kind = *v;
-            }
-        }
-        "watchDirectory" => {
-            if !value.is_null() {
-                let CompilerOptionsValue::WatchDirectoryKind(v) = value else {
-                    panic!("interface conversion")
-                };
-                all_options.directory_kind = *v;
-            }
-        }
-        "fallbackPolling" => {
-            if !value.is_null() {
-                let CompilerOptionsValue::PollingKind(v) = value else {
-                    panic!("interface conversion")
-                };
-                all_options.fallback_polling = *v;
-            }
-        }
-        "synchronousWatchDirectory" => all_options.sync_watch_dir = parse_tristate(value),
-        "excludeDirectories" => all_options.exclude_dir = parse_string_array(value),
-        "excludeFiles" => all_options.exclude_files = parse_string_array(value),
-        _ => {}
-    }
-    Vec::new()
-}
-
 pub fn parse_type_acquisition(
     key: &str,
     value: &CompilerOptionsValue,
@@ -668,7 +626,7 @@ pub fn parse_build_options(
 }
 
 // reflect.Value.IsZero for the field types of core.CompilerOptions.
-pub(crate) trait IsZero {
+pub trait IsZero {
     fn is_zero(&self) -> bool;
 }
 
@@ -872,7 +830,7 @@ impl<T: IsZero + ToOptionsValue> OptionFieldValue for T {
     }
 }
 
-pub(crate) trait ToOptionsValue {
+pub trait ToOptionsValue {
     fn to_options_value(&self) -> CompilerOptionsValue;
 }
 
@@ -1000,7 +958,7 @@ pub fn for_each_compiler_option_value(
 // with optional awareness of explicitly set null values in the raw JSON.
 // Fields in the source options will overwrite the corresponding fields in the target options,
 // including when they are explicitly set to null in the raw configuration (if rawSource is provided).
-pub(crate) fn merge_compiler_options(
+pub fn merge_compiler_options(
     target_options: &mut CompilerOptions,
     source_options: Option<&CompilerOptions>,
     raw_source: Option<&CompilerOptionsValue>,
@@ -1039,7 +997,7 @@ pub(crate) fn merge_compiler_options(
     for_each_compiler_options_field!(merge_fields);
 }
 
-pub(crate) fn convert_to_options_with_absolute_paths(
+pub fn convert_to_options_with_absolute_paths(
     mut options_base: OrderedMap<String, CompilerOptionsValue>,
     option_map: &CommandLineOptionNameMap,
     cwd: &str,
@@ -1050,7 +1008,7 @@ pub(crate) fn convert_to_options_with_absolute_paths(
     for o in keys {
         let v = options_base.get(&o).unwrap();
         if let Some(result) = convert_option_to_absolute_path(&o, v, option_map, cwd) {
-            options_base.set(o, result);
+            options_base.insert(o, result);
         }
     }
     options_base
@@ -1087,12 +1045,12 @@ pub fn convert_option_to_absolute_path(
                 ));
             }
         }
-    } else if option.is_file_path {
-        if let CompilerOptionsValue::String(value) = v {
-            return Some(CompilerOptionsValue::String(tspath::get_normalized_absolute_path(
-                value, cwd,
-            )));
-        }
+    } else if option.is_file_path
+        && let CompilerOptionsValue::String(value) = v
+    {
+        return Some(CompilerOptionsValue::String(tspath::get_normalized_absolute_path(
+            value, cwd,
+        )));
     }
     None
 }

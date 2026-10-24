@@ -102,7 +102,7 @@ impl LanguageService {
                 symbol,
                 node,
                 declaration,
-                lsproto::MarkupKind::Markdown,
+                lsproto::MarkupKind::MARKDOWN,
                 true,
             )
             .trim()
@@ -111,11 +111,11 @@ impl LanguageService {
                 || crate::jsdoc::get_symbol_jsdoc_tags(symbol),
                 crate::jsdoc::get_declaration_jsdoc_tag_info,
             );
-            if tags.is_empty() {
-                if let Some(symbol) = symbol.filter(|s| s.flags().intersects(SymbolFlags::Alias)) {
-                    let target = c.get_aliased_symbol(symbol);
-                    tags = crate::jsdoc::get_symbol_jsdoc_tags(Some(target));
-                }
+            if tags.is_empty()
+                && let Some(symbol) = symbol.filter(|s| s.flags().intersects(SymbolFlags::Alias))
+            {
+                let target = c.get_aliased_symbol(symbol);
+                tags = crate::jsdoc::get_symbol_jsdoc_tags(Some(target));
             }
             if !documentation.is_empty() || !tags.is_empty() {
                 return (documentation, tags);
@@ -202,7 +202,7 @@ impl LanguageService {
             let (hover_range, hover_fidelity) =
                 self.converters.to_lsp_range_for_feature(&range_file, text_range, Feature::Hover);
 
-            let content = if content_format == lsproto::MarkupKind::Markdown {
+            let content = if content_format == lsproto::MarkupKind::MARKDOWN {
                 format_quick_info(&quick_info) + &documentation
             } else {
                 quick_info + &documentation
@@ -252,7 +252,7 @@ impl LanguageService {
                 let doc_text = vs_documentation.trim_start_matches('\n');
                 if !doc_text.is_empty() {
                     documentation_runs = vec![lsproto::VSClassifiedTextRun {
-                        classification_type_name: lsproto::ClassificationTypeName::Text
+                        classification_type_name: lsproto::ClassificationTypeName::TEXT
                             .0
                             .to_string(),
                         text: doc_text.to_string(),
@@ -308,7 +308,7 @@ impl LanguageService {
         let mut combined = hovers.swap_remove(0);
         combined.can_increase_verbosity = can_increase_verbosity;
         let separator =
-            if content_format == lsproto::MarkupKind::Markdown { "\n\n---\n\n" } else { "\n\n" };
+            if content_format == lsproto::MarkupKind::MARKDOWN { "\n\n---\n\n" } else { "\n\n" };
         combined.contents.markup_content.as_mut().unwrap().value = contents.join(separator);
         combined.range = common_range;
         match raw_contents.len() {
@@ -316,7 +316,7 @@ impl LanguageService {
             1 => combined.vs_raw_content = raw_contents.pop().unwrap().container_element,
             _ => {
                 combined.vs_raw_content = Some(lsproto::VSContainerElement {
-                    style: lsproto::VSContainerElementStyle::Stacked,
+                    style: lsproto::VSContainerElementStyle::STACKED,
                     elements: raw_contents,
                     ..Default::default()
                 });
@@ -377,7 +377,7 @@ impl LanguageService {
                 symbol,
                 node,
                 info.declaration,
-                lsproto::MarkupKind::PlainText,
+                lsproto::MarkupKind::PLAIN_TEXT,
                 true, /*commentOnly*/
             );
         }
@@ -385,7 +385,7 @@ impl LanguageService {
         (quick_info, documentation, vs_documentation, quick_info_runs)
     }
 
-    // hover.go:206
+    // hover.go:202
     pub(crate) fn documentation_location_mapper(
         &self,
         feature: Feature,
@@ -396,15 +396,15 @@ impl LanguageService {
     }
 }
 
+// hover.go:200
+pub type DocumentationLocationMapper<'a> =
+    &'a dyn Fn(P<SourceFile>, TextRange) -> (lsproto::Location, Fidelity);
+
+// hover.go:212
 // getDocumentationForSymbol tries each documentation source in turn (call-signature documentation,
 // declaration JSDoc, root-symbol JSDoc, alias target JSDoc) and returns the first non-empty result,
 // formatted for contentFormat. commentOnly restricts the result to the JSDoc summary, excluding the
 // @tag section.
-// hover.go:204
-pub(crate) type DocumentationLocationMapper<'a> =
-    &'a dyn Fn(P<SourceFile>, TextRange) -> (lsproto::Location, Fidelity);
-
-// hover.go:212
 fn get_documentation_for_symbol(
     get_mapped_location: DocumentationLocationMapper,
     c: &mut Checker,
@@ -561,10 +561,10 @@ fn documentation_from_root_symbols(
     let mut docs: Vec<String> = Vec::new();
     for root_symbol in root_symbols {
         let mut declarations: Vec<P<Node>> = root_symbol.declarations().to_vec();
-        if declarations.is_empty() {
-            if let Some(value_declaration) = root_symbol.value_declaration() {
-                declarations = vec![value_declaration];
-            }
+        if declarations.is_empty()
+            && let Some(value_declaration) = root_symbol.value_declaration()
+        {
+            declarations = vec![value_declaration];
         }
         for declaration in declarations {
             let documentation = get_documentation_from_declaration(
@@ -585,7 +585,7 @@ fn documentation_from_root_symbols(
 }
 
 // hover.go:306
-pub(crate) fn get_documentation_from_declaration(
+pub fn get_documentation_from_declaration(
     get_mapped_location: DocumentationLocationMapper,
     c: &mut Checker,
     _symbol: Option<P<Symbol>>,
@@ -597,131 +597,115 @@ pub(crate) fn get_documentation_from_declaration(
     let Some(declaration) = declaration else {
         return String::new();
     };
-    let is_markdown = content_format == lsproto::MarkupKind::Markdown;
+    let is_markdown = content_format == lsproto::MarkupKind::MARKDOWN;
     let mut b = String::new();
-    if let Some(jsdoc) = get_jsdoc_or_tag(c, Some(declaration), &mut FxHashSet::default()) {
-        if declaration.flags().intersects(NodeFlags::Reparsed) || !contains_typedef_tag(jsdoc) {
-            write_comments(get_mapped_location, &mut b, c, jsdoc.comments(), is_markdown);
-            if jsdoc.kind() == Kind::JSDoc && !comment_only {
-                if let Some(tags) = jsdoc.as_jsdoc().tags {
-                    for &tag in tags.nodes() {
-                        if tag.kind() == Kind::JSDocTypeTag
-                            || tag.kind() == Kind::JSDocTypedefTag
-                            || tag.kind() == Kind::JSDocCallbackTag
-                        {
-                            continue;
-                        }
-                        b.push_str("\n\n");
-                        if is_markdown {
-                            b.push_str("*@");
-                            b.push_str(tag.tag_name().text());
-                            b.push('*');
-                        } else {
-                            b.push('@');
-                            b.push_str(tag.tag_name().text());
-                        }
-                        match tag.kind() {
-                            Kind::JSDocParameterTag | Kind::JSDocPropertyTag => {
-                                write_optional_entity_name(&mut b, tag.name());
+    if let Some(jsdoc) = get_jsdoc_or_tag(c, Some(declaration), &mut FxHashSet::default())
+        && (declaration.flags().intersects(NodeFlags::Reparsed) || !contains_typedef_tag(jsdoc))
+    {
+        write_comments(get_mapped_location, &mut b, c, jsdoc.comments(), is_markdown);
+        if jsdoc.kind() == Kind::JSDoc
+            && !comment_only
+            && let Some(tags) = jsdoc.as_jsdoc().tags
+        {
+            for &tag in tags.nodes() {
+                if tag.kind() == Kind::JSDocTypeTag
+                    || tag.kind() == Kind::JSDocTypedefTag
+                    || tag.kind() == Kind::JSDocCallbackTag
+                {
+                    continue;
+                }
+                b.push_str("\n\n");
+                if is_markdown {
+                    b.push_str("*@");
+                    b.push_str(tag.tag_name().text());
+                    b.push('*');
+                } else {
+                    b.push('@');
+                    b.push_str(tag.tag_name().text());
+                }
+                match tag.kind() {
+                    Kind::JSDocParameterTag | Kind::JSDocPropertyTag => {
+                        write_optional_entity_name(&mut b, tag.name());
+                    }
+                    Kind::JSDocAugmentsTag => {
+                        write_optional_entity_name(&mut b, Some(tag.class_name()));
+                    }
+                    Kind::JSDocTemplateTag => {
+                        for (i, &tp) in tag.type_parameters().iter().enumerate() {
+                            if i != 0 {
+                                b.push(',');
                             }
-                            Kind::JSDocAugmentsTag => {
-                                write_optional_entity_name(&mut b, Some(tag.class_name()));
-                            }
-                            Kind::JSDocTemplateTag => {
-                                for (i, &tp) in tag.type_parameters().iter().enumerate() {
-                                    if i != 0 {
-                                        b.push(',');
-                                    }
-                                    write_optional_entity_name(&mut b, tp.name());
-                                }
-                            }
-                            _ => {}
-                        }
-                        let comments = tag.comments();
-                        if tag.kind() == Kind::JSDocUnknownTag && tag.tag_name().text() == "example"
-                        {
-                            let mut comment_text =
-                                scanner::get_text_of_jsdoc_comment(tag.comment_list());
-                            if comment_text.starts_with("<caption>") {
-                                if let Some(caption_end) =
-                                    comment_text.find("</caption>").filter(|&i| i > 0)
-                                {
-                                    b.push_str(" — ");
-                                    b.push_str(&comment_text["<caption>".len()..caption_end]);
-                                    comment_text = comment_text[caption_end + "</caption>".len()..]
-                                        .to_string();
-                                    // Trim leading blank lines from commentText
-                                    loop {
-                                        let s1 = comment_text.trim_start_matches([' ', '\t']);
-                                        let s2 = s1.trim_start_matches(['\r', '\n']);
-                                        if s1.len() == s2.len() {
-                                            break;
-                                        }
-                                        comment_text = s2.to_string();
-                                    }
-                                }
-                            }
-                            b.push('\n');
-                            if comment_text.len() > 6
-                                && comment_text.starts_with("```")
-                                && comment_text.ends_with("```")
-                                && comment_text.contains('\n')
-                            {
-                                b.push_str(&comment_text);
-                                b.push('\n');
-                            } else {
-                                write_code(&mut b, "tsx", &comment_text);
-                            }
-                        } else if tag.kind() == Kind::JSDocSeeTag
-                            && tag.as_jsdoc_see_tag().name_expression.is_some()
-                        {
-                            b.push_str(" — ");
-                            write_name_link(
-                                get_mapped_location,
-                                &mut b,
-                                c,
-                                tag.as_jsdoc_see_tag().name_expression.unwrap().name().unwrap(),
-                                "",
-                                false, /*quote*/
-                                is_markdown,
-                            );
-                            if !comments.is_empty() {
-                                b.push(' ');
-                                write_comments(
-                                    get_mapped_location,
-                                    &mut b,
-                                    c,
-                                    comments,
-                                    is_markdown,
-                                );
-                            }
-                        } else if tag.kind() == Kind::JSDocThrowsTag
-                            && tag.as_jsdoc_throws_tag().type_expression.is_some()
-                        {
-                            b.push_str(" — ");
-                            b.push_str(&scanner::get_text_of_node(
-                                tag.as_jsdoc_throws_tag().type_expression.unwrap(),
-                            ));
-                            if !comments.is_empty() {
-                                b.push(' ');
-                                write_comments(
-                                    get_mapped_location,
-                                    &mut b,
-                                    c,
-                                    comments,
-                                    is_markdown,
-                                );
-                            }
-                        } else if !comments.is_empty() {
-                            b.push(' ');
-                            if comments[0].kind() != Kind::JSDocText
-                                || !comments[0].text().starts_with('-')
-                            {
-                                b.push_str("— ");
-                            }
-                            write_comments(get_mapped_location, &mut b, c, comments, is_markdown);
+                            write_optional_entity_name(&mut b, tp.name());
                         }
                     }
+                    _ => {}
+                }
+                let comments = tag.comments();
+                if tag.kind() == Kind::JSDocUnknownTag && tag.tag_name().text() == "example" {
+                    let mut comment_text = scanner::get_text_of_jsdoc_comment(tag.comment_list());
+                    if comment_text.starts_with("<caption>")
+                        && let Some(caption_end) =
+                            comment_text.find("</caption>").filter(|&i| i > 0)
+                    {
+                        b.push_str(" — ");
+                        b.push_str(&comment_text["<caption>".len()..caption_end]);
+                        comment_text = comment_text[caption_end + "</caption>".len()..].to_string();
+                        // Trim leading blank lines from commentText
+                        loop {
+                            let s1 = comment_text.trim_start_matches([' ', '\t']);
+                            let s2 = s1.trim_start_matches(['\r', '\n']);
+                            if s1.len() == s2.len() {
+                                break;
+                            }
+                            comment_text = s2.to_string();
+                        }
+                    }
+                    b.push('\n');
+                    if comment_text.len() > 6
+                        && comment_text.starts_with("```")
+                        && comment_text.ends_with("```")
+                        && comment_text.contains('\n')
+                    {
+                        b.push_str(&comment_text);
+                        b.push('\n');
+                    } else {
+                        write_code(&mut b, "tsx", &comment_text);
+                    }
+                } else if tag.kind() == Kind::JSDocSeeTag
+                    && tag.as_jsdoc_see_tag().name_expression.is_some()
+                {
+                    b.push_str(" — ");
+                    write_name_link(
+                        get_mapped_location,
+                        &mut b,
+                        c,
+                        tag.as_jsdoc_see_tag().name_expression.unwrap().name().unwrap(),
+                        "",
+                        false, /*quote*/
+                        is_markdown,
+                    );
+                    if !comments.is_empty() {
+                        b.push(' ');
+                        write_comments(get_mapped_location, &mut b, c, comments, is_markdown);
+                    }
+                } else if tag.kind() == Kind::JSDocThrowsTag
+                    && tag.as_jsdoc_throws_tag().type_expression.is_some()
+                {
+                    b.push_str(" — ");
+                    b.push_str(&scanner::get_text_of_node(
+                        tag.as_jsdoc_throws_tag().type_expression.unwrap(),
+                    ));
+                    if !comments.is_empty() {
+                        b.push(' ');
+                        write_comments(get_mapped_location, &mut b, c, comments, is_markdown);
+                    }
+                } else if !comments.is_empty() {
+                    b.push(' ');
+                    if comments[0].kind() != Kind::JSDocText || !comments[0].text().starts_with('-')
+                    {
+                        b.push_str("— ");
+                    }
+                    write_comments(get_mapped_location, &mut b, c, comments, is_markdown);
                 }
             }
         }
@@ -757,7 +741,7 @@ fn should_get_type(node: P<Node>) -> bool {
 
 // symbolDisplayInfo holds the result of getSymbolDisplayPartsDocumentationAndSymbolKind.
 // hover.go:420
-pub(crate) struct SymbolDisplayInfo {
+pub struct SymbolDisplayInfo {
     pub(crate) display_parts: DisplayPartsWriter,
     declaration: Option<P<Node>>,
 }
@@ -772,6 +756,7 @@ const CLASSIFIED_NODE_BUILDER_FLAGS: Flags = Flags::IgnoreErrors
 // receives the checker first (PORTING.md callback rule).
 struct QuickInfoWriter {
     dpw: DisplayPartsWriter,
+    display_emit_context: Cell<Option<P<printer::EmitContext>>>,
     vs_capability: bool,
     vc: P<VerbosityContext>,
     source_file: Option<P<SourceFile>>,
@@ -790,6 +775,15 @@ fn node_builder_flags(flags: TypeFormatFlags) -> Flags {
 }
 
 impl QuickInfoWriter {
+    fn emit_context(&self) -> P<printer::EmitContext> {
+        if let Some(context) = self.display_emit_context.get() {
+            return context;
+        }
+        let context = printer::new_emit_context();
+        self.display_emit_context.set(Some(context));
+        context
+    }
+
     // writeTypeClassified writes a type to dpw with proper classification (punctuation, symbols, keywords).
     // Falls back to flat text when vsCapability is false or when TypeToTypeNode fails.
     // hover.go:444
@@ -809,7 +803,7 @@ impl QuickInfoWriter {
             self.dpw.write(&s);
             return;
         }
-        let emit_context = printer::new_emit_context();
+        let emit_context = self.emit_context();
         let id_to_symbol: P<RefCell<FxHashMap<P<Node>, P<Symbol>>>> =
             P::new(RefCell::new(FxHashMap::default()));
         let nb = checker::new_node_builder_ex(c, emit_context, Some(id_to_symbol));
@@ -856,7 +850,7 @@ impl QuickInfoWriter {
         } else {
             Kind::CallSignature
         };
-        let emit_context = printer::new_emit_context();
+        let emit_context = self.emit_context();
         let id_to_symbol: P<RefCell<FxHashMap<P<Node>, P<Symbol>>>> =
             P::new(RefCell::new(FxHashMap::default()));
         let nb = checker::new_node_builder_ex(c, emit_context, Some(id_to_symbol));
@@ -915,7 +909,7 @@ impl QuickInfoWriter {
             return;
         };
         let attributes = declaration.as_module_declaration().attributes.unwrap();
-        let emit_context = printer::new_emit_context();
+        let emit_context = self.emit_context();
         emit_context.set_emit_flags(attributes, printer::EmitFlags::SingleLine);
         let mut p = printer::new_printer(
             printer::PrinterOptions { new_line: NewLineKind::LF, ..Default::default() },
@@ -1149,7 +1143,7 @@ impl QuickInfoWriter {
                         self.dpw.write_keyword("var ");
                     }
                 }
-                if symbol.name() == ast::InternalSymbolNameExportEquals
+                if symbol.name() == ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS
                     && symbol.parent().is_some_and(|p| p.flags().intersects(SymbolFlags::Module))
                 {
                     self.dpw.write("exports");
@@ -1251,12 +1245,11 @@ impl QuickInfoWriter {
                 self.write_signatures(c, &signatures, prefix, is_method, symbol);
             } else {
                 let signatures = get_signatures_at_location(c, symbol, SignatureKind::Call, node);
-                if signatures.len() == 1 {
-                    if let Some(d) = signatures[0].declaration() {
-                        if !d.flags().intersects(NodeFlags::JSDoc) {
-                            self.set_declaration(Some(d));
-                        }
-                    }
+                if signatures.len() == 1
+                    && let Some(d) = signatures[0].declaration()
+                    && !d.flags().intersects(NodeFlags::JSDoc)
+                {
+                    self.set_declaration(Some(d));
                 }
                 self.write_signatures(c, &signatures, prefix, is_method, symbol);
             }
@@ -1285,10 +1278,10 @@ impl QuickInfoWriter {
                         get_signatures_at_location(c, symbol, SignatureKind::Construct, node);
                 }
                 if signatures.len() == 1 {
-                    if let Some(d) = signatures[0].declaration() {
-                        if !d.flags().intersects(NodeFlags::JSDoc) {
-                            self.set_declaration(Some(d));
-                        }
+                    if let Some(d) = signatures[0].declaration()
+                        && !d.flags().intersects(NodeFlags::JSDoc)
+                    {
+                        self.set_declaration(Some(d));
                     }
                     self.write_signatures(c, &signatures, "constructor ", false, symbol);
                 } else {
@@ -1532,7 +1525,7 @@ impl QuickInfoWriter {
 // getQuickInfoAndDeclarationAtLocation builds classified display parts using displayPartsWriter when vsCapability is true.
 // When vsCapability is false, it still builds the plain text string but skips classification runs.
 // hover.go:426
-pub(crate) fn get_quick_info_and_declaration_at_location(
+pub fn get_quick_info_and_declaration_at_location(
     c: &mut Checker,
     symbol: Option<P<Symbol>>,
     node: P<Node>,
@@ -1548,6 +1541,7 @@ pub(crate) fn get_quick_info_and_declaration_at_location(
     let source_file = ast::get_source_file_of_node(node);
 
     let mut w = QuickInfoWriter {
+        display_emit_context: Cell::new(None),
         dpw,
         vs_capability,
         vc,
@@ -1615,18 +1609,17 @@ fn get_node_for_quick_info(node: P<Node>) -> P<Node> {
 
 // hover.go:974
 fn get_symbol_at_location_for_quick_info(c: &mut Checker, node: P<Node>) -> Option<P<Symbol>> {
-    if let Some(object_element) = get_containing_object_literal_element(node) {
-        if let Some(contextual_type) =
+    if let Some(object_element) = get_containing_object_literal_element(node)
+        && let Some(contextual_type) =
             c.get_contextual_type_exported(object_element.parent().unwrap(), ContextFlags::None)
-        {
-            let properties = c.get_property_symbols_from_contextual_type(
-                object_element,
-                contextual_type,
-                false, /*unionSymbolOk*/
-            );
-            if properties.len() == 1 {
-                return Some(properties[0]);
-            }
+    {
+        let properties = c.get_property_symbols_from_contextual_type(
+            object_element,
+            contextual_type,
+            false, /*unionSymbolOk*/
+        );
+        if properties.len() == 1 {
+            return Some(properties[0]);
         }
     }
     c.get_symbol_at_location_exported(node)
@@ -1642,12 +1635,12 @@ fn get_signatures_at_location(
     let t = c.get_type_of_symbol_exported(symbol);
     let t = c.remove_missing_or_undefined_type_exported(t);
     let signatures = c.get_signatures_of_type_exported(t, kind);
-    if signatures.len() > 1 || signatures.len() == 1 && !signatures[0].type_parameters().is_empty()
+    if (signatures.len() > 1
+        || signatures.len() == 1 && !signatures[0].type_parameters().is_empty())
+        && let Some(call_node) = get_call_or_new_expression(node)
     {
-        if let Some(call_node) = get_call_or_new_expression(node) {
-            // We have a call or new expression, return the resolved signature
-            return vec![c.get_resolved_signature_exported(call_node)];
-        }
+        // We have a call or new expression, return the resolved signature
+        return vec![c.get_resolved_signature_exported(call_node)];
     }
     signatures.to_vec()
 }
@@ -1672,14 +1665,14 @@ fn get_call_or_new_expression(mut node: P<Node>) -> Option<P<Node>> {
 
 // hover.go:1009
 fn contains_typedef_tag(jsdoc: P<Node>) -> bool {
-    if jsdoc.kind() == Kind::JSDoc {
-        if let Some(tags) = jsdoc.as_jsdoc().tags {
-            if tags.nodes().iter().any(|&tag| {
-                tag.kind() == Kind::JSDocTypedefTag || tag.kind() == Kind::JSDocCallbackTag
-            }) {
-                return true;
-            }
-        }
+    if jsdoc.kind() == Kind::JSDoc
+        && let Some(tags) = jsdoc.as_jsdoc().tags
+        && tags
+            .nodes()
+            .iter()
+            .any(|&tag| tag.kind() == Kind::JSDocTypedefTag || tag.kind() == Kind::JSDocCallbackTag)
+    {
+        return true;
     }
     false
 }
@@ -1815,7 +1808,7 @@ fn write_name_link(
     }
     write_quoted_string(
         b,
-        &(get_entity_name_string(name) + if !text.is_empty() { " " } else { "" } + text),
+        &(get_entity_name_string(name) + if text.is_empty() { "" } else { " " } + text),
         quote && is_markdown,
     );
 }

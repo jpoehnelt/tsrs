@@ -4,17 +4,18 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::debounce::{debounce, defaultMaxWaitTime};
+use crate::debounce::{DEFAULT_MAX_WAIT_TIME, Debounce};
 use crate::event::{Event, EventKind};
-use crate::pathcompare::pathComparer;
+use crate::pathcompare::BytePathComparer;
 use crate::pathkey::PathComparer;
 use crate::testutil_test::*;
 use crate::watcher::{
-    ErrUnavailable, ErrWatchTerminated, Error, WatchCallback, all_watchers, default, dirWatch,
-    is_in_directory_or_self, join_path_suffix, physical_dir_for, rebase_path,
+    DirWatch, ERR_NETWORK_PATH, ERR_UNAVAILABLE, ERR_WATCH_TERMINATED, Error, WatchCallback,
+    WatchDirectoryRequest, all_watchers, default, is_in_directory_or_self, join_path_suffix,
+    physical_dir_for, rebase_path,
 };
 
-const maxWaitTime: Duration = defaultMaxWaitTime;
+const MAX_WAIT_TIME: Duration = DEFAULT_MAX_WAIT_TIME;
 
 fn write(path: &str, data: &str) -> TestResult {
     std::fs::write(path, data).map_err(|e| e.to_string())
@@ -55,14 +56,14 @@ fn path_comparer() {
         ("/k", "/\u{212a}/File.ts", "/File.ts", false, true),
         ("/\u{03c3}", "/\u{03c2}/File.ts", "/File.ts", false, true),
         ("/\u{00e9}", "/\u{00c8}/File.ts", "", false, false),
-        ("/\u{00df}", "/SS/File.ts", "/File.ts", false, crate::canonicalize::nativePathFolding),
+        ("/\u{00df}", "/SS/File.ts", "/File.ts", false, crate::canonicalize::NATIVE_PATH_FOLDING),
         ("/root/s", "/ROOT/\u{017f}/File.ts", "/File.ts", false, true),
         ("/root/\u{017f}", "/ROOT/S", "", false, true),
     ];
     let mut failures = Vec::new();
     for &(root, path, suffix, exact, ignore_case_want) in tests {
         for ignore_case in [false, true] {
-            let comparer = pathComparer { ignore_case };
+            let comparer = BytePathComparer { ignore_case };
             let want = if ignore_case { ignore_case_want } else { exact };
             let got = comparer.suffix(root, path);
             if got.is_some() != want || got.as_deref().is_some_and(|s| s != suffix) {
@@ -91,11 +92,11 @@ fn path_comparer() {
 fn file_callback_case_sensitivity() {
     for ignore_case in [false, true] {
         let got: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
-        let dw = dirWatch::new(
+        let dw = DirWatch::new(
             "/root".to_string(),
             "/root".to_string(),
-            &debounce::new(),
-            pathComparer { ignore_case },
+            &Debounce::new(),
+            BytePathComparer { ignore_case },
             None,
             true,
         );
@@ -195,7 +196,7 @@ fn watch_file_create() {
         let (r, _) = subscribe_for(t, &dir, w)?;
         let f = sub_path(&dir);
         write(&f, "hello")?;
-        expect_event_sequence(&r, &[want(EventKind::Update, &f)])?;
+        expect_event_sequence(&r, &[want(EventKind::UPDATE, &f)])?;
         Ok(())
     });
 }
@@ -210,7 +211,7 @@ fn watch_file_update() {
         write(&f, "v1")?;
         let _ = r.wait_for_event(r.deadline(), |_| true); // consume the create event
         write(&f, "v2-longer")?;
-        expect_event_sequence(&r, &[want(EventKind::Update, &f)])?;
+        expect_event_sequence(&r, &[want(EventKind::UPDATE, &f)])?;
         Ok(())
     });
 }
@@ -225,7 +226,7 @@ fn watch_file_rename() {
         write(&f1, "x")?;
         let (r, _) = subscribe_for(t, &dir, w)?;
         std::fs::rename(&f1, &f2).map_err(|e| e.to_string())?;
-        expect_event_set(&r, vec![want(EventKind::Delete, &f1), want(EventKind::Update, &f2)])?;
+        expect_event_set(&r, vec![want(EventKind::DELETE, &f1), want(EventKind::UPDATE, &f2)])?;
         Ok(())
     });
 }
@@ -239,7 +240,7 @@ fn watch_file_delete() {
         write(&f, "x")?;
         let (r, _) = subscribe_for(t, &dir, w)?;
         std::fs::remove_file(&f).map_err(|e| e.to_string())?;
-        expect_event_sequence(&r, &[want(EventKind::Delete, &f)])?;
+        expect_event_sequence(&r, &[want(EventKind::DELETE, &f)])?;
         Ok(())
     });
 }
@@ -254,7 +255,7 @@ fn subscribe_dir_create() {
         let (r, _) = subscribe_for(t, &dir, w)?;
         let f = sub_path(&dir);
         mkdir(&f)?;
-        expect_event_sequence(&r, &[want(EventKind::Update, &f)])?;
+        expect_event_sequence(&r, &[want(EventKind::UPDATE, &f)])?;
         Ok(())
     });
 }
@@ -270,7 +271,7 @@ fn subscribe_non_ascii_path() {
         let (r, _) = subscribe_for(t, &dir, w)?;
         let child = format!("{dir}/r\u{00e9}sum\u{00e9}.txt");
         write(&child, "hi")?;
-        expect_event_sequence(&r, &[want(EventKind::Update, &child)])?;
+        expect_event_sequence(&r, &[want(EventKind::UPDATE, &child)])?;
         Ok(())
     });
 }
@@ -284,7 +285,7 @@ fn subscribe_dir_delete() {
         mkdir(&f)?;
         let (r, _) = subscribe_for(t, &dir, w)?;
         std::fs::remove_dir_all(&f).map_err(|e| e.to_string())?;
-        expect_event_sequence(&r, &[want(EventKind::Delete, &f)])?;
+        expect_event_sequence(&r, &[want(EventKind::DELETE, &f)])?;
         Ok(())
     });
 }
@@ -296,7 +297,7 @@ fn subscribe_watched_dir_deleted() {
         let dir = new_tmp_dir(t);
         let (r, _) = subscribe_for(t, &dir, w)?;
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-        expect_event_sequence(&r, &[want(EventKind::Delete, &dir)])?;
+        expect_event_sequence(&r, &[want(EventKind::DELETE, &dir)])?;
 
         // Give the backend a moment to surface ErrWatchTerminated alongside
         // the delete; some backends batch the error into a later debounce
@@ -306,7 +307,7 @@ fn subscribe_watched_dir_deleted() {
             std::thread::sleep(Duration::from_millis(20));
         }
         let errs = r.take_errs();
-        if !errs.iter().any(|e| e.is(ErrWatchTerminated)) {
+        if !errs.iter().any(|e| e.is(ERR_WATCH_TERMINATED)) {
             fatalf!("expected ErrWatchTerminated after watched dir delete, got errs={:?}", errs);
         }
 
@@ -330,11 +331,11 @@ fn subscribe_subfile_create() {
         let (r, _) = subscribe_for(t, &dir, w)?;
         let sub = sub_path(&dir);
         mkdir(&sub)?;
-        expect_contains(&r, EventKind::Update, &sub)?;
+        expect_contains(&r, EventKind::UPDATE, &sub)?;
         std::thread::sleep(Duration::from_millis(100));
         let f = sub_path(&sub);
         write(&f, "hi")?;
-        expect_event_sequence(&r, &[want(EventKind::Update, &f)])?;
+        expect_event_sequence(&r, &[want(EventKind::UPDATE, &f)])?;
         Ok(())
     });
 }
@@ -350,7 +351,7 @@ fn subscribe_subfile_delete() {
         write(&f, "x")?;
         let (r, _) = subscribe_for(t, &dir, w)?;
         std::fs::remove_file(&f).map_err(|e| e.to_string())?;
-        let want_ = vec![want(EventKind::Delete, &f)];
+        let want_ = vec![want(EventKind::DELETE, &f)];
         let got = r.wait_for_all(r.deadline(), &want_);
         assert_event_sequence(&filter_events_for_paths(&got, &[&f]), &want_)?;
         Ok(())
@@ -370,7 +371,7 @@ fn subscribe_subdir_delete_with_files() {
         std::fs::remove_dir_all(&sub_dir).map_err(|e| e.to_string())?;
         expect_event_set(
             &r,
-            vec![want(EventKind::Delete, &sub_dir), want(EventKind::Delete, &child)],
+            vec![want(EventKind::DELETE, &sub_dir), want(EventKind::DELETE, &child)],
         )?;
         Ok(())
     });
@@ -389,9 +390,9 @@ fn subscribe_multiple_same_dir() {
         std::thread::sleep(Duration::from_millis(100));
         let f = sub_path(&dir);
         write(&f, "hi")?;
-        let res = assert_event_sequence(&r1.next(r1.deadline()), &[want(EventKind::Update, &f)])
+        let res = assert_event_sequence(&r1.next(r1.deadline()), &[want(EventKind::UPDATE, &f)])
             .and_then(|()| {
-                assert_event_sequence(&r2.next(r2.deadline()), &[want(EventKind::Update, &f)])
+                assert_event_sequence(&r2.next(r2.deadline()), &[want(EventKind::UPDATE, &f)])
             });
         let _ = s1.close();
         let _ = s2.close();
@@ -439,6 +440,42 @@ fn subscribe_rejects_relative_path() {
     });
 }
 
+#[test]
+fn watch_rejects_network_paths() {
+    run_for_each_watcher("TestWatchRejectsNetworkPaths", |t, w| {
+        let dir = new_tmp_dir(t);
+        let mut network_paths =
+            vec![r"\\server\share".to_string(), r"\??\UNC\server\share".to_string()];
+        if !cfg!(windows) {
+            // This spells an existing local directory on POSIX; reject it
+            // before filepath cleaning can erase its network prefix.
+            network_paths.push(format!("/{dir}"));
+        }
+        for network_path in network_paths {
+            let err = w
+                .watch_directories(vec![
+                    WatchDirectoryRequest {
+                        dir: dir.clone(),
+                        callback: Some(noop_callback()),
+                        options: vec![],
+                    },
+                    WatchDirectoryRequest {
+                        dir: network_path.clone(),
+                        callback: Some(noop_callback()),
+                        options: vec![],
+                    },
+                ])
+                .err()
+                .expect("network watch must fail");
+            assert!(err.is(ERR_NETWORK_PATH), "WatchDirectories({network_path:?}): {err}");
+            let file = format!("{network_path}/file.ts");
+            let err = w.watch_file(&file, noop_callback()).err().expect("network watch must fail");
+            assert!(err.is(ERR_NETWORK_PATH), "WatchFile({file:?}): {err}");
+        }
+        Ok(())
+    });
+}
+
 // watcher_test.go:1861
 #[test]
 fn subscribe_unsubscribe_idempotent() {
@@ -471,7 +508,7 @@ fn subscribe_close_then_re_subscribe() {
 
         let f = sub_path(&dir);
         write(&f, "hi")?;
-        let res = expect_event_sequence(&r2, &[want(EventKind::Update, &f)]);
+        let res = expect_event_sequence(&r2, &[want(EventKind::UPDATE, &f)]);
         let _ = s2.close();
         res?;
 
@@ -528,7 +565,7 @@ fn unavailable_backend_returns_error() {
         .err()
         .expect("expected an error");
     assert!(
-        err.is(ErrUnavailable),
+        err.is(ERR_UNAVAILABLE),
         "expected ErrUnavailable from {}, got {}",
         unavailable.name(),
         err
@@ -543,7 +580,7 @@ fn non_recursive_file_create() {
         let (r, _) = subscribe_for_opts(t, &dir, w, vec![])?;
         let f = sub_path(&dir);
         write(&f, "hello")?;
-        expect_event_sequence(&r, &[want(EventKind::Update, &f)])?;
+        expect_event_sequence(&r, &[want(EventKind::UPDATE, &f)])?;
         Ok(())
     });
 }
@@ -560,8 +597,8 @@ fn non_recursive_grandchild_ignored() {
         write(&grandchild, "deep")?;
         let marker = sub_path(&dir);
         write(&marker, "flush")?;
-        let mut got = expect_contains(&r, EventKind::Update, &marker)?;
-        got.extend(r.drain_quiet(2 * maxWaitTime));
+        let mut got = expect_contains(&r, EventKind::UPDATE, &marker)?;
+        got.extend(r.drain_quiet(2 * MAX_WAIT_TIME));
         assert_no_events_for_path(&got, &grandchild, "expected no events for grandchild")
     });
 }
@@ -574,7 +611,7 @@ fn file_watch_create() {
         let f = format!("{dir}/target.txt");
         let (r, _) = subscribe_file_for(t, &f, w)?;
         write(&f, "hello")?;
-        expect_event_sequence(&r, &[want(EventKind::Update, &f)])?;
+        expect_event_sequence(&r, &[want(EventKind::UPDATE, &f)])?;
         Ok(())
     });
 }
@@ -588,7 +625,7 @@ fn file_watch_delete() {
         write(&f, "x")?;
         let (r, _) = subscribe_file_for(t, &f, w)?;
         std::fs::remove_file(&f).map_err(|e| e.to_string())?;
-        expect_event_sequence(&r, &[want(EventKind::Delete, &f)])?;
+        expect_event_sequence(&r, &[want(EventKind::DELETE, &f)])?;
         Ok(())
     });
 }
@@ -603,7 +640,7 @@ fn file_watch_ignores_siblings() {
         let (r, _) = subscribe_file_for(t, &target, w)?;
         let (witness, _) = subscribe_for_opts(t, &dir, w, vec![])?;
         write(&sibling, "noise")?;
-        expect_contains(&witness, EventKind::Update, &sibling)?;
+        expect_contains(&witness, EventKind::UPDATE, &sibling)?;
         expect_no_buffered_events(&r, "expected no events for sibling")
     });
 }
@@ -691,11 +728,11 @@ fn indexed_delivery_matches_single_callback_delivery() {
                 configs.push((dir.to_string(), format!("{physical}{sub}"), false, String::new()));
             }
             let deliver = |configs: &[(String, String, bool, String)]| -> Vec<Vec<String>> {
-                let dw = dirWatch::new(
+                let dw = DirWatch::new(
                     "/root".to_string(),
                     physical.to_string(),
-                    &debounce::new(),
-                    pathComparer { ignore_case },
+                    &Debounce::new(),
+                    BytePathComparer { ignore_case },
                     None,
                     true,
                 );

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Generates crates/tsrs_lsproto/src/lsp_generated.rs from the LSP meta model (docs/LSP.md, "Protocol types
-// and JSON"). Port of ts-ref/tsc/internal/lsp/lsproto/_generate/generate.mts: the model processing (custom
+// and JSON"). Port of ts-ref/tools/scripts/lsp/generate.mts: the model processing (custom
 // structures, enumerations, requests and notifications, model patches, inheritance flattening, notebook
 // removal, type resolution, union naming, discriminator and presence dispatch selection) is Go's, verbatim;
 // only the Go emitter is replaced by a Rust emitter.
@@ -9,11 +9,12 @@
 // Usage (from the repository root, offline):
 //   node tools/gen-lsproto/generate.mts     regenerates crates/tsrs_lsproto/src/lsp_generated.rs
 //   node tools/gen-lsproto/fetchModel.mts   refreshes metaModel.json / metaModelSchema.mts (network)
-//   python3 tools/gen-lsproto/check.py      checks every Go lsp_generated.go name has a Rust counterpart
+//   node tools/gen-lsproto/check.mjs      checks every Go lsp_generated.go name has a Rust counterpart
 
 import fs from "node:fs";
 import path from "node:path";
 import url from "node:url";
+import { constantNames, screamingSnakeCase } from "../lib/rust-names.mjs";
 import type {
     Enumeration,
     MetaModel,
@@ -409,7 +410,7 @@ const customStructures: Structure[] = [
                 name: "pipe",
                 type: { kind: "base", name: "string" },
                 optional: true,
-                documentation: "Optional path to use for the named pipe or Unix domain socket. If not provided, a unique path will be generated.",
+                documentation: "Optional named pipe path on Windows. On Unix, the path must not exist and will be created as a private directory containing a socket named 'socket'. If not provided, a unique path will be generated.",
             },
         ],
         documentation: "Parameters for the initializeAPISession request.",
@@ -461,6 +462,7 @@ const customStructures: Structure[] = [
             { name: "cwd", type: { kind: "base", name: "string" }, optional: true, documentation: "Absolute working directory for the mapper process." },
             { name: "compilerOptions", type: { kind: "array", element: { kind: "base", name: "string" } }, optional: true, documentation: "Compiler option names forwarded to the mapper." },
             { name: "dynamicConfig", type: { kind: "base", name: "boolean" }, optional: true, documentation: "Whether the mapper uses project-scoped dynamic configuration." },
+            { name: "outputExtensions", type: { kind: "map", key: { kind: "base", name: "string" }, value: { kind: "base", name: "string" } }, optional: true, documentation: "Default source-to-runtime output extension mappings." },
         ],
         documentation: "Inline content mapper manifest supplied by a contributing extension.",
     },
@@ -2204,7 +2206,7 @@ function rustIdent(goName: string): string {
 }
 
 function screaming(goName: string): string {
-    return snake(goName).toUpperCase();
+    return screamingSnakeCase(goName);
 }
 
 function rustStr(s: string): string {
@@ -2241,6 +2243,10 @@ function rustOfGo(g: string): RType {
     }
     if (g.startsWith("[]")) {
         let el = g.slice(2);
+        // The contribution parser explicitly validates nil entries in this pointer slice.
+        if (el === "*ContentMapperContribution") {
+            return { k: "vec", el: { k: "opt", el: rustOfGo(el.slice(1)) } };
+        }
         if (el.startsWith("*")) el = el.slice(1);
         return { k: "vec", el: rustOfGo(el) };
     }
@@ -2566,7 +2572,7 @@ function generateCode() {
             writeLine("        for (k, v) in members {");
             const singleField = fields.length === 1;
             if (!singleField) {
-                writeLine("            match k.as_str() {");
+                writeLine("            match k {");
             }
             for (const f of fields) {
                 const prop = f.prop!;
@@ -2586,7 +2592,7 @@ function generateCode() {
                     expr = "field(k, v)?";
                 }
                 if (singleField) {
-                    writeLine(`            if k.as_str() == ${rustStr(prop.name)} {`);
+                    writeLine(`            if k == ${rustStr(prop.name)} {`);
                     if (bit >= 0) {
                         writeLine(`                seen |= 1 << ${bit};`);
                     }
@@ -2669,9 +2675,10 @@ function generateCode() {
         writeLine(`    }`);
         writeLine("");
         writeLine(`    fn from_json(v: &Value) -> Result<Self, JsonError> {`);
-        writeLine(`        let mut s = Registration::default();`);
         writeLine(`        const MISSING_ID: u32 = 1 << 0;`);
         writeLine(`        const MISSING_METHOD: u32 = 1 << 1;`);
+        writeLine("");
+        writeLine(`        let mut s = Registration::default();`);
         writeLine(`        let mut missing = MISSING_ID | MISSING_METHOD;`);
         writeLine("");
         writeLine(`        let Some(members) = struct_members(v, Self::GO_TYPE, true)? else {`);
@@ -2682,7 +2689,7 @@ function generateCode() {
         writeLine(`        let mut raw_register_options: Option<&Value> = None;`);
         writeLine("");
         writeLine(`        for (k, v) in members {`);
-        writeLine(`            match k.as_str() {`);
+        writeLine(`            match k {`);
         writeLine(`                "id" => {`);
         writeLine(`                    missing &= !MISSING_ID;`);
         writeLine(`                    s.${idField.rust} = field(k, v)?;`);
@@ -2711,7 +2718,7 @@ function generateCode() {
         writeLine(`            let mut register_options = RegisterOptions::default();`);
         writeLine(`            match Method::from_str(&method) {`);
         for (const reg of registrationMethods) {
-            writeLine(`                Method::${reg.fieldName} => {`);
+            writeLine(`                Method::${screaming(reg.fieldName)} => {`);
             writeLine(`                    register_options.${rustIdent(reg.fieldName)} = arm_buffered(raw_register_options)?;`);
             writeLine(`                }`);
         }
@@ -2891,10 +2898,12 @@ function generateCode() {
             value: String(value.value),
             numericValue: Number(value.value),
             name: value.name,
-            identifier: titleCase(value.name),
+            identifier: screaming(value.name),
             documentation: value.documentation,
             deprecated: value.deprecated,
         }));
+
+        constantNames(enumValues.map(value => value.name));
 
         writeLine(`impl ${enumeration.name} {`);
         for (const entry of enumValues) {
@@ -3001,18 +3010,19 @@ function generateCode() {
     }
 
     // Methods
+    constantNames([...requestsAndNotifications.map(request => methodNameIdentifier(request.method)), ...registrationMethods.filter(reg => reg.isRegistrationOnly).map(reg => reg.fieldName)]);
     writeLine("// Methods");
     writeLine("impl Method {");
     for (const request of requestsAndNotifications) {
         writeDoc(request.documentation, "    ");
         const methodName = methodNameIdentifier(request.method);
-        writeLine(`    pub const ${methodName}: Method = Method(${rustStr(request.method)});`);
+        writeLine(`    pub const ${screaming(methodName)}: Method = Method(${rustStr(request.method)});`);
     }
     // Emit constants for registration-only methods (not also a request/notification)
     for (const reg of registrationMethods) {
         if (reg.isRegistrationOnly) {
             writeLine(`    // Registration-only method for ${reg.registrationMethod}.`);
-            writeLine(`    pub const ${reg.fieldName}: Method = Method(${rustStr(reg.registrationMethod)});`);
+            writeLine(`    pub const ${screaming(reg.fieldName)}: Method = Method(${rustStr(reg.registrationMethod)});`);
         }
     }
     writeLine("}");
@@ -3027,12 +3037,12 @@ function generateCode() {
     for (const request of requestsAndNotifications) {
         if (knownMethods.has(request.method)) continue;
         knownMethods.add(request.method);
-        writeLine(`            ${rustStr(request.method)} => Method::${methodNameIdentifier(request.method)},`);
+        writeLine(`            ${rustStr(request.method)} => Method::${screaming(methodNameIdentifier(request.method))},`);
     }
     for (const reg of registrationMethods) {
         if (reg.isRegistrationOnly && !knownMethods.has(reg.registrationMethod)) {
             knownMethods.add(reg.registrationMethod);
-            writeLine(`            ${rustStr(reg.registrationMethod)} => Method::${reg.fieldName},`);
+            writeLine(`            ${rustStr(reg.registrationMethod)} => Method::${screaming(reg.fieldName)},`);
         }
     }
     writeLine("            _ => Method(intern(s)),");
@@ -3082,10 +3092,10 @@ function generateCode() {
 
         writeLine(`// Type mapping info for \`${request.method}\``);
         if (responseTypeName) {
-            writeLine(`pub const ${screaming(methodName + "Info")}: RequestInfo<${paramType}, ${responseTypeName}> = RequestInfo::new(Method::${methodName});`);
+            writeLine(`pub const ${screaming(methodName + "Info")}: RequestInfo<${paramType}, ${responseTypeName}> = RequestInfo::new(Method::${screaming(methodName)});`);
         }
         else {
-            writeLine(`pub const ${screaming(methodName + "Info")}: NotificationInfo<${paramType}> = NotificationInfo::new(Method::${methodName});`);
+            writeLine(`pub const ${screaming(methodName + "Info")}: NotificationInfo<${paramType}> = NotificationInfo::new(Method::${screaming(methodName)});`);
         }
         writeLine("");
     }

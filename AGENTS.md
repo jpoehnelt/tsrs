@@ -3,6 +3,16 @@
 `CONTRIBUTING.md` and `docs/PORTING.md` have the porting rules and the test workflow; `docs/RUST.md` has the Rust
 practices. This file adds the rules below.
 
+Do not update `README.md` files unless the user explicitly asks.
+
+## Reproductions and fixes
+
+Every bug reproduction and fix must conform to the microsoft/TypeScript reference checkout in `ts-ref/`, at the
+exact commit pinned in `Cargo.toml` under `[workspace.metadata.typescript]`. Verify that `ts-ref`'s HEAD matches
+that pin before using it. Use its Go compiler as the source of truth for expected behavior, diagnostics and
+baselines, and follow this repository's porting and test workflow.
+See [reference compiler setup and verification](CONTRIBUTING.md#reference-compiler).
+
 ## Build and test
 
 Build with `cargo build --profile dev -p tsrs_cli -p tsrs_testrunner` and run `target/debug/tsrs-test`, not
@@ -12,7 +22,7 @@ Use `--release` only for performance numbers.
 ## Lint
 
 Run `cargo clippy --all-targets --config 'build.warnings="deny"'` and
-`tools/lint/source.py` before a change lands (`docs/RUST.md`).
+`tools/lint/source.mjs` before a change lands (`docs/RUST.md`).
 
 - Fix what they report in the code you wrote.
 - If the flagged code is intended, use `#[expect(clippy::<lint>, reason = "...")]` on the smallest item. Never a bare
@@ -28,18 +38,20 @@ different, and say what in the brief or the pull request: new evidence, a change
 note gave for revisiting it.
 
 **Bring numbers.** A performance change needs instructions retired and peak RSS, before and after, in the pull
-request.
+request. Include wall time when claiming a speedup.
 
-**Clear the bar.** A change lands only if it gains at least one of:
+**Accept measured improvements.** A change may land when measurements show repeatable reductions in wall time,
+instructions retired or peak RSS on most `bench/projects.json` projects, or a significant, repeatable reduction on
+one catalog project. There is no fixed minimum percentage threshold. Report results across the catalog, including
+regressions and tradeoffs. Earlier experiments rejected solely for missing the old percentage thresholds may be
+revisited under this policy.
 
-- 1% of single-threaded instructions on at least one `bench/projects.json` project (`bench/count.py`, deterministic);
-- 2% of wall time in the wall-time table in [`bench/RESULTS.md`](bench/RESULTS.md), read across two publishes on
-  the same hardware;
-- 5% of peak memory at the default checker count.
-
-A change that adds a thread, a cache, an overlap between phases or an invariant later code must keep needs a clear
-margin over that bar: a sub-percent gain never justifies it, whichever measure it is on (notes/perf-serial-steps.md
-has why). A change below the bar does not land.
+**Measure consistently.** Prefer `xcrun xctrace` on macOS to find bottlenecks and Hyperfine 2 with hardware counters
+to measure wall time, retired instructions and peak RSS. Profile release binaries with full debug symbols and
+stripping disabled (`profile.release.debug=true`, `profile.release.strip=false`). Compare baseline and candidate
+with the same build configuration, hardware, workload and checker count. Use warmups and repeated, interleaved runs
+to distinguish improvements from run-to-run variation; measure single-threaded instructions and default-checker
+peak RSS.
 
 ## Keep the capability table current
 
@@ -47,11 +59,17 @@ has why). A change below the bar does not land.
 capability with its status and evidence.
 Update it in the same pull request when a change ports a subsystem or emit wave, adds a feature, makes a capability
 start or stop being supported, become the default or ship in an npm release, changes a pass count the table cites,
-or closes or finds a known gap. How to update it is in a comment above the table. Keep the root and npm README
-compatibility summaries consistent with it.
+or closes or finds a known gap. How to update it is in a comment above the table. When explicitly asked to update
+README files, keep the root and npm README compatibility summaries consistent with it.
 
 ## Private code
 
 When you run tsrs on private code (to test performance, hill-climb or reproduce a bug), say only that it was run on a
 large private monorepo. Never divulge anything else about that repo: not its name, paths, package or file names, size,
 types or code. This holds in code, comments, notes, commit messages and pull requests.
+
+## Scripts and automation
+
+Write new scripts and ad hoc automation in JavaScript, not Python.
+
+Do not write tests for tooling scripts. Validate script changes with a direct run or a focused smoke check instead.

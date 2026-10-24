@@ -13,7 +13,7 @@ use tsrs_compiler::Program;
 use tsrs_core::P;
 use tsrs_core::collections::Set;
 use tsrs_core::context::Context;
-use tsrs_core::json::{self, Value};
+use tsrs_core::json::{self, JsonMap, Value};
 use tsrs_core::tspath::Path;
 use tsrs_project::{
     APISnapshotRequest, FileChangeSummary, SessionInit, SessionOptions, Snapshot, SnapshotHost,
@@ -300,6 +300,13 @@ impl CheckerHost for TestHost {
         Ok(s)
     }
 
+    fn try_adopt_snapshot_in_background(
+        &self,
+        _base: &std::sync::Arc<Snapshot>,
+        _prepared: &std::sync::Arc<Snapshot>,
+    ) {
+    }
+
     fn encode_node(&self, node: P<Node>) -> CheckerResult<Vec<u8>> {
         // Test stand-in for the codec: the node kind is enough to check the handler built a node.
         Ok(format!("{:?}", node.kind()).into_bytes())
@@ -361,7 +368,7 @@ const MAIN_FILE: &str = "/p/main.ts";
 
 #[test]
 fn coverage_inventory_matches_pinned_proto_and_dispatch() {
-    assert_eq!(PINNED_METHODS.len(), 172);
+    assert_eq!(PINNED_METHODS.len(), 177);
     let mut seen = rustc_hash::FxHashSet::default();
     for row in PINNED_METHODS {
         assert!(seen.insert(row.method), "duplicate {}", row.method);
@@ -894,6 +901,102 @@ fn unowned_methods_fall_through() {
     }
 }
 
+#[test]
+fn merged_symbol_checker_methods() {
+    let h = TestHost::new(&[
+        ("/p/tsconfig.json", r#"{"files":["/p/a.ts","/p/b.ts"]}"#),
+        ("/p/a.ts", "namespace Merged { export const a = 1; }"),
+        ("/p/b.ts", "namespace Merged { export const b = 1; }"),
+    ]);
+    let a = h.program().get_source_file("/p/a.ts").unwrap().statements().nodes()[0];
+    let b = h.program().get_source_file("/p/b.ts").unwrap().statements().nodes()[0];
+    let raw_a = super::setup::file_symbol_response(&h, a.symbol().unwrap()).unwrap();
+    let raw_b = super::setup::file_symbol_response(&h, b.symbol().unwrap()).unwrap();
+    assert_ne!(field(&raw_a, "reference"), field(&raw_b, "reference"));
+
+    let node_a = h.node_handle(a).unwrap();
+    let node_b = h.node_handle(b).unwrap();
+    let merged =
+        h.ok("getSymbolOfDeclarationForChecker", &h.sp(&format!(r#""location":"{node_a}""#)));
+    for (method, params) in [
+        ("getSymbolOfDeclarationForChecker", h.sp(&format!(r#""location":"{node_b}""#))),
+        ("getSymbolOfNode", h.sp(&format!(r#""location":"{node_a}""#))),
+        ("getMergedSymbol", h.sp(&format!(r#""symbol":{}"#, TestHost::symbol_ref(&raw_a)))),
+        ("getMergedSymbol", h.sp(&format!(r#""symbol":{}"#, TestHost::symbol_ref(&raw_b)))),
+        ("getMergedSymbol", h.sp(&format!(r#""symbol":{}"#, TestHost::symbol_ref(&merged)))),
+    ] {
+        assert_eq!(
+            field(&h.ok(method, &params), "reference"),
+            field(&merged, "reference"),
+            "{method}"
+        );
+    }
+    let name = h.node_handle(a.as_module_declaration().name()).unwrap();
+    let file = h.node_handle(h.program().get_source_file("/p/a.ts").unwrap().as_node()).unwrap();
+    for location in [name, file] {
+        assert_eq!(
+            h.ok("getSymbolOfNode", &h.sp(&format!(r#""location":"{location}""#))),
+            Value::Null
+        );
+    }
+    assert_eq!(
+        h.ok(
+            "getParentOfSymbolForChecker",
+            &h.sp(&format!(r#""symbol":{}"#, TestHost::symbol_ref(&merged)))
+        ),
+        Value::Null
+    );
+    let member = a.symbol().unwrap().exports().unwrap().lookup("a").unwrap();
+    let member = super::setup::file_symbol_response(&h, member).unwrap();
+    let parent = h.ok(
+        "getParentOfSymbolForChecker",
+        &h.sp(&format!(r#""symbol":{}"#, TestHost::symbol_ref(&member))),
+    );
+    assert_eq!(field(&parent, "reference"), field(&merged, "reference"));
+}
+
+#[test]
+fn late_bound_symbol_checker_methods() {
+    let h = TestHost::new(&[
+        ("/p/tsconfig.json", r#"{"files":["/p/computed.ts"]}"#),
+        (
+            "/p/computed.ts",
+            "declare const key: unique symbol;\nclass Container { [key] = 1; ordinary = 2; }",
+        ),
+    ]);
+    let file = h.program().get_source_file("/p/computed.ts").unwrap();
+    let class = file.statements().nodes()[1];
+    let members = class.as_class_declaration().members().nodes();
+    let computed = members[0];
+    let ordinary = members[1];
+    let raw = super::setup::file_symbol_response(&h, computed.symbol().unwrap()).unwrap();
+    let late = h.ok(
+        "getSymbolOfDeclarationForChecker",
+        &h.sp(&format!(r#""location":"{}""#, h.node_handle(computed).unwrap())),
+    );
+    assert_ne!(field(&raw, "reference"), field(&late, "reference"));
+    let through_node = h.ok(
+        "getSymbolOfNode",
+        &h.sp(&format!(r#""location":"{}""#, h.node_handle(computed).unwrap())),
+    );
+    assert_eq!(field(&through_node, "reference"), field(&late, "reference"));
+    let container = h.ok(
+        "getSymbolOfDeclarationForChecker",
+        &h.sp(&format!(r#""location":"{}""#, h.node_handle(class).unwrap())),
+    );
+    let parent = h.ok(
+        "getParentOfSymbolForChecker",
+        &h.sp(&format!(r#""symbol":{}"#, TestHost::symbol_ref(&late))),
+    );
+    assert_eq!(field(&parent, "reference"), field(&container, "reference"));
+    let ordinary_checker = h.ok(
+        "getSymbolOfDeclarationForChecker",
+        &h.sp(&format!(r#""location":"{}""#, h.node_handle(ordinary).unwrap())),
+    );
+    let ordinary_raw = super::setup::file_symbol_response(&h, ordinary.symbol().unwrap()).unwrap();
+    assert_eq!(field(&ordinary_checker, "reference"), field(&ordinary_raw, "reference"));
+}
+
 impl TestHost {
     /// Handle of the `levels`-th ancestor of the token touching `needle`.
     fn ancestor_handle_at(&self, needle: &str, levels: usize) -> String {
@@ -1318,14 +1421,14 @@ fn pinned_go_differential() {
         let q = str_of(field(&v, "q"));
         let mut r = field(&v, "r").clone();
         let mut raw = None;
-        if let Value::Object(o) = &mut r {
-            if let Some(Value::Number(f)) = o.get("objectFlags").cloned() {
-                raw = Some(f as u64);
-                o.insert(
-                    "objectFlags".to_string(),
-                    Value::Number((f as u64 & !MEMBERS_RESOLVED) as f64),
-                );
-            }
+        if let Value::Object(o) = &mut r
+            && let Some(Value::Number(f)) = o.get("objectFlags").cloned()
+        {
+            raw = Some(f as u64);
+            o.insert(
+                "objectFlags".to_string(),
+                Value::Number((f as u64 & !MEMBERS_RESOLVED) as f64),
+            );
         }
         (q, r, raw)
     };
@@ -1402,7 +1505,7 @@ fn probe_lines() -> Vec<String> {
             Err(e) => Value::String(e.to_string()),
         }
     };
-    let obj = |pairs: Vec<(&str, Value)>| {
+    let obj = |pairs: Vec<(&'static str, Value)>| {
         let mut o = super::json::obj();
         for (k, v) in pairs {
             o.set(k, v);
@@ -1797,4 +1900,63 @@ fn completions_at_a_client_offset_inside_a_character() {
         "getCompletionsAtPosition",
         &h.sp(&format!(r#""file":"/p/main.ts","position":{at},"includeSymbol":false"#)),
     );
+}
+
+/// The allocation-free matcher agrees with building the descriptor and comparing, for the descriptor itself
+/// and for every member changed, retyped, removed, added or reordered.
+#[test]
+fn source_file_descriptor_matches_agrees_with_comparison() {
+    let host = fixture();
+    let program = host.program();
+    let main = program.get_source_file_by_path(&Path::new(MAIN_FILE)).unwrap();
+    let other = program.get_source_file_by_path(&Path::new("/p/other.ts")).unwrap();
+    let Value::Object(members) = crate::sourcefiles::source_file_descriptor(main) else {
+        panic!("descriptor is an object")
+    };
+    let with = |f: &dyn Fn(&mut JsonMap)| {
+        let mut m = members.clone();
+        f(&mut m);
+        Value::Object(m)
+    };
+    let mut variants = vec![Value::Object(members.clone()), Value::Null, Value::String("x".into())];
+    variants.push(with(&|m| m.reverse()));
+    variants.push(with(&|m| {
+        m.insert("extra", Value::Null);
+    }));
+    for (key, value) in &members {
+        variants.push(with(&|m| {
+            m.shift_remove(key);
+        }));
+        variants.push(with(&|m| {
+            m.insert(key.to_string(), Value::Bool(true));
+        }));
+        let changed: Vec<Value> = match value {
+            Value::String(s) => vec![
+                Value::String(format!("{s}0")),
+                Value::String(format!("0{s}")),
+                Value::String(format!("+{s}")),
+                Value::String(String::new()),
+                Value::Number(s.parse().unwrap_or(1.0)),
+            ],
+            Value::Number(n) => vec![Value::Number(n + 1.0), Value::String(n.to_string())],
+            other => vec![other.clone(), Value::Null],
+        };
+        for c in changed {
+            variants.push(with(&|m| {
+                m.insert(key.to_string(), c.clone());
+            }));
+        }
+    }
+    for file in [main, other] {
+        let built = crate::sourcefiles::source_file_descriptor(file);
+        for v in &variants {
+            assert_eq!(
+                crate::sourcefiles::source_file_descriptor_matches(file, v),
+                built == *v,
+                "{}",
+                json::marshal(v).unwrap()
+            );
+        }
+    }
+    assert!(crate::sourcefiles::source_file_descriptor_matches(main, &variants[0]));
 }

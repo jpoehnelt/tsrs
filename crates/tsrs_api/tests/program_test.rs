@@ -29,6 +29,94 @@ fn create_program(s: &tsrs_api::Session, roots: &[String], options: &str) -> (u6
 }
 
 #[test]
+fn api_raw_compiler_options_resolve_against_server_directory() {
+    let dir = TempDir::new("raw_options");
+    dir.write("src/a.ts", "export const a = 1;\n");
+    let s = session(&dir.dir(), false);
+    let response = call(
+        &s,
+        "createSnapshot",
+        r#"{"createPrograms":[{"rootFiles":["src/a.ts"],"compilerOptions":{"noLib":true,"outDir":"dist","rootDirs":["src","${configDir}/generated"],"tsBuildInfoFile":"cache/build.tsbuildinfo"}}]}"#,
+    );
+    let project = get(&response, "projects.0");
+    assert!(matches!(project, Value::Object(o) if !o.contains_key("configFileName")));
+    assert_eq!(str_of(get(project, "parsedCommandLine.options.outDir")), dir.path("dist"));
+    assert_eq!(
+        get(project, "parsedCommandLine.options.rootDirs"),
+        &Value::Array(vec![Value::String(dir.path("src")), Value::String(dir.path("generated")),])
+    );
+    assert_eq!(
+        str_of(get(project, "parsedCommandLine.options.tsBuildInfoFile")),
+        dir.path("cache/build.tsbuildinfo")
+    );
+}
+
+#[test]
+fn create_snapshot_resolves_paths_relative_to_parsed_config_directory() {
+    let dir = TempDir::new("parsed_paths_base_path");
+    let main =
+        dir.write("project/main.ts", "import { x } from \"lib\"; export const y: number = x;");
+    let lib = dir.write("project/types/lib.d.ts", "export declare const x: number;");
+    dir.write("somewhere-else/marker", "");
+    let project_dir = dir.path("project");
+    let s = session(&dir.path("somewhere-else"), false);
+
+    let config = r#"{"compilerOptions":{"module":"esnext","moduleResolution":"bundler","noLib":true,"types":[],"paths":{"lib":["./types/lib.d.ts"]}}}"#;
+    let parsed = call(
+        &s,
+        "parseJsonConfigFileContent",
+        &format!("{{\"json\":{config},\"configDirectory\":{}}}", quote(&project_dir)),
+    );
+    assert_eq!(str_of(get(&parsed, "options.pathsBasePath")), project_dir);
+
+    let encoded_options = json::marshal(get(&parsed, "options")).unwrap();
+    let (snapshot, project) = create_program(&s, &[main], &encoded_options);
+    let names = call(
+        &s,
+        "getSourceFileNames",
+        &format!(r#"{{"snapshot":{snapshot},"project":{}}}"#, quote(&project)),
+    );
+    assert!(arr(&names).iter().any(|name| str_of(name) == lib));
+}
+
+#[test]
+fn create_program_reports_non_composite_project_reference_without_config_file() {
+    let dir = TempDir::new("synthetic_project_reference");
+    let root = dir.write("src/index.ts", "export const x = 1;");
+    let referenced = dir.write("lib/tsconfig.json", r#"{ "compilerOptions": { "strict": true } }"#);
+    dir.write("lib/a.ts", "export const a = 1;");
+    let s = session(&dir.dir(), false);
+
+    let response = call(
+        &s,
+        "createSnapshot",
+        &format!(
+            r#"{{"createPrograms":[{{"rootFiles":[{}],"compilerOptions":{{"noLib":true}},"options":{{"projectReferences":[{{"path":{},"originalPath":"../lib"}}]}}}}]}}"#,
+            quote(&root),
+            quote(&referenced)
+        ),
+    );
+    let snapshot = match get(&response, "snapshot") {
+        Value::Number(n) => *n as u64,
+        value => panic!("{value:?}"),
+    };
+    let project = str_of(get(&response, "operation.createdPrograms.0"));
+    let diagnostics = call(
+        &s,
+        "getProgramDiagnostics",
+        &format!(r#"{{"snapshot":{snapshot},"project":{}}}"#, quote(project)),
+    );
+    let codes: Vec<&Value> = arr(&diagnostics).iter().map(|d| get(d, "code")).collect();
+    assert_eq!(codes, [&Value::Number(6306.0)]);
+    let diagnostic = &arr(&diagnostics)[0];
+    assert_eq!(get(diagnostic, "pos"), &Value::Number(-1.0));
+    assert_eq!(get(diagnostic, "end"), &Value::Number(-1.0));
+    assert!(
+        matches!(diagnostic, Value::Object(o) if !o.contains_key("fileName") && !o.contains_key("startPosition") && !o.contains_key("endPosition"))
+    );
+}
+
+#[test]
 fn create_program_diagnostics_emit_release() {
     let dir = TempDir::new("prog");
     let a = dir.write(
@@ -156,6 +244,9 @@ fn configured_project_update_and_retained_old_snapshot() {
     let project = str_of(get(&r, "projects.0.id")).to_string();
     assert_eq!(str_of(get(&r, "projects.0.configFileName")), cfg);
     assert_eq!(get(&r, "projects.0.parsedCommandLine.options.strict"), &Value::Bool(true));
+    assert!(
+        matches!(get(&r, "projects.0"), Value::Object(o) if !o.contains_key("rootFiles") && !o.contains_key("compilerOptions"))
+    );
 
     let dp = call(
         &s,
@@ -314,6 +405,41 @@ fn config_file_parsing_diagnostics_round_trip() {
     );
     assert_eq!(get(&d, "0.code"), &Value::Number(5023.0));
     assert_eq!(str_of(get(&d, "0.text")), "Unknown compiler option 'x'.");
+}
+
+// session_apistate_test.go: TestOpenProjectsWithCircularExtendsReportCircularity
+#[test]
+fn open_projects_with_circular_extends_report_circularity() {
+    let dir = TempDir::new("circular_extends");
+    let first = dir.write("p1/tsconfig.json", r#"{ "extends": "../shared/base.json" }"#);
+    let second = dir.write("p2/tsconfig.json", r#"{ "extends": "../shared/base.json" }"#);
+    dir.write("shared/base.json", r#"{ "extends": "../p2/tsconfig.json" }"#);
+    dir.write("p1/a.ts", "export const a = 1;");
+    dir.write("p2/b.ts", "export const b = 1;");
+    let s = session(&dir.dir(), false);
+
+    call(&s, "createSnapshot", &format!(r#"{{"openProjects":[{}]}}"#, quote(&first)));
+    let response =
+        call(&s, "createSnapshot", &format!(r#"{{"openProjects":[{}]}}"#, quote(&second)));
+    let snapshot = get(&response, "snapshot");
+    let project = arr(get(&response, "projects"))
+        .iter()
+        .find(|project| {
+            matches!(project, Value::Object(fields) if matches!(fields.get("configFileName"), Some(Value::String(file)) if file == &second))
+        })
+        .expect("second configured project");
+    let diagnostics = call(
+        &s,
+        "getConfigFileParsingDiagnostics",
+        &format!(
+            r#"{{"snapshot":{},"project":{}}}"#,
+            json::marshal(snapshot).unwrap(),
+            quote(str_of(get(project, "id")))
+        ),
+    );
+    let codes: Vec<Value> =
+        arr(&diagnostics).iter().map(|diagnostic| get(diagnostic, "code").clone()).collect();
+    assert_eq!(codes, [Value::Number(18000.0)]);
 }
 
 #[test]

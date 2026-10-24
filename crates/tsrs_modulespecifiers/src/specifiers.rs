@@ -122,17 +122,17 @@ pub fn get_module_specifiers_for_file_with_info(
 }
 
 // specifiers.go:112
-pub(crate) fn try_get_module_name_from_ambient_module(
+pub fn try_get_module_name_from_ambient_module(
     module_symbol: P<Symbol>,
     checker: &mut dyn CheckerShape,
-) -> ambientModuleInfo {
+) -> AmbientModuleInfo {
     let declarations = module_symbol.declarations();
     if let Some(result) = declarations.iter().find_map(|&decl| {
         if ast::is_module_with_string_literal_name(decl)
             && (!ast::is_module_augmentation_external(decl)
                 || !tspath::is_external_module_name_relative(decl.name().unwrap().text()))
         {
-            Some(ambientModuleInfo {
+            Some(AmbientModuleInfo {
                 name: decl.name().unwrap().text().to_string(),
                 symbol: Some(module_symbol),
             })
@@ -170,7 +170,7 @@ pub(crate) fn try_get_module_name_from_ambient_module(
             .symbol()
             .unwrap()
             .exports()
-            .and_then(|exports| exports.lookup(ast::InternalSymbolNameExportEquals));
+            .and_then(|exports| exports.lookup(ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS));
         let Some(sym) = sym else {
             continue;
         };
@@ -190,17 +190,17 @@ pub(crate) fn try_get_module_name_from_ambient_module(
         }
         // TODO: Possible strada bug - isn't this insufficient in the presence of merge symbols?
         if Some(export_symbol) == d.symbol() {
-            return ambientModuleInfo {
+            return AmbientModuleInfo {
                 name: possible_container.name().unwrap().text().to_string(),
                 symbol: possible_container.symbol(),
             };
         }
     }
-    ambientModuleInfo::default()
+    AmbientModuleInfo::default()
 }
 
 // specifiers.go:168
-pub(crate) fn get_info(
+pub fn get_info(
     importing_source_file_name: &str,
     host: &dyn ModuleSpecifierGenerationHost,
 ) -> Info {
@@ -213,7 +213,7 @@ pub(crate) fn get_info(
 }
 
 // specifiers.go:180
-pub(crate) fn get_all_module_paths(
+pub fn get_all_module_paths(
     info: &Info,
     imported_file_name: &str,
     host: &dyn ModuleSpecifierGenerationHost,
@@ -236,7 +236,7 @@ pub(crate) fn get_all_module_paths(
 }
 
 // specifiers.go:203
-pub(crate) fn get_all_module_paths_worker(
+pub fn get_all_module_paths_worker(
     info: &Info,
     imported_file_name: &str,
     host: &dyn ModuleSpecifierGenerationHost,
@@ -292,7 +292,7 @@ pub(crate) fn get_all_module_paths_worker(
 // containsIgnoredPath checks if a path contains patterns that should be ignored.
 // This is a local helper that duplicates tspath.ContainsIgnoredPath for performance.
 // specifiers.go:252
-pub(crate) fn contains_ignored_path(s: &str) -> bool {
+pub fn contains_ignored_path(s: &str) -> bool {
     s.contains("/node_modules/.") || s.contains("/.git") || s.contains(".#")
 }
 
@@ -316,10 +316,10 @@ pub fn get_each_file_name_of_module(
         tspath::to_path(imported_file_name, &cwd, host.use_case_sensitive_file_names());
     let mut reference_redirect = String::new();
     let output_and_reference = host.get_project_reference_from_source(&imported_path);
-    if let Some(output_and_reference) = output_and_reference {
-        if !output_and_reference.output_dts.is_empty() {
-            reference_redirect.clone_from(&output_and_reference.output_dts);
-        }
+    if let Some(output_and_reference) = output_and_reference
+        && !output_and_reference.output_dts.is_empty()
+    {
+        reference_redirect.clone_from(&output_and_reference.output_dts);
     }
 
     let redirects = host.get_redirect_targets(&imported_path);
@@ -336,14 +336,14 @@ pub fn get_each_file_name_of_module(
     let mut results: Vec<ModulePath> = Vec::with_capacity(2);
     if !prefer_symlinks {
         results.extend(targets.iter().filter_map(|p| {
-            if !(should_filter_ignored_paths && contains_ignored_path(p)) {
+            if should_filter_ignored_paths && contains_ignored_path(p) {
+                None
+            } else {
                 Some(ModulePath {
                     file_name: p.clone(),
                     is_in_node_modules: contains_node_modules(p),
                     is_redirect: reference_redirect == *p,
                 })
-            } else {
-                None
             }
         }));
     }
@@ -403,14 +403,14 @@ pub fn get_each_file_name_of_module(
 
     if prefer_symlinks {
         results.extend(targets.iter().filter_map(|p| {
-            if !(should_filter_ignored_paths && contains_ignored_path(p)) {
+            if should_filter_ignored_paths && contains_ignored_path(p) {
+                None
+            } else {
                 Some(ModulePath {
                     file_name: p.clone(),
                     is_in_node_modules: contains_node_modules(p),
                     is_redirect: reference_redirect == *p,
                 })
-            } else {
-                None
             }
         }));
     }
@@ -419,7 +419,7 @@ pub fn get_each_file_name_of_module(
 }
 
 // specifiers.go:364
-pub(crate) fn compute_module_specifiers(
+pub fn compute_module_specifiers(
     module_paths: &[ModulePath],
     compiler_options: &CompilerOptions,
     importing_source_file: P<SourceFile>,
@@ -448,16 +448,15 @@ pub(crate) fn compute_module_specifiers(
         for &import_specifier in importing_source_file.imports() {
             let resolved_module = host
                 .get_resolved_module_from_module_specifier(importing_source_file, import_specifier);
-            if let Some(resolved_module) = resolved_module.filter(|r| r.is_resolved()) {
-                if tspath::to_path(
+            if let Some(resolved_module) = resolved_module.filter(|r| r.is_resolved())
+                && tspath::to_path(
                     resolved_module.resolved_file_name,
                     host.get_current_directory(),
                     info.use_case_sensitive_file_names,
                 ) == target_path
-                {
-                    existing_import = Some(import_specifier);
-                    break;
-                }
+            {
+                existing_import = Some(import_specifier);
+                break;
             }
         }
         if let Some(existing_import) = existing_import {
@@ -586,7 +585,7 @@ pub(crate) fn compute_module_specifiers(
 }
 
 // specifiers.go:490
-pub(crate) fn get_local_module_specifier(
+pub fn get_local_module_specifier(
     module_file_name: &str,
     info: &Info,
     compiler_options: &CompilerOptions,
@@ -685,7 +684,7 @@ pub(crate) fn get_local_module_specifier(
     }
 
     let maybe_non_relative =
-        if !from_package_json_imports.is_empty() { from_package_json_imports } else { from_paths };
+        if from_package_json_imports.is_empty() { from_paths } else { from_package_json_imports };
     if maybe_non_relative.is_empty() {
         return relative_path;
     }
@@ -709,15 +708,15 @@ pub(crate) fn get_local_module_specifier(
     if preferences.relative_preference == RelativePreferenceKind::ExternalNonRelative
         && !tspath::path_is_relative(&maybe_non_relative)
     {
-        let project_directory = if !compiler_options.config_file_path.is_empty() {
+        let project_directory = if compiler_options.config_file_path.is_empty() {
             tspath::to_path(
-                &tspath::get_directory_path(&compiler_options.config_file_path),
+                host.get_current_directory(),
                 host.get_current_directory(),
                 host.use_case_sensitive_file_names(),
             )
         } else {
             tspath::to_path(
-                host.get_current_directory(),
+                &tspath::get_directory_path(&compiler_options.config_file_path),
                 host.get_current_directory(),
                 host.use_case_sensitive_file_names(),
             )
@@ -786,7 +785,7 @@ pub(crate) fn get_local_module_specifier(
 }
 
 // specifiers.go:641
-pub(crate) fn process_ending(
+pub fn process_ending(
     file_name: &str,
     allowed_endings: &[ModuleSpecifierEnding],
     options: &CompilerOptions,
@@ -816,8 +815,8 @@ pub(crate) fn process_ending(
         &[tspath::EXTENSION_DMTS, tspath::EXTENSION_DCTS],
     ) {
         let input_ext = tspath::get_declaration_file_extension(file_name);
-        let ext = get_js_extension_for_declaration_file_extension(&input_ext);
-        return format!("{}{}", tspath::remove_extension(file_name, &input_ext), ext);
+        let ext = get_js_extension_for_declaration_file_extension(input_ext);
+        return format!("{}{}", tspath::remove_extension(file_name, input_ext), ext);
     }
     if tspath::file_extension_is_one_of(file_name, &[tspath::EXTENSION_MTS, tspath::EXTENSION_CTS])
     {
@@ -837,13 +836,13 @@ pub(crate) fn process_ending(
     match allowed_endings[0] {
         ModuleSpecifierEnding::Minimal => {
             let without_index = no_extension.strip_suffix("/index").unwrap_or(no_extension);
-            if let Some(host) = host {
-                if without_index != no_extension && try_get_any_file_from_path(host, without_index)
-                {
-                    // Can't remove index if there's a file by the same name as the directory.
-                    // Probably more callers should pass `host` so we can determine this?
-                    return no_extension.to_string();
-                }
+            if let Some(host) = host
+                && without_index != no_extension
+                && try_get_any_file_from_path(host, without_index)
+            {
+                // Can't remove index if there's a file by the same name as the directory.
+                // Probably more callers should pass `host` so we can determine this?
+                return no_extension.to_string();
             }
             without_index.to_string()
         }
@@ -874,7 +873,7 @@ pub(crate) fn process_ending(
 }
 
 // specifiers.go:712
-pub(crate) fn try_get_module_name_from_root_dirs(
+pub fn try_get_module_name_from_root_dirs(
     root_dirs: &[String],
     module_file_name: &str,
     source_directory: &str,
@@ -924,7 +923,7 @@ pub(crate) fn try_get_module_name_from_root_dirs(
 }
 
 // specifiers.go:748
-pub(crate) fn try_get_module_name_as_node_module(
+pub fn try_get_module_name_as_node_module(
     path_obj: &ModulePath,
     info: &Info,
     importing_source_file: P<SourceFile>,
@@ -938,6 +937,26 @@ pub(crate) fn try_get_module_name_as_node_module(
         return String::new();
     };
 
+    let case_sensitive = host.use_case_sensitive_file_names();
+    let global_typings_cache_location = host.get_global_typings_cache_location();
+    // Check reachability before consulting package.json exports, which can return
+    // a bare specifier directly. An exported path is only usable if the importing
+    // file can reach the package through node_modules, and packages under the
+    // global typings cache are excluded.
+    let search_root_end =
+        parts.top_level_node_modules_index.max(tspath::get_root_length(&path_obj.file_name));
+    let search_root = &path_obj.file_name[..search_root_end];
+    let compare_options = tspath::ComparePathsOptions {
+        use_case_sensitive_file_names: case_sensitive,
+        current_directory: host.get_current_directory().to_string(),
+    };
+    if !tspath::contains_path(search_root, &info.source_directory, &compare_options)
+        || !global_typings_cache_location.is_empty()
+            && tspath::contains_path(search_root, &global_typings_cache_location, &compare_options)
+    {
+        return String::new();
+    }
+
     // Simplify the full file path to something that can be resolved by Node.
     let preferences = get_module_specifier_preferences(
         user_preferences,
@@ -949,18 +968,17 @@ pub(crate) fn try_get_module_name_as_node_module(
     let allowed_endings =
         preferences.get_allowed_endings_in_preferred_order(host, options, RESOLUTION_MODE_NONE);
 
-    let case_sensitive = host.use_case_sensitive_file_names();
     let mut module_specifier = path_obj.file_name.clone();
     let mut is_package_root_path = false;
     if !package_name_only {
         let mut package_root_index = parts.package_root_index;
         let mut module_file_name = String::new();
-        // Go passes the unchanged `parts` to every try (Strada updated `parts.packageRootIndex` per level); kept, like
-        // the output of exports directory mappings (e.g. `dirs/d/dist/d/deep/file.js`).
         loop {
+            let current_parts = NodeModulePathParts { package_root_index, ..parts };
             // If the module could be imported by a directory name, use that directory's name
             let pkg_json_results = try_directory_with_package_json(
-                parts,
+                current_parts,
+                parts.package_root_index,
                 path_obj,
                 importing_source_file,
                 host,
@@ -1002,40 +1020,22 @@ pub(crate) fn try_get_module_name_as_node_module(
         return String::new();
     }
 
-    let global_typings_cache_location = host.get_global_typings_cache_location();
-    // Get a path that's relative to node_modules or the importing file's path
-    // if node_modules folder is in this folder or any of its parent folders, no need to keep it.
-    let path_to_top_level_node_modules = &module_specifier[0..parts.top_level_node_modules_index];
-
-    if !stringutil::has_prefix(
-        &info.source_directory,
-        path_to_top_level_node_modules,
-        case_sensitive,
-    ) || !global_typings_cache_location.is_empty()
-        && stringutil::has_prefix(
-            &global_typings_cache_location,
-            path_to_top_level_node_modules,
-            case_sensitive,
-        )
-    {
-        return String::new();
-    }
-
     // If the module was found in @types, get the actual Node package name
     let node_modules_directory_name = &module_specifier[parts.top_level_package_name_index + 1..];
     tsrs_module::get_package_name_from_types_package_name(node_modules_directory_name)
 }
 
 // specifiers.go:837
-pub(crate) fn try_directory_with_package_json(
+pub fn try_directory_with_package_json(
     parts: NodeModulePathParts,
+    package_base_root_index: Option<usize>,
     path_obj: &ModulePath,
     importing_source_file: P<SourceFile>,
     host: &dyn ModuleSpecifierGenerationHost,
     override_mode: ModuleKind,
     options: &CompilerOptions,
     allowed_endings: &[ModuleSpecifierEnding],
-) -> pkgJsonDirAttemptResult {
+) -> PkgJsonDirAttemptResult {
     let root_idx = parts.package_root_index.unwrap_or(path_obj.file_name.len());
     let package_root_path = path_obj.file_name[0..root_idx].to_string();
     let package_json_path = tspath::combine_paths(&package_root_path, &["package.json"]);
@@ -1043,20 +1043,19 @@ pub(crate) fn try_directory_with_package_json(
     let mut maybe_blocked_by_types_versions = false;
     let Some(package_json) = host.get_package_json_info(&package_json_path) else {
         // No package.json exists; an index.js will still resolve as the package name
-        let file_name =
-            &module_file_to_try[parts.package_root_index.map_or(0, |index| index + 1)..];
+        let file_name = &module_file_to_try[package_base_root_index.map_or(0, |index| index + 1)..];
         if file_name == "index.d.ts"
             || file_name == "index.js"
             || file_name == "index.ts"
             || file_name == "index.tsx"
         {
-            return pkgJsonDirAttemptResult {
+            return PkgJsonDirAttemptResult {
                 module_file_to_try,
                 package_root_path,
                 ..Default::default()
             };
         }
-        return pkgJsonDirAttemptResult { module_file_to_try, ..Default::default() };
+        return PkgJsonDirAttemptResult { module_file_to_try, ..Default::default() };
     };
 
     let mut import_mode = override_mode;
@@ -1121,7 +1120,7 @@ pub(crate) fn try_directory_with_package_json(
             };
         }
         if !from_exports.is_empty() {
-            return pkgJsonDirAttemptResult {
+            return PkgJsonDirAttemptResult {
                 module_file_to_try: from_exports,
                 verbatim_from_exports: true,
                 ..Default::default()
@@ -1130,7 +1129,7 @@ pub(crate) fn try_directory_with_package_json(
         if package_json_content
             .is_some_and(|c| c.fields.exports.type_() != JSONValueType::NotPresent)
         {
-            return pkgJsonDirAttemptResult {
+            return PkgJsonDirAttemptResult {
                 module_file_to_try: path_obj.file_name.clone(),
                 blocked_by_exports: true,
                 ..Default::default()
@@ -1202,7 +1201,7 @@ pub(crate) fn try_directory_with_package_json(
         ) == std::cmp::Ordering::Equal
         {
             // ^ An arbitrary removal of file extension for this comparison is almost certainly wrong
-            return pkgJsonDirAttemptResult {
+            return PkgJsonDirAttemptResult {
                 module_file_to_try,
                 package_root_path,
                 ..Default::default()
@@ -1230,7 +1229,7 @@ pub(crate) fn try_directory_with_package_json(
             // example mainExportFile: `pkg/lib` and moduleFileToTry: `pkg/lib/index`, we can use packageRootPath
             // but this behavior is deprecated for packages with "type": "module", so we only do this for packages without "type": "module"
             // and make sure that the extension on index.{???} is something that supports omitting the extension
-            return pkgJsonDirAttemptResult {
+            return PkgJsonDirAttemptResult {
                 module_file_to_try,
                 package_root_path,
                 ..Default::default()
@@ -1238,11 +1237,11 @@ pub(crate) fn try_directory_with_package_json(
         }
     }
 
-    pkgJsonDirAttemptResult { module_file_to_try, ..Default::default() }
+    PkgJsonDirAttemptResult { module_file_to_try, ..Default::default() }
 }
 
 // specifiers.go:981
-pub(crate) fn try_get_module_name_from_exports(
+pub fn try_get_module_name_from_exports(
     options: &CompilerOptions,
     host: &dyn ModuleSpecifierGenerationHost,
     target_file_path: &str,
@@ -1300,7 +1299,7 @@ pub(crate) fn try_get_module_name_from_exports(
 }
 
 // specifiers.go:1024
-pub(crate) fn try_get_module_name_from_package_json_imports(
+pub fn try_get_module_name_from_package_json_imports(
     module_file_name: &str,
     source_directory: &str,
     options: &CompilerOptions,
@@ -1338,8 +1337,8 @@ pub(crate) fn try_get_module_name_from_package_json_imports(
                     continue; // invalid imports entry
                 }
                 if k.starts_with("#/")
-                    && options.get_module_resolution_kind() != ModuleResolutionKind::NodeNext
-                    && options.get_module_resolution_kind() != ModuleResolutionKind::Bundler
+                    && options.get_module_resolution_kind() != ModuleResolutionKind::NODE_NEXT
+                    && options.get_module_resolution_kind() != ModuleResolutionKind::BUNDLER
                 {
                     continue; // "#/" imports keys are only valid in nodenext/bundler
                 }
@@ -1381,7 +1380,7 @@ fn cut<'a>(s: &'a str, sep: &str) -> (&'a str, &'a str, bool) {
 }
 
 // specifiers.go:1094
-pub(crate) fn try_get_module_name_from_paths(
+pub fn try_get_module_name_from_paths(
     relative_to_base_url: &str,
     paths: &OrderedMap<String, impl PathSubstitutions>,
     allowed_endings: &[ModuleSpecifierEnding],
@@ -1437,14 +1436,14 @@ pub(crate) fn try_get_module_name_from_paths(
             // in module specifier generation. I have included it last, as it's difficult to tell exactly where it should be
             // sorted among the others for a particular value of `importModuleSpecifierEnding`.
 
-            let mut candidates: Vec<specPair> = Vec::new();
+            let mut candidates: Vec<SpecPair> = Vec::new();
             candidates.extend(allowed_endings.iter().map(|&ending| {
                 let result =
                     process_ending(relative_to_base_url, &[ending], compiler_options, Some(host));
-                specPair { ending, value: result }
+                SpecPair { ending, value: result }
             }));
             if !tspath::try_get_extension_from_path(&pattern).is_empty() {
-                candidates.push(specPair {
+                candidates.push(SpecPair {
                     ending: ModuleSpecifierEnding::JsExtension,
                     value: relative_to_base_url.to_string(),
                 });
@@ -1485,8 +1484,8 @@ pub(crate) fn try_get_module_name_from_paths(
 }
 
 // specifiers.go:1193
-pub(crate) fn validate_ending(
-    c: &specPair,
+pub fn validate_ending(
+    c: &SpecPair,
     relative_to_base_url: &str,
     compiler_options: &CompilerOptions,
     host: &dyn ModuleSpecifierGenerationHost,
@@ -1504,7 +1503,7 @@ pub(crate) fn validate_ending(
 }
 
 // specifiers.go:1204
-pub(crate) fn try_get_module_name_from_exports_or_imports(
+pub fn try_get_module_name_from_exports_or_imports(
     options: &CompilerOptions,
     host: &dyn ModuleSpecifierGenerationHost,
     target_file_path: &str,
@@ -1517,7 +1516,6 @@ pub(crate) fn try_get_module_name_from_exports_or_imports(
     prefer_ts_extension: bool,
 ) -> String {
     match &exports.data {
-        JSONData::NotPresent => return String::new(),
         JSONData::String(str_value) => {
             // possible strada bug? Always uses compilerOptions of the host project, not those applicable to the targeted package.json!
             let mut output_file = String::new();
@@ -1781,7 +1779,7 @@ pub(crate) fn try_get_module_name_from_exports_or_imports(
                 return result;
             }
         }
-        JSONData::Null => return String::new(),
+        JSONData::NotPresent | JSONData::Null => return String::new(),
         _ => {}
     }
     String::new()
@@ -1841,7 +1839,7 @@ pub fn update_module_specifier(
 
 // `importing_source_file`: !!! | FutureSourceFile. `old_import_specifier`: used only in updatingModuleSpecifier.
 // specifiers.go:1376
-pub(crate) fn get_module_specifier_with_preferences(
+pub fn get_module_specifier_with_preferences(
     compiler_options: &CompilerOptions,
     host: &dyn ModuleSpecifierGenerationHost,
     importing_source_file: P<SourceFile>,

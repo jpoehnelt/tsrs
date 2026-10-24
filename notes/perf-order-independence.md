@@ -1,5 +1,11 @@
 # perf-order-independence: output that does not depend on which checker checks what
 
+**Source-112 update (2026-10-21):** TypeScript now keys `getUndefinedProperty` by source symbol
+(`microsoft/TypeScript@5237fd4689`). tsrs uses that same cache in both checker-history modes. The
+name-keyed Go behavior, the `undefined_properties_by_prop` field, and the Go-versus-canonical
+baseline differences below describe the earlier pinned compiler; they no longer apply to this
+source of ordering differences. Other history-dependent cases remain as documented separately.
+
 With several checkers, tsrs (like tsgo) printed different text depending on how files were split over checkers. On
 the 40k-error corpus (the 38k-file codebase in a Linux sandbox, workspace packages unbuilt), `--checkers 1, 2, 4, 8, 12,
 16` gave four different outputs. Since 2026-10-04 the default checker count depends on the machine, so two machines

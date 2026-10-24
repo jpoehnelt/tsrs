@@ -64,11 +64,11 @@ impl Host for TestHost {
     }
 }
 
-struct parseConfigHost {
+struct ParseConfigHostImpl {
     fs: Arc<dyn FS>,
 }
 
-impl ParseConfigHost for parseConfigHost {
+impl ParseConfigHost for ParseConfigHostImpl {
     fn fs(&self) -> &dyn FS {
         &*self.fs
     }
@@ -84,8 +84,8 @@ fn setup(files: &[(&str, &str)]) -> (LanguageService, Context) {
 fn setup_with(files: &[(&str, &str)], vs: bool) -> (LanguageService, Context) {
     let fs: Arc<dyn FS> =
         Arc::new(bundled::wrap_fs(vfstest::from_map(files.iter().map(|&(k, v)| (k, v)), true)));
-    let config_host: &'static parseConfigHost =
-        Box::leak(Box::new(parseConfigHost { fs: std::sync::Arc::clone(&fs) }));
+    let config_host: &'static ParseConfigHostImpl =
+        Box::leak(Box::new(ParseConfigHostImpl { fs: std::sync::Arc::clone(&fs) }));
     let (config, diagnostics) = tsoptions::get_parsed_command_line_of_config_file(
         "/tsconfig.json",
         None,
@@ -106,7 +106,7 @@ fn setup_with(files: &[(&str, &str)], vs: bool) -> (LanguageService, Context) {
     let ls =
         new_language_service(ProjectID("/tsconfig.json".to_string()), program, host, "/index.ts");
     let mut caps = lsproto::ResolvedClientCapabilities::default();
-    caps.text_document.hover.content_format = vec![lsproto::MarkupKind::Markdown];
+    caps.text_document.hover.content_format = vec![lsproto::MarkupKind::MARKDOWN];
     caps.text_document.definition.link_support = true;
     caps.text_document.type_definition.link_support = true;
     caps.text_document.semantic_tokens.token_types = [
@@ -180,7 +180,7 @@ fn json<T: lsproto::Json>(v: &T) -> String {
 }
 
 // Expected responses recorded from `tsgo-ref --lsp -stdio` with the same file and client capabilities
-// (target/scratch/lscore/drive.py), with the project directory replaced by `/`.
+// (target/scratch/lscore/drive.mjs), with the project directory replaced by `/`.
 #[test]
 fn hover_definition_diagnostics() {
     let files = [
@@ -252,7 +252,7 @@ import G = NS.inner;
 for (let i = 0; i < 1; i++) { this; }
 "#;
 
-// Expected responses recorded from `tsgo-ref --lsp -stdio` (target/scratch/lscore/drive.py, proj2).
+// Expected responses recorded from `tsgo-ref --lsp -stdio` (target/scratch/lscore/drive.mjs, proj2).
 #[test]
 fn hover_jsdoc_aliases_overloads() {
     let files = [

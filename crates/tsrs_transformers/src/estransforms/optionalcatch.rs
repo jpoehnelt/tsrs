@@ -1,11 +1,11 @@
 use crate::*;
 
 // optionalcatch.go:8
-pub struct optionalCatchTransformer {
+pub struct OptionalCatchTransformer {
     pub base: Transformer,
 }
 
-impl optionalCatchTransformer {
+impl OptionalCatchTransformer {
     fn factory(&self) -> &'static printer::NodeFactory {
         self.base.factory()
     }
@@ -46,7 +46,7 @@ impl optionalCatchTransformer {
     reason = "Transformer factories share an optional result so disabled transforms can return None."
 )]
 pub fn new_optional_catch_transformer(opt: &TransformOptions) -> Option<P<Transformer>> {
-    let tx = P::new(optionalCatchTransformer { base: Transformer::default() });
+    let tx = P::new(OptionalCatchTransformer { base: Transformer::default() });
     Some(tx.get().base.new_transformer(
         Rc::new(move |_: &mut NodeVisitor, n: P<Node>| tx.visit(n)),
         Some(opt.context),

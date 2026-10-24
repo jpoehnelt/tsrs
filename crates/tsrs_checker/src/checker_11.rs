@@ -1,5 +1,6 @@
 use crate::*;
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 use tsrs_ast as ast;
 use tsrs_ast::*;
 use tsrs_core::collections::OrderedSet;
@@ -44,7 +45,7 @@ impl Checker {
             cache.set(key, prop);
             // Propagate an entry from the non-augmented cache to the augmented cache unless the property is partial.
             if skip_object_function_property_augment
-                && !prop.check_flags.get().intersects(CheckFlags::Partial)
+                && !prop.check_flags().intersects(CheckFlags::Partial)
             {
                 let augmented_cache =
                     t.as_union_or_intersection_type().property_cache_for_write(false);
@@ -72,13 +73,12 @@ impl Checker {
         {
             return Some(prop);
         }
-        if !skip_object_function_property_augment {
-            if let Some(prop) = d.property_cache(true).and_then(|c| c.lookup(name)) {
-                if !prop.check_flags.get().intersects(CheckFlags::Partial) {
-                    self.lazy_member_stats.prop_cache_shared_hits += 1;
-                    return Some(prop);
-                }
-            }
+        if !skip_object_function_property_augment
+            && let Some(prop) = d.property_cache(true).and_then(|c| c.lookup(name))
+            && !prop.check_flags().intersects(CheckFlags::Partial)
+        {
+            self.lazy_member_stats.prop_cache_shared_hits += 1;
+            return Some(prop);
         }
         let prop = self.create_union_or_intersection_property(
             t,
@@ -89,7 +89,7 @@ impl Checker {
             let key = if prop.name() == name { prop.name() } else { alloc_str(name) };
             d.property_cache_for_write(skip_object_function_property_augment).set(key, prop);
             if skip_object_function_property_augment
-                && !prop.check_flags.get().intersects(CheckFlags::Partial)
+                && !prop.check_flags().intersects(CheckFlags::Partial)
                 && d.property_cache(false).is_none_or(|c| c.lookup(name).is_none())
             {
                 self.lazy_member_stats.prop_cache_copies_avoided += 1;
@@ -108,7 +108,7 @@ impl Checker {
     ) -> Option<P<Symbol>> {
         let mut prop_flags = SymbolFlags::None;
         let mut single_prop: Option<P<Symbol>> = None;
-        let mut prop_set: orderedSet<P<Symbol>> = orderedSet::default();
+        let mut prop_set: CheckerOrderedSet<P<Symbol>> = CheckerOrderedSet::default();
         let mut index_types: Vec<P<Type>> = Vec::new();
         let is_union = containing_type.flags().intersects(TypeFlags::Union);
         // Flags we want to propagate to the result if they exist in all source symbols
@@ -138,10 +138,7 @@ impl Checker {
                 if let Some(prop) = prop {
                     let modifiers = get_declaration_modifier_flags_from_symbol(prop);
                     // tsrs: a declared symbol without a set accessor has its read modifiers for writes.
-                    let write_modifiers = if prop
-                        .check_flags
-                        .get()
-                        .intersects(CheckFlags::Synthetic)
+                    let write_modifiers = if prop.check_flags().intersects(CheckFlags::Synthetic)
                         || prop.flags().intersects(SymbolFlags::SetAccessor)
                     {
                         get_declaration_modifier_flags_from_symbol_ex(prop, true /*isWrite*/)
@@ -172,7 +169,7 @@ impl Checker {
                         if is_instantiation
                             && self
                                 .compare_properties(sp, prop, |_, s, t| compare_types_equal(s, t))
-                                == Ternary::True
+                                == Ternary::TRUE
                         {
                             // If we merged instantiations of a generic type, we replicate the symbol parent resetting behavior we used
                             // to do when we recorded multiple distinct symbols so that we still get, eg, `Array<T>.length` printed
@@ -379,19 +376,19 @@ impl Checker {
             check_flags | synthetic_flag,
         );
         result.set_declarations(&declarations);
-        if !has_non_uniform_value_declaration {
-            if let Some(first_value_declaration) = first_value_declaration {
-                result.set_value_declaration(Some(first_value_declaration));
-                // Inherit information about parent type.
-                result.set_parent(first_value_declaration.symbol().unwrap().parent());
-            }
+        if !has_non_uniform_value_declaration
+            && let Some(first_value_declaration) = first_value_declaration
+        {
+            result.set_value_declaration(Some(first_value_declaration));
+            // Inherit information about parent type.
+            result.set_parent(first_value_declaration.symbol().unwrap().parent());
         }
         let links = self.value_symbol_links.get(result);
         links.set_containing_type(Some(containing_type));
         links.set_name_type(name_type);
         if prop_types.len() > 2 {
             // When `propTypes` has the potential to explode in size when normalized, defer normalization until absolutely needed
-            result.check_flags.set(result.check_flags.get() | CheckFlags::DeferredType);
+            result.set_check_flags(result.check_flags() | CheckFlags::DeferredType);
             let deferred = self.deferred_symbol_links.get(result);
             deferred.parent.set(Some(containing_type));
             deferred.constituents.set(alloc_slice(&prop_types));
@@ -419,7 +416,7 @@ impl Checker {
     pub(crate) fn get_target_symbol(&mut self, s: P<Symbol>) -> Option<P<Symbol>> {
         // if symbol is instantiated its flags are not copied from the 'target'
         // so we'll need to get back original 'target' symbol to work with correct set of flags
-        if s.check_flags.get().intersects(CheckFlags::Instantiated) {
+        if s.check_flags().intersects(CheckFlags::Instantiated) {
             return self.value_symbol_links.get(s).target();
         }
         Some(s)
@@ -429,7 +426,7 @@ impl Checker {
 /// The occurrence count of each property name over a list of property lists, in first-occurrence order (Go's
 /// `collections.OrderedMap[string, int]` in `somePropertyReducesToNever`).
 #[derive(Default)]
-pub(crate) struct NameCounts {
+pub struct NameCounts {
     pub(crate) lists: Vec<&'static [P<Symbol>]>,
     /// (name, name hash, count), in first-occurrence order.
     pub(crate) entries: Vec<(&'static str, u32, i32)>,
@@ -473,9 +470,9 @@ impl NameCounts {
  * Note that this is not tracked well within the compiler, so the answer may be incorrect.
  */
 // checker.go:22037
-pub(crate) fn is_prototype_property(symbol: P<Symbol>) -> bool {
+pub fn is_prototype_property(symbol: P<Symbol>) -> bool {
     symbol.flags().intersects(SymbolFlags::Method)
-        || symbol.check_flags.get().intersects(CheckFlags::SyntheticMethod)
+        || symbol.check_flags().intersects(CheckFlags::SyntheticMethod)
 }
 
 impl Checker {
@@ -508,7 +505,7 @@ impl Checker {
         let symbol = self.new_symbol_ex(
             source.flags(),
             source.name(),
-            source.check_flags.get() & CheckFlags::Readonly,
+            source.check_flags() & CheckFlags::Readonly,
         );
         symbol.set_declarations_static(source.declarations());
         symbol.set_parent(source.parent());
@@ -618,8 +615,8 @@ impl Checker {
     pub(crate) fn get_resolved_apparent_type_of_mapped_type(&mut self, t: P<Type>) -> P<Type> {
         let target = t.as_mapped_type().target.get().unwrap_or(t);
         let type_variable = self.get_homomorphic_type_variable(target);
-        if let Some(type_variable) = type_variable {
-            if target
+        if let Some(type_variable) = type_variable
+            && target
                 .as_mapped_type()
                 .declaration
                 .get()
@@ -627,31 +624,30 @@ impl Checker {
                 .as_mapped_type_node()
                 .name_type
                 .is_none()
+        {
+            // We have a homomorphic mapped type or an instantiation of a homomorphic mapped type, i.e. a type
+            // of the form { [P in keyof T]: X }. Obtain the modifiers type (the T of the keyof T), and if it is
+            // another generic mapped type, recursively obtain its apparent type. Otherwise, obtain its base
+            // constraint. Then, if every constituent of the base constraint is an array or tuple type, apply
+            // this mapped type to the base constraint. It is safe to recurse when the modifiers type is a
+            // mapped type because we protect again circular constraints in getTypeFromMappedTypeNode.
+            let modifiers_type = self.get_modifiers_type_from_mapped_type(t);
+            let base_constraint = if self.is_generic_mapped_type(modifiers_type) {
+                Some(self.get_apparent_type_of_mapped_type(modifiers_type))
+            } else {
+                self.get_base_constraint_of_type(modifiers_type)
+            };
+            if let Some(base_constraint) = base_constraint
+                && every_type(self, base_constraint, |c, t| {
+                    c.is_array_or_tuple_type(t) || c.is_array_or_tuple_or_intersection(t)
+                })
             {
-                // We have a homomorphic mapped type or an instantiation of a homomorphic mapped type, i.e. a type
-                // of the form { [P in keyof T]: X }. Obtain the modifiers type (the T of the keyof T), and if it is
-                // another generic mapped type, recursively obtain its apparent type. Otherwise, obtain its base
-                // constraint. Then, if every constituent of the base constraint is an array or tuple type, apply
-                // this mapped type to the base constraint. It is safe to recurse when the modifiers type is a
-                // mapped type because we protect again circular constraints in getTypeFromMappedTypeNode.
-                let modifiers_type = self.get_modifiers_type_from_mapped_type(t);
-                let base_constraint = if self.is_generic_mapped_type(modifiers_type) {
-                    Some(self.get_apparent_type_of_mapped_type(modifiers_type))
-                } else {
-                    self.get_base_constraint_of_type(modifiers_type)
-                };
-                if let Some(base_constraint) = base_constraint {
-                    if every_type(self, base_constraint, |c, t| {
-                        c.is_array_or_tuple_type(t) || c.is_array_or_tuple_or_intersection(t)
-                    }) {
-                        let mapper = prepend_type_mapping(
-                            type_variable,
-                            base_constraint,
-                            t.as_mapped_type().mapper.get(),
-                        );
-                        return self.instantiate_type(target, Some(mapper));
-                    }
-                }
+                let mapper = prepend_type_mapping(
+                    type_variable,
+                    base_constraint,
+                    t.as_mapped_type().mapper.get(),
+                );
+                return self.instantiate_type(target, Some(mapper));
             }
         }
         t
@@ -773,9 +769,16 @@ impl Checker {
         let types = t.types();
         let skipped = if self.lazy_members {
             types.iter().position(|&t| {
-                t.object_flags_lazy() & (ObjectFlags::Mapped | ObjectFlags::MembersResolved)
+                if t.object_flags_lazy() & (ObjectFlags::Mapped | ObjectFlags::MembersResolved)
                     == ObjectFlags::Mapped
-                    || may_have_lazy_members(t) && t.flags().intersects(TypeFlags::Object)
+                {
+                    // Mapped types with an `as` clause are not given lazy tables and are resolved
+                    // in full on lookup; skipping them only reorders resolution (issue #649).
+                    let mapped_type = t.as_mapped_type().target.get().unwrap_or(t);
+                    self.get_name_type_from_mapped_type(mapped_type).is_none()
+                } else {
+                    may_have_lazy_members(t) && t.flags().intersects(TypeFlags::Object)
+                }
             })
         } else {
             None
@@ -815,15 +818,14 @@ impl Checker {
         let mut result = false;
         for i in 0..counts.entries.len() {
             let (prop_name, _, count) = counts.entries[i];
-            if count > 1 {
-                if let Some(prop) = self.get_property_of_union_or_intersection_type(
+            if count > 1
+                && let Some(prop) = self.get_property_of_union_or_intersection_type(
                     t, prop_name, true, /*skipObjectFunctionPropertyAugment*/
-                ) {
-                    if self.is_never_reduced_property(prop) {
-                        result = true;
-                        break;
-                    }
-                }
+                )
+                && self.is_never_reduced_property(prop)
+            {
+                result = true;
+                break;
             }
         }
         self.name_counts_pool.push(counts);
@@ -907,7 +909,7 @@ impl Checker {
                 let type_string =
                     self.type_to_string_ex(t, None, TypeFormatFlags::NoTypeReduction, None);
                 let prop_string = self.symbol_to_string(never_prop);
-                return Some(new_diagnostic_chain_for_node(chain, node, Some(&diagnostics::The_intersection_0_was_reduced_to_never_because_property_1_has_conflicting_types_in_some_constituents), &[&type_string, &prop_string]));
+                return Some(new_diagnostic_chain_for_node(chain, node, Some(&diagnostics::THE_INTERSECTION_0_WAS_REDUCED_TO_NEVER_BECAUSE_PROPERTY_1_HAS_CONFLICTING_TYPES_IN_SOME_CONSTITUENTS), &[&type_string, &prop_string]));
             }
             let private_prop = self
                 .get_properties_of_union_or_intersection_type(t)
@@ -918,7 +920,7 @@ impl Checker {
                 let type_string =
                     self.type_to_string_ex(t, None, TypeFormatFlags::NoTypeReduction, None);
                 let prop_string = self.symbol_to_string(private_prop);
-                return Some(new_diagnostic_chain_for_node(chain, node, Some(&diagnostics::The_intersection_0_was_reduced_to_never_because_property_1_exists_in_multiple_constituents_and_is_private_in_some), &[&type_string, &prop_string]));
+                return Some(new_diagnostic_chain_for_node(chain, node, Some(&diagnostics::THE_INTERSECTION_0_WAS_REDUCED_TO_NEVER_BECAUSE_PROPERTY_1_EXISTS_IN_MULTIPLE_CONSTITUENTS_AND_IS_PRIVATE_IN_SOME), &[&type_string, &prop_string]));
             }
         }
         chain
@@ -929,18 +931,16 @@ impl Checker {
         // Return true for a synthetic non-optional property with non-uniform types, where at least one is
         // a literal type and none is never, that reduces to never.
         !prop.flags().intersects(SymbolFlags::Optional)
-            && (prop.check_flags.get()
-                & (CheckFlags::NonUniformAndLiteral | CheckFlags::HasNeverType))
+            && (prop.check_flags() & (CheckFlags::NonUniformAndLiteral | CheckFlags::HasNeverType))
                 == CheckFlags::NonUniformAndLiteral
             && self.get_type_of_symbol(prop).flags().intersects(TypeFlags::Never)
     }
 }
 
 // checker.go:22284
-pub(crate) fn is_conflicting_private_property(prop: P<Symbol>) -> bool {
+pub fn is_conflicting_private_property(prop: P<Symbol>) -> bool {
     // Return true for a synthetic property with multiple declarations, at least one of which is private.
-    prop.value_declaration().is_none()
-        && prop.check_flags.get().intersects(CheckFlags::ContainsPrivate)
+    prop.value_declaration().is_none() && prop.check_flags().intersects(CheckFlags::ContainsPrivate)
 }
 
 impl Checker {
@@ -992,13 +992,13 @@ impl Checker {
                     let s = self.symbol_to_string(target_symbol);
                     self.error(
                         error_node,
-                        &diagnostics::Type_arguments_for_0_circularly_reference_themselves,
+                        &diagnostics::TYPE_ARGUMENTS_FOR_0_CIRCULARLY_REFERENCE_THEMSELVES,
                         &[&s],
                     );
                 } else {
                     self.error(
                         error_node,
-                        &diagnostics::Tuple_type_arguments_circularly_reference_themselves,
+                        &diagnostics::TUPLE_TYPE_ARGUMENTS_CIRCULARLY_REFERENCE_THEMSELVES,
                         &[],
                     );
                 }
@@ -1022,6 +1022,7 @@ impl Checker {
             min_type_argument_count,
             ast::is_in_js_file(node),
         )
+        .into_owned()
     }
 
     // Gets the minimum number of type arguments needed to satisfy all non-optional type parameters.
@@ -1053,17 +1054,17 @@ impl Checker {
     }
 
     // checker.go:22350
-    pub fn fill_missing_type_arguments(
+    pub fn fill_missing_type_arguments<'a>(
         &mut self,
-        type_arguments: &[P<Type>],
+        type_arguments: &'a [P<Type>],
         type_parameters: &[P<Type>],
         min_type_argument_count: usize,
         is_java_script_implicit_any: bool,
-    ) -> Vec<P<Type>> {
+    ) -> Cow<'a, [P<Type>]> {
         let _ = min_type_argument_count;
         let num_type_parameters = type_parameters.len();
         if num_type_parameters == 0 {
-            return Vec::new();
+            return Cow::Borrowed(&[]);
         }
         let num_type_arguments = type_arguments.len();
         if is_java_script_implicit_any || num_type_arguments < num_type_parameters {
@@ -1078,14 +1079,12 @@ impl Checker {
             for i in num_type_arguments..num_type_parameters {
                 let mut default_type = self.get_default_from_type_parameter(type_parameters[i]);
 
-                if is_java_script_implicit_any {
-                    if let Some(dt) = default_type {
-                        if self.is_type_identical_to(dt, self.unknown_type)
-                            || self.is_type_identical_to(dt, self.empty_object_type)
-                        {
-                            default_type = Some(self.any_type);
-                        }
-                    }
+                if is_java_script_implicit_any
+                    && let Some(dt) = default_type
+                    && (self.is_type_identical_to(dt, self.unknown_type)
+                        || self.is_type_identical_to(dt, self.empty_object_type))
+                {
+                    default_type = Some(self.any_type);
                 }
 
                 if let Some(default_type) = default_type {
@@ -1098,9 +1097,9 @@ impl Checker {
                     result[i] = base_default_type;
                 }
             }
-            return result;
+            return Cow::Owned(result);
         }
-        type_arguments.to_vec()
+        Cow::Borrowed(type_arguments)
     }
 
     // checker.go:22382
@@ -1218,10 +1217,10 @@ impl Checker {
 
     // checker.go:22472
     pub(crate) fn is_declaration_contained_by(symbol: P<Symbol>, container: P<Symbol>) -> bool {
-        if let Some(declaration) = symbol.value_declaration() {
-            if container.declarations().iter().any(|d| declaration.loc().contained_by(d.loc())) {
-                return true;
-            }
+        if let Some(declaration) = symbol.value_declaration()
+            && container.declarations().iter().any(|d| declaration.loc().contained_by(d.loc()))
+        {
+            return true;
         }
         false
     }
@@ -1325,7 +1324,7 @@ impl Checker {
                 std::cmp::Ordering::Equal => {
                     self.error(
                         self.current_node,
-                        &diagnostics::Instantiations_of_type_0_appear_infinitely_circular,
+                        &diagnostics::INSTANTIATIONS_OF_TYPE_0_APPEAR_INFINITELY_CIRCULAR,
                         &[&circular_type_names[0]],
                     );
                 }
@@ -1333,12 +1332,12 @@ impl Checker {
                     let names: Vec<&str> =
                         circular_type_names.iter().map(std::string::String::as_str).collect();
                     let quoted = quoted_and_comma_separated(&names);
-                    self.error(self.current_node, &diagnostics::Instantiations_of_the_following_types_appear_infinitely_circular_Colon_0, &[&quoted]);
+                    self.error(self.current_node, &diagnostics::INSTANTIATIONS_OF_THE_FOLLOWING_TYPES_APPEAR_INFINITELY_CIRCULAR_COLON_0, &[&quoted]);
                 }
                 std::cmp::Ordering::Less => {
                     self.error(
                         self.current_node,
-                        &diagnostics::Type_instantiation_is_excessively_deep_and_possibly_infinite,
+                        &diagnostics::TYPE_INSTANTIATION_IS_EXCESSIVELY_DEEP_AND_POSSIBLY_INFINITE,
                         &[],
                     );
                 }
@@ -1401,7 +1400,7 @@ fn active_mapper_cache_key(t: P<Type>, alias: Option<P<TypeAlias>>) -> CacheHash
             lo: u64::from(t.id.0).wrapping_mul(0x9e37_79b9_7f4a_7c15),
         }
     } else {
-        let mut b = keyBuilder::default();
+        let mut b = KeyBuilder::default();
         b.write_type(t);
         b.write_alias(alias);
         b.hash()
@@ -1422,14 +1421,13 @@ impl Checker {
                 if let Some(alias) = t.alias() {
                     symbol = alias.symbol();
                 }
-                if let Some(symbol) = symbol {
-                    if !symbol.name().is_empty()
-                        && symbol.name().as_bytes()[0] != InternalSymbolNamePrefixByte
-                    {
-                        let name = self.symbol_to_string_exported(symbol);
-                        if !circular_type_names.contains(&name) {
-                            circular_type_names.push(name);
-                        }
+                if let Some(symbol) = symbol
+                    && !symbol.name().is_empty()
+                    && symbol.name().as_bytes()[0] != INTERNAL_SYMBOL_NAME_PREFIX_BYTE
+                {
+                    let name = self.symbol_to_string_exported(symbol);
+                    if !circular_type_names.contains(&name) {
+                        circular_type_names.push(name);
                     }
                 }
             }
@@ -1525,27 +1523,25 @@ impl Checker {
 
     // checker.go:22626
     pub(crate) fn is_non_generic_top_level_type(t: P<Type>) -> bool {
-        if let Some(alias) = t.alias() {
-            if alias.type_arguments().is_empty() {
-                let alias_symbol = alias.symbol().unwrap();
-                let mut declaration =
-                    get_declaration_of_kind(alias_symbol, Kind::TypeAliasDeclaration);
-                if declaration.is_none() {
-                    declaration =
-                        get_declaration_of_kind(alias_symbol, Kind::JSTypeAliasDeclaration);
-                }
-                return match declaration {
-                    Some(declaration) => {
-                        find_ancestor_or_quit(declaration.parent(), |n| match n.kind() {
-                            Kind::SourceFile => FindAncestorResult::True,
-                            Kind::ModuleDeclaration => FindAncestorResult::False,
-                            _ => FindAncestorResult::Quit,
-                        })
-                        .is_some()
-                    }
-                    None => false,
-                };
+        if let Some(alias) = t.alias()
+            && alias.type_arguments().is_empty()
+        {
+            let alias_symbol = alias.symbol().unwrap();
+            let mut declaration = get_declaration_of_kind(alias_symbol, Kind::TypeAliasDeclaration);
+            if declaration.is_none() {
+                declaration = get_declaration_of_kind(alias_symbol, Kind::JSTypeAliasDeclaration);
             }
+            return match declaration {
+                Some(declaration) => {
+                    find_ancestor_or_quit(declaration.parent(), |n| match n.kind() {
+                        Kind::SourceFile => FindAncestorResult::True,
+                        Kind::ModuleDeclaration => FindAncestorResult::False,
+                        _ => FindAncestorResult::Quit,
+                    })
+                    .is_some()
+                }
+                None => false,
+            };
         }
         false
     }
@@ -1591,12 +1587,11 @@ impl Checker {
             return t;
         } else if flags.intersects(TypeFlags::UnionOrIntersection) {
             let mut source = t;
-            if t.flags().intersects(TypeFlags::Union) {
-                if let Some(origin) = t.as_union_type().origin() {
-                    if origin.flags().intersects(TypeFlags::UnionOrIntersection) {
-                        source = origin;
-                    }
-                }
+            if t.flags().intersects(TypeFlags::Union)
+                && let Some(origin) = t.as_union_type().origin()
+                && origin.flags().intersects(TypeFlags::UnionOrIntersection)
+            {
+                source = origin;
             }
             let types = source.types();
             // Go core.Same: instantiateList returns the input slice iff no element changed
@@ -1731,7 +1726,7 @@ impl Checker {
             t
         };
         let type_parameters: &'static [P<Type>] =
-            if let Some(type_parameters) = links.outer_type_parameters.get() {
+            if let Some(type_parameters) = links.outer_type_parameters() {
                 type_parameters
             } else {
                 // The first time an anonymous type is instantiated we compute and store a list of the type
@@ -1766,7 +1761,7 @@ impl Checker {
                     }
                 }
                 let type_parameters = alloc_vec(type_parameters);
-                links.outer_type_parameters.set(Some(type_parameters));
+                links.set_outer_type_parameters(Some(type_parameters));
                 type_parameters
             };
         if type_parameters.is_empty() {
@@ -1881,27 +1876,27 @@ impl Checker {
         // between the node and the type parameter declaration, if the node contains actual references to the
         // type parameter, or if the node contains type queries that we can't prove couldn't contain references to the type parameter,
         // we consider the type parameter possibly referenced.
-        if let Some(tp_symbol) = tp.symbol() {
-            if tp_symbol.declarations().len() == 1 {
-                let container = tp_symbol.declarations()[0].parent();
-                let mut n = Some(node);
-                while n != container {
-                    let Some(nn) = n else {
-                        return true;
-                    };
-                    if is_block(nn)
-                        || is_conditional_type_node(nn)
-                            && self.type_parameter_contains_reference(
-                                tp,
-                                nn.as_conditional_type_node().extends_type,
-                            )
-                    {
-                        return true;
-                    }
-                    n = nn.parent();
+        if let Some(tp_symbol) = tp.symbol()
+            && tp_symbol.declarations().len() == 1
+        {
+            let container = tp_symbol.declarations()[0].parent();
+            let mut n = Some(node);
+            while n != container {
+                let Some(nn) = n else {
+                    return true;
+                };
+                if is_block(nn)
+                    || is_conditional_type_node(nn)
+                        && self.type_parameter_contains_reference(
+                            tp,
+                            nn.as_conditional_type_node().extends_type,
+                        )
+                {
+                    return true;
                 }
-                return self.type_parameter_contains_reference(tp, node);
+                n = nn.parent();
             }
+            return self.type_parameter_contains_reference(tp, node);
         }
         true
     }
@@ -2001,14 +1996,14 @@ impl Checker {
             alias = self.instantiate_type_alias(t.alias(), Some(m));
         }
         result.set_alias(alias);
-        if let Some(alias) = alias {
-            if !alias.type_arguments().is_empty() {
-                let propagating = Self::get_propagating_flags_of_types(
-                    result.alias().unwrap().type_arguments(),
-                    TypeFlags::None,
-                );
-                result.object_flags.set(result.object_flags_lazy() | propagating);
-            }
+        if let Some(alias) = alias
+            && !alias.type_arguments().is_empty()
+        {
+            let propagating = Self::get_propagating_flags_of_types(
+                result.alias().unwrap().type_arguments(),
+                TypeFlags::None,
+            );
+            result.object_flags.set(result.object_flags_lazy() | propagating);
         }
         let d = result.as_object_type();
         d.target.set(Some(t));
@@ -2050,10 +2045,10 @@ impl Checker {
                 let mapped = match m1 {
                     Some(m1) => {
                         let t1 = m1.map(self, tp);
-                        if t1 != tp {
-                            self.instantiate_type(t1, Some(mapper))
-                        } else {
+                        if t1 == tp {
                             mapper.map(self, tp)
+                        } else {
+                            self.instantiate_type(t1, Some(mapper))
                         }
                     }
                     None => mapper.map(self, tp),
@@ -2361,10 +2356,10 @@ impl Checker {
                 if flags.intersects(ElementFlags::Required) {
                     new_element_infos[i].flags = ElementFlags::Optional;
                 }
-            } else if modifiers.intersects(MappedTypeModifiers::ExcludeOptional) {
-                if flags.intersects(ElementFlags::Optional) {
-                    new_element_infos[i].flags = ElementFlags::Required;
-                }
+            } else if modifiers.intersects(MappedTypeModifiers::ExcludeOptional)
+                && flags.intersects(ElementFlags::Optional)
+            {
+                new_element_infos[i].flags = ElementFlags::Required;
             }
             new_element_types.push(mapped);
         }
@@ -2409,7 +2404,7 @@ impl Checker {
 }
 
 // checker.go:23085
-pub(crate) fn get_modified_readonly_state(state: bool, modifiers: MappedTypeModifiers) -> bool {
+pub fn get_modified_readonly_state(state: bool, modifiers: MappedTypeModifiers) -> bool {
     if modifiers.intersects(MappedTypeModifiers::IncludeReadonly) {
         return true;
     } else if modifiers.intersects(MappedTypeModifiers::ExcludeReadonly) {
@@ -2423,11 +2418,9 @@ impl Checker {
     pub(crate) fn get_type_parameter_from_mapped_type(&mut self, t: P<Type>) -> P<Type> {
         let m = t.as_mapped_type();
         if m.type_parameter.get().is_none() {
-            let symbol = self
-                .get_symbol_of_declaration(
-                    m.declaration.get().unwrap().as_mapped_type_node().type_parameter,
-                )
-                .unwrap();
+            let symbol = self.get_symbol_of_declaration(
+                m.declaration.get().unwrap().as_mapped_type_node().type_parameter,
+            );
             let type_parameter = self.get_declared_type_of_type_parameter(symbol);
             m.type_parameter.set(Some(type_parameter));
         }
@@ -2712,7 +2705,9 @@ impl Checker {
     pub(crate) fn get_type_from_type_node_worker(&mut self, node: P<Node>) -> P<Type> {
         match node.kind() {
             Kind::AnyKeyword | Kind::JSDocAllType => self.any_type,
-            Kind::JSDocNonNullableType => self.get_type_from_type_node(node.type_node().unwrap()),
+            Kind::JSDocNonNullableType | Kind::ParenthesizedType => {
+                self.get_type_from_type_node(node.type_node().unwrap())
+            }
             Kind::JSDocNullableType => {
                 let t = self.get_type_from_type_node(node.type_node().unwrap());
                 if self.strict_null_checks { self.get_nullable_type(t, TypeFlags::Null) } else { t }
@@ -2754,7 +2749,6 @@ impl Checker {
             Kind::UnionType => self.get_type_from_union_type_node(node),
             Kind::IntersectionType => self.get_type_from_intersection_type_node(node),
             Kind::NamedTupleMember => self.get_type_from_named_tuple_type_node(node),
-            Kind::ParenthesizedType => self.get_type_from_type_node(node.type_node().unwrap()),
             Kind::RestType => self.get_type_from_rest_type_node(node),
             Kind::FunctionType | Kind::ConstructorType | Kind::TypeLiteral => {
                 self.get_type_from_type_literal_or_function_or_constructor_type_node(node)
@@ -2786,21 +2780,19 @@ impl Checker {
             node, false, /*includeArrowFunctions*/
             false, /*includeClassComputedPropertyName*/
         );
-        if let Some(parent) = container.parent() {
-            if is_class_like(parent) || is_interface_declaration(parent) {
-                if !ast::is_static(container)
-                    && (!is_constructor_declaration(container)
-                        || container
-                            .body()
-                            .is_some_and(|body| crate::is_node_descendant_of(Some(node), body)))
-                {
-                    let symbol = self.get_symbol_of_declaration(parent).unwrap();
-                    let declared = self.get_declared_type_of_class_or_interface(symbol);
-                    return declared.as_interface_type().this_type().unwrap_or(self.error_type);
-                }
-            }
+        if let Some(parent) = container.parent()
+            && (is_class_like(parent) || is_interface_declaration(parent))
+            && !ast::is_static(container)
+            && (!is_constructor_declaration(container)
+                || container
+                    .body()
+                    .is_some_and(|body| crate::is_node_descendant_of(Some(node), body)))
+        {
+            let symbol = self.get_symbol_of_declaration(parent).unwrap();
+            let declared = self.get_declared_type_of_class_or_interface(symbol);
+            return declared.as_interface_type().this_type().unwrap_or(self.error_type);
         }
-        self.error(Some(node), &diagnostics::A_this_type_is_available_only_in_a_non_static_member_of_a_class_or_interface, &[]);
+        self.error(Some(node), &diagnostics::A_THIS_TYPE_IS_AVAILABLE_ONLY_IN_A_NON_STATIC_MEMBER_OF_A_CLASS_OR_INTERFACE, &[]);
         self.error_type
     }
 
@@ -2906,7 +2898,7 @@ impl Checker {
                         unique_type
                     } else {
                         let mut b = String::new();
-                        b.push_str(InternalSymbolNamePrefix);
+                        b.push_str(INTERNAL_SYMBOL_NAME_PREFIX);
                         b.push('@');
                         b.push_str(symbol.name());
                         b.push('@');
@@ -2985,7 +2977,7 @@ impl Checker {
 }
 
 // checker.go:23470
-pub(crate) fn get_non_distributed_type_parameter(t: P<Type>) -> Option<P<Type>> {
+pub fn get_non_distributed_type_parameter(t: P<Type>) -> Option<P<Type>> {
     if t.flags().intersects(TypeFlags::TypeParameter) && t.as_type_parameter().is_distributed.get()
     {
         return t.as_type_parameter().constraint.get();
@@ -2994,7 +2986,7 @@ pub(crate) fn get_non_distributed_type_parameter(t: P<Type>) -> Option<P<Type>> 
 }
 
 // checker.go:23477
-pub(crate) fn is_simple_identifier_type_reference(node: P<Node>) -> bool {
+pub fn is_simple_identifier_type_reference(node: P<Node>) -> bool {
     is_type_reference_node(node)
         && is_identifier(node.as_type_reference_node().type_name)
         && node.type_argument_list().is_none()
@@ -3113,10 +3105,10 @@ impl Checker {
             false, /*dontResolveAlias*/
             None,  /*location*/
         );
-        if let Some(symbol) = symbol {
-            if symbol != self.unknown_symbol {
-                return symbol;
-            }
+        if let Some(symbol) = symbol
+            && symbol != self.unknown_symbol
+        {
+            return symbol;
         }
         if ignore_errors {
             return self.unknown_symbol;
@@ -3163,7 +3155,7 @@ impl Checker {
 }
 
 // checker.go:23600
-pub(crate) fn get_symbol_path(symbol: P<Symbol>) -> String {
+pub fn get_symbol_path(symbol: P<Symbol>) -> String {
     if let Some(parent) = symbol.parent() {
         return get_symbol_path(parent) + "." + symbol.name();
     }
@@ -3184,10 +3176,10 @@ impl Checker {
         }
         // Get type from reference to named type that cannot be generic (enum or type parameter)
         let res = self.try_get_declared_type_of_symbol(symbol);
-        if let Some(res) = res {
-            if self.check_no_type_arguments(node, Some(symbol)) {
-                return self.get_regular_type_of_literal_type(res);
-            }
+        if let Some(res) = res
+            && self.check_no_type_arguments(node, Some(symbol))
+        {
+            return self.get_regular_type_of_literal_type(res);
         }
 
         // !!! Resolving values as types for JS
@@ -3221,15 +3213,15 @@ impl Checker {
                     && !is_jsdoc_augments_tag(node.parent().unwrap());
                 let message: &'static Message = if missing_augments_tag {
                     if min_type_argument_count < type_parameters.len() {
-                        &diagnostics::Expected_0_1_type_arguments_provide_these_with_an_extends_tag
+                        &diagnostics::EXPECTED_0_1_TYPE_ARGUMENTS_PROVIDE_THESE_WITH_AN_EXTENDS_TAG
                     } else {
-                        &diagnostics::Expected_0_type_arguments_provide_these_with_an_extends_tag
+                        &diagnostics::EXPECTED_0_TYPE_ARGUMENTS_PROVIDE_THESE_WITH_AN_EXTENDS_TAG
                     }
                 } else {
                     if min_type_argument_count < type_parameters.len() {
-                        &diagnostics::Generic_type_0_requires_between_1_and_2_type_arguments
+                        &diagnostics::GENERIC_TYPE_0_REQUIRES_BETWEEN_1_AND_2_TYPE_ARGUMENTS
                     } else {
-                        &diagnostics::Generic_type_0_requires_1_type_argument_s
+                        &diagnostics::GENERIC_TYPE_0_REQUIRES_1_TYPE_ARGUMENT_S
                     }
                 };
                 let type_str = self.type_to_string_ex(
@@ -3271,7 +3263,8 @@ impl Checker {
                 is_js,
             );
             let mut type_arguments = d.outer_type_parameters().to_vec();
-            type_arguments.extend(local_type_arguments);
+            type_arguments.extend_from_slice(&local_type_arguments);
+            drop(local_type_arguments);
             return self.create_type_reference_ex(t, &type_arguments, ObjectFlags::FromTypeNode);
         }
         if self.check_no_type_arguments(node, Some(symbol)) {
@@ -3298,7 +3291,7 @@ impl Checker {
                     node.as_type_reference_node().type_name,
                 )),
             };
-            self.error(Some(node), &diagnostics::Type_0_is_not_generic, &[&type_name]);
+            self.error(Some(node), &diagnostics::TYPE_0_IS_NOT_GENERIC, &[&type_name]);
             return false;
         }
         true
@@ -3430,8 +3423,8 @@ impl Checker {
             return self.create_type_reference_ex(target, element_types, object_flags);
         }
         let element_infos = d.element_infos();
-        if d.combined_flags.get().intersects(ElementFlags::Variadic) {
-            if let Some(result) = element_types.iter().enumerate().find_map(|(i, &e)| {
+        if d.combined_flags.get().intersects(ElementFlags::Variadic)
+            && let Some(result) = element_types.iter().enumerate().find_map(|(i, &e)| {
                 if i < element_infos.len()
                     && element_infos[i].flags.intersects(ElementFlags::Variadic)
                     && e.flags().intersects(TypeFlags::Never | TypeFlags::Union)
@@ -3468,9 +3461,9 @@ impl Checker {
                 }
 
                 None
-            }) {
-                return result;
-            }
+            })
+        {
+            return result;
         }
         // We have optional, rest, or variadic elements that may need normalizing. Normalization ensures that all variadic
         // elements are generic and that the tuple type has one of the following layouts, disregarding variadic elements:
@@ -3537,9 +3530,9 @@ impl TupleNormalizer {
                     let spread_types = c.get_element_types(t);
                     if spread_types.len() + self.types.len() >= 10_000 {
                         let message = if c.current_node.is_some_and(is_part_of_type_node) {
-                            &diagnostics::Type_produces_a_tuple_type_that_is_too_large_to_represent
+                            &diagnostics::TYPE_PRODUCES_A_TUPLE_TYPE_THAT_IS_TOO_LARGE_TO_REPRESENT
                         } else {
-                            &diagnostics::Expression_produces_a_tuple_type_that_is_too_large_to_represent
+                            &diagnostics::EXPRESSION_PRODUCES_A_TUPLE_TYPE_THAT_IS_TOO_LARGE_TO_REPRESENT
                         };
                         c.error(c.current_node, message, &[]);
                         return false;
@@ -3624,12 +3617,12 @@ impl TupleNormalizer {
 
 // Return count of starting consecutive tuple elements of the given kind(s)
 // checker.go:23906
-pub(crate) fn get_start_element_count(t: &'static TupleType, flags: ElementFlags) -> usize {
+pub fn get_start_element_count(t: &'static TupleType, flags: ElementFlags) -> usize {
     if let Some(result) = t
         .element_infos()
         .iter()
         .enumerate()
-        .find_map(|(i, info)| if !info.flags.intersects(flags) { Some(i) } else { None })
+        .find_map(|(i, info)| if info.flags.intersects(flags) { None } else { Some(i) })
     {
         return result;
     }
@@ -3638,14 +3631,14 @@ pub(crate) fn get_start_element_count(t: &'static TupleType, flags: ElementFlags
 
 // Return count of ending consecutive tuple elements of the given kind(s)
 // checker.go:23916
-pub(crate) fn get_end_element_count(t: &'static TupleType, flags: ElementFlags) -> usize {
+pub fn get_end_element_count(t: &'static TupleType, flags: ElementFlags) -> usize {
     let element_infos = t.element_infos();
 
     element_infos.iter().rev().take_while(|info| info.flags.intersects(flags)).count()
 }
 
 // checker.go:23925
-pub(crate) fn get_total_fixed_element_count(t: &'static TupleType) -> usize {
+pub fn get_total_fixed_element_count(t: &'static TupleType) -> usize {
     t.fixed_length() + get_end_element_count(t, ElementFlags::Fixed)
 }
 
@@ -3683,4 +3676,49 @@ impl Checker {
 pub fn is_tuple_type(t: P<Type>) -> bool {
     t.object_flags().intersects(ObjectFlags::Reference)
         && t.target().unwrap().object_flags().intersects(ObjectFlags::Tuple)
+}
+
+#[cfg(test)]
+mod property_counts_tests {
+    use super::*;
+
+    #[test]
+    fn ordered_counts_reuse_without_leaking_nested_state() {
+        let first = Symbol::new(SymbolFlags::Property, "first");
+        let second = Symbol::new(SymbolFlags::Property, "second");
+        let third = Symbol::new(SymbolFlags::Property, "third");
+
+        let mut outer = NameCounts::default();
+        outer.lists.push(alloc_slice(&[second, first]));
+        outer.lists.push(alloc_slice(&[first, third, second]));
+        outer.count_lists(5);
+        assert_eq!(
+            outer.entries.iter().map(|&(name, _, count)| (name, count)).collect::<Vec<_>>(),
+            [("second", 2), ("first", 2), ("third", 1)]
+        );
+
+        let mut inner = NameCounts::default();
+        inner.lists.push(alloc_slice(&[third, first, third]));
+        inner.count_lists(3);
+        assert_eq!(
+            inner.entries.iter().map(|&(name, _, count)| (name, count)).collect::<Vec<_>>(),
+            [("third", 2), ("first", 1)]
+        );
+        assert_eq!(
+            outer.entries.iter().map(|&(name, _, count)| (name, count)).collect::<Vec<_>>(),
+            [("second", 2), ("first", 2), ("third", 1)]
+        );
+
+        let entries = outer.entries.as_ptr();
+        let table = outer.table.as_ptr();
+        outer.lists.clear();
+        outer.lists.push(alloc_slice(&[first, third]));
+        outer.count_lists(2);
+        assert_eq!(outer.entries.as_ptr(), entries);
+        assert_eq!(outer.table.as_ptr(), table);
+        assert_eq!(
+            outer.entries.iter().map(|&(name, _, count)| (name, count)).collect::<Vec<_>>(),
+            [("first", 1), ("third", 1)]
+        );
+    }
 }

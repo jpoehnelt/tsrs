@@ -1,11 +1,11 @@
 use crate::*;
 
 // exponentiation.go:8
-pub struct exponentiationTransformer {
+pub struct ExponentiationTransformer {
     pub base: Transformer,
 }
 
-impl exponentiationTransformer {
+impl ExponentiationTransformer {
     fn emit_context(&self) -> P<EmitContext> {
         self.base.emit_context()
     }
@@ -125,7 +125,7 @@ impl exponentiationTransformer {
     reason = "Transformer factories share an optional result so disabled transforms can return None."
 )]
 pub fn new_exponentiation_transformer(opt: &TransformOptions) -> Option<P<Transformer>> {
-    let tx = P::new(exponentiationTransformer { base: Transformer::default() });
+    let tx = P::new(ExponentiationTransformer { base: Transformer::default() });
     Some(tx.get().base.new_transformer(
         Rc::new(move |_: &mut NodeVisitor, n: P<Node>| tx.visit(n)),
         Some(opt.context),

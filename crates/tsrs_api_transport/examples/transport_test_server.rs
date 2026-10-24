@@ -93,7 +93,7 @@ impl Handler for TestHandler {
             }),
             "ping" => Response::json("pong"),
             "initialize" => Response::json(&serde_json::json!({
-                "useCaseSensitiveFileNames": self.fs.use_case_sensitive_file_names(),
+                "caseSensitivity": i32::from(self.fs.use_case_sensitive_file_names()),
                 "currentDirectory": self.cwd,
             })),
             // Test double of Session.handleBatchRequests (sequential, unpaginated) so the pinned
@@ -118,7 +118,7 @@ impl Handler for TestHandler {
                     let p = item.params.as_ref().map_or(b"".as_slice(), |r| r.get().as_bytes());
                     let method_json = serde_json::to_string(&item.method).unwrap();
                     match self.handle_request(cx, &item.method, p) {
-                        Ok(Response::Json(json)) => {
+                        Ok(Response::Json(json) | Response::ValidJson(json)) => {
                             write!(
                                 out,
                                 "{{\"method\":{method_json},\"result\":{}}}",

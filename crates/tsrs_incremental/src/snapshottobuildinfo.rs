@@ -4,8 +4,7 @@ use rustc_hash::FxHashMap;
 use tsrs_ast::{self as ast, Diagnostic, RepopulateDiagnosticInfo, SourceFile};
 use tsrs_compiler::Program as CompilerProgram;
 use tsrs_core::P;
-use tsrs_core::collections::OrderedMap;
-use tsrs_core::json::Value;
+use tsrs_core::json::{JsonMap, Value};
 use tsrs_core::tspath::{self, ComparePathsOptions, Path};
 use tsrs_tsoptions::{
     self as tsoptions, CommandLineOption, CommandLineOptionKind, CompilerOptionsValue,
@@ -14,12 +13,12 @@ use tsrs_tsoptions::{
 use crate::buildinfo::*;
 use crate::referencemap::RefSet;
 use crate::snapshot::{
-    DiagnosticsOrBuildInfoDiagnosticsWithFileName, Snapshot, buildInfoDiagnosticWithFileName,
+    BuildInfoDiagnosticWithFileName, DiagnosticsOrBuildInfoDiagnosticsWithFileName, Snapshot,
     get_file_emit_kind,
 };
 
 // snapshottobuildinfo.go:18
-pub(crate) fn snapshot_to_build_info(
+pub fn snapshot_to_build_info(
     snapshot: &Snapshot,
     program: &'static CompilerProgram,
     build_info_file_name: &str,
@@ -31,7 +30,7 @@ pub(crate) fn snapshot_to_build_info(
         content_mapper_identities,
         ..Default::default()
     };
-    let mut to = toBuildInfo {
+    let mut to = ToBuildInfo {
         snapshot,
         program,
         build_info: &mut build_info,
@@ -86,7 +85,7 @@ fn relative_to_build_info(
     ))
 }
 
-struct toBuildInfo<'a> {
+struct ToBuildInfo<'a> {
     snapshot: &'a Snapshot,
     program: &'static CompilerProgram,
     build_info: &'a mut BuildInfo,
@@ -97,7 +96,7 @@ struct toBuildInfo<'a> {
     roots: FxHashMap<P<SourceFile>, Path>,
 }
 
-impl toBuildInfo<'_> {
+impl ToBuildInfo<'_> {
     // snapshottobuildinfo.go:73
     fn relative_to_build_info(&self, path: &str) -> String {
         relative_to_build_info(&self.build_info_directory, &self.compare_paths_options, path)
@@ -177,19 +176,18 @@ impl toBuildInfo<'_> {
         v: CompilerOptionsValue,
     ) -> CompilerOptionsValue {
         if option.kind == CommandLineOptionKind::List {
-            if option.elements().unwrap().is_file_path {
-                if let CompilerOptionsValue::StringArray(arr) = &v {
-                    return CompilerOptionsValue::StringArray(
-                        arr.iter().map(|s| self.relative_to_build_info(s)).collect(),
-                    );
-                }
+            if option.elements().unwrap().is_file_path
+                && let CompilerOptionsValue::StringArray(arr) = &v
+            {
+                return CompilerOptionsValue::StringArray(
+                    arr.iter().map(|s| self.relative_to_build_info(s)).collect(),
+                );
             }
-        } else if option.is_file_path {
-            if let CompilerOptionsValue::String(s) = &v {
-                if !s.is_empty() {
-                    return CompilerOptionsValue::String(self.relative_to_build_info(s));
-                }
-            }
+        } else if option.is_file_path
+            && let CompilerOptionsValue::String(s) = &v
+            && !s.is_empty()
+        {
+            return CompilerOptionsValue::String(self.relative_to_build_info(s));
         }
         v
     }
@@ -201,12 +199,12 @@ impl toBuildInfo<'_> {
     )]
     fn to_build_info_diagnostics_from_file_name_diagnostics(
         &mut self,
-        diagnostics: &[buildInfoDiagnosticWithFileName],
+        diagnostics: &[BuildInfoDiagnosticWithFileName],
     ) -> Vec<BuildInfoDiagnostic> {
         diagnostics
             .iter()
             .map(|d| {
-                let file = if !d.file.is_empty() { self.to_file_id(&d.file) } else { 0 };
+                let file = if d.file.is_empty() { 0 } else { self.to_file_id(&d.file) };
                 BuildInfoDiagnostic {
                     file,
                     no_file: d.no_file,
@@ -312,10 +310,10 @@ impl toBuildInfo<'_> {
         let program = self.program;
         self.roots.extend(program.command_line().file_names().iter().filter_map(|file_name| {
             let redirect = program.get_parse_file_redirect(file_name);
-            let file = if !redirect.is_empty() {
-                program.get_source_file(&redirect)
-            } else {
+            let file = if redirect.is_empty() {
                 program.get_source_file(file_name)
+            } else {
+                program.get_source_file(&redirect)
             };
             file.map(|file| {
                 (
@@ -485,7 +483,7 @@ impl toBuildInfo<'_> {
             let value = self.to_relative_to_build_info_compiler_option_value(option, value);
             self.build_info
                 .options
-                .get_or_insert_with(OrderedMap::default)
+                .get_or_insert_with(JsonMap::new)
                 .insert(name.to_string(), option_value_to_json(&value));
         }
     }
@@ -681,8 +679,5 @@ fn option_value_to_json(v: &CompilerOptionsValue) -> Value {
         V::ScriptTarget(k) => Value::Number(k.value() as f64),
         V::JsxEmit(k) => Value::Number(k.value() as f64),
         V::NewLineKind(k) => Value::Number(*k as i32 as f64),
-        V::WatchFileKind(k) => Value::Number(*k as i32 as f64),
-        V::WatchDirectoryKind(k) => Value::Number(*k as i32 as f64),
-        V::PollingKind(k) => Value::Number(*k as i32 as f64),
     }
 }

@@ -1,7 +1,7 @@
 # Differences from pinned TypeScript
 
 This page records known differences from the Go implementation of TypeScript at the commit pinned in
-[`Cargo.toml`](../Cargo.toml), currently [`b85298b6a81f`](https://github.com/microsoft/TypeScript/tree/b85298b6a81f772d080b0455de0ca9d744cd6fd6/tsc). It covers changed defaults, unsupported features and
+[`Cargo.toml`](../Cargo.toml), currently [`3e9236361fa9`](https://github.com/microsoft/TypeScript/tree/3e9236361fa97a9e6c685f4833ac457ae2d8c50a/tsc). It covers changed defaults, unsupported features and
 remaining parity gaps. These are comparisons with that pinned compiler, not with TypeScript 5/6 or a newer nightly.
 The [compatibility table](COMPATIBILITY.md#what-it-does-and-doesnt-do) summarizes support and conformance.
 
@@ -10,7 +10,7 @@ Go paths are relative to `tsc/internal/` in a microsoft/TypeScript checkout, Rus
 ## Shared defaults
 
 The compiler, build, watch and type-acquisition option declarations match the reference, as do the named enum
-maps and the 113 bundled library files. An option being declared does not mean its feature is implemented;
+maps and the 116 bundled library files. An option being declared does not mean its feature is implemented;
 unsupported commands and API behavior are listed below.
 
 The computed compiler defaults follow `core/compileroptions.go`: target, module kind and resolution, strictness,
@@ -31,7 +31,7 @@ four spaces and `"\n"`; the limits below apply to explicit client settings.
 | Parallel parsing | Goroutines scheduled by the Go runtime | A thread pool of `min(available parallelism, 32)`, overridden by a positive `RAYON_NUM_THREADS`; `--singleThreaded` disables parallel parsing |
 | Incremental startup | Reads tsbuildinfo, then builds the program | Both at once on two threads, unless `--singleThreaded` |
 | tsbuildinfo contents | tsgo's fields | Adds `tsrsCanonicalCheckSignature`. In `go` history mode or API mode, tsrs won't reuse a tsbuildinfo that has this field |
-| `--version` | `Version <TypeScript version>` | Appends `(tsrs <release>, microsoft/TypeScript@<commit>)`. Unstamped source builds use `7.1.0-dev`; npm builds use the pinned nightly version on both sides |
+| `--version` | `Version <TypeScript version>` | Appends `(tsrs <release>, microsoft/TypeScript@<commit>)`. Unstamped source builds use `7.1.0-beta`; npm builds use the pinned package version on both sides |
 | `--init` | Writes a tsconfig.json | `error: --init is not supported by tsrs.`, exit status 5, no file written |
 | `--showConfig` | Prints the resolved config as JSON | Not supported, exit status 5 |
 | `--help`, `--all`, `-b --help` | Full option help | A version line and short usage, exit status 0 |
@@ -96,7 +96,7 @@ rules are shared, so other watcher differences can also affect the language serv
 | Async request threads | A goroutine per request, scheduled by `GOMAXPROCS` | Starts workers as needed and retains up to `max(4, available parallelism)` idle workers. New work is limited by available parallelism; returning from a blocking wait can temporarily exceed it |
 | Background queue | Unbounded goroutines | 6 workers |
 | After the idle cache clean | `runtime.GC()` | No additional collection step |
-| Profiling commands, `runGC`, `custom/initializeAPISession`, `setContentMapperContributions` | Supported | `MethodNotFound` |
+| Profiling commands, `runGC` | Supported | `MethodNotFound` |
 | Content mappers | Supported | Not ported; `runExternalCode` does nothing |
 | Parent process watchdog on Windows | Supported | Not ported |
 
@@ -184,10 +184,12 @@ Sources: pinned TypeScript's `packages/typescript/lib/tsc.js` and
 
 ## Verification
 
-Reviewed against tsrs 0.18.0 (main `470b1bdb`) and TypeScript `b85298b6a81f` on 2026-10-20. The compiler, build
+The detailed defaults review compared tsrs 0.18.0 (main `470b1bdb`) with TypeScript `b85298b6a81f` on 2026-10-20. The compiler, build
 and watch declarations were regenerated into scratch files and compared; all 174 enum-map entries and all 113
 library files matched. Probes with source-built binaries on macOS covered help, version, unsupported commands,
 locale handling, statistics, incremental metadata, tracing, profiling, non-UTF-8 arguments and API startup errors. Direct Go/Rust
 probes confirmed the unknown `moduleDetection` and tsbuildinfo enum conversions. Platform-specific watcher
-behavior, runtime scheduling and the remaining server/API details were checked in source. The broader conformance
-evidence remains the [recorded suite results](COMPATIBILITY.md#conformance).
+behavior, runtime scheduling and the remaining server/API details were checked in source. The current 0.19.0
+source pin is `3e9236361fa9`; its broader conformance evidence is in the
+[recorded suite results](COMPATIBILITY.md#conformance), [source-upgrade log](../notes/typescript-623-ports.md),
+and [beta follow-up log](../notes/typescript-7.1-beta-ports.md).

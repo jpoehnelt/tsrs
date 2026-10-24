@@ -1,15 +1,12 @@
 # Top repository conformance
 
-The [GitHub Actions workflow](../../.github/workflows/repo-conformance.yml.bak) is disabled. Its definition and local
-tools are preserved. The workflow behavior and dispatch instructions below apply only after restoring the filename
-to `repo-conformance.yml`; the local commands at the end remain available.
-
-The workflow compares tsrs with tsgo built from the
+The [GitHub Actions workflow](../../.github/workflows/repo-conformance.yml) compares tsrs with tsgo built from the
 TypeScript commit pinned in `Cargo.toml`, following TypeScript's
 [`test top400`](https://github.com/microsoft/TypeScript/wiki/Triggering-TypeScript-Bot).
-It selects 400 TypeScript repos by stars after compiler changes merge into `main`, and 20 for harness PRs, excluding
-forks and archived repos. Manual dispatch accepts 1-400. Both compilers are built once; 20 shards run at most eight at a
-time. Pushes share one concurrency group: a run already in progress finishes, and only the newest pending push waits.
+It selects 1,000 TypeScript repos by stars after compiler changes merge into `main`, and 20 for harness PRs, excluding
+forks and archived repos. Manual dispatch accepts 1-1,000. Both compilers are built once; the default 10 shards run at
+most eight at a time. Pushes share one concurrency group: a run already in progress finishes, and only the newest
+pending push waits.
 
 The plan pins each repo's default-branch commit, and shards check out exactly that commit. Root dependencies are
 installed with the declared package manager (`packageManager`, or an exact `devEngines.packageManager`) unless only
@@ -53,9 +50,11 @@ as a failure. Each mode keeps its own logs (`tsgo.log`/`tsrs.log`, `tsgo-strict.
 (`diagnostics.diff`, `diagnostics-strict.diff`), and shard reports record each mode's flags.
 
 Actions reports coverage and retains logs, commits, and diagnostic diffs for 14 days. Differences and tsrs failures
-after tsgo completes fail the report in either mode (a strict-mode match does not excuse a default-mode difference),
-as do missing results, results at another commit, or no completed comparisons. The report says whether diagnostics or
-only other output, such as `traceResolution` traces, differ; either is a difference. Skipped, empty, and untested
+after tsgo completes are reported in either mode (a strict-mode match does not excuse a default-mode difference).
+The report command exits 3 for these parity findings; Actions shows a warning and keeps the workflow green. Missing
+results, results at another commit, inconsistent shards, or no completed comparisons exit 2 and fail the workflow.
+Unexpected report errors also fail it. The report says whether diagnostics or only other output, such as
+`traceResolution` traces, differ; either is a difference. Skipped, empty, and untested
 projects are excluded from pass counts; the repository table counts identical projects against those where both
 compilers completed, and lists tracked `tsconfig.json` files separately, since projects reached through references
 need not be tracked configs. Identical output is not the same as a project without type errors; the report counts
@@ -94,7 +93,7 @@ TSRS_CONFORMANCE_SANDBOX_IMAGE=tsrs-repo-conformance \
   python3 -m unittest discover -s tools/repo-conformance -p 'test_sandbox.py' -v
 python3 tools/repo-conformance/run.py plan --count 20 --shards 1 --out /tmp/top-repos/manifest.json
 python3 tools/repo-conformance/run.py run --manifest /tmp/top-repos/manifest.json --shard 0 \
-  --tsrs target/release/tsrs --tsgo /path/to/pinned/tsgo --out /tmp/top-repos/results --cache /tmp/top-repos/cache
+  --tsrs target/debug/tsrs --tsgo /path/to/pinned/tsgo --out /tmp/top-repos/results --cache /tmp/top-repos/cache
 python3 tools/repo-conformance/run.py report --manifest /tmp/top-repos/manifest.json \
   --results /tmp/top-repos/results --out /tmp/top-repos/report.md
 ```
@@ -102,6 +101,6 @@ python3 tools/repo-conformance/run.py report --manifest /tmp/top-repos/manifest.
 Run the harness tests with real compilers:
 
 ```sh
-TSRS_CONFORMANCE_TSRS="$PWD/target/release/tsrs" TSRS_CONFORMANCE_TSGO=/path/to/pinned/tsgo \
+TSRS_CONFORMANCE_TSRS="$PWD/target/debug/tsrs" TSRS_CONFORMANCE_TSGO=/path/to/pinned/tsgo \
   python3 -m unittest discover -s tools/repo-conformance -p 'test_*.py' -v
 ```

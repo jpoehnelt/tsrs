@@ -1,7 +1,7 @@
 use super::*;
 
 // using.go:11
-pub struct usingDeclarationTransformer {
+pub struct UsingDeclarationTransformer {
     pub base: Transformer,
 
     export_bindings: RefCell<Option<FxHashMap<&'static str, P<Node>>>>,
@@ -17,7 +17,7 @@ pub struct usingDeclarationTransformer {
     reason = "Transformer factories share an optional result so disabled transforms can return None."
 )]
 pub fn new_using_declaration_transformer(opt: &TransformOptions) -> Option<P<Transformer>> {
-    let tx = P::new(usingDeclarationTransformer {
+    let tx = P::new(UsingDeclarationTransformer {
         base: Transformer::default(),
         export_bindings: RefCell::new(None),
         export_binding_names: RefCell::new(Vec::new()),
@@ -33,13 +33,13 @@ pub fn new_using_declaration_transformer(opt: &TransformOptions) -> Option<P<Tra
 
 // using.go:26
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum usingKind {
+enum UsingKind {
     None,
     Sync,
     Async,
 }
 
-impl usingDeclarationTransformer {
+impl UsingDeclarationTransformer {
     fn emit_context(&self) -> P<EmitContext> {
         self.base.emit_context()
     }
@@ -77,7 +77,9 @@ impl usingDeclarationTransformer {
         let emit_context = self.emit_context();
 
         let using_kind = get_using_kind_of_statements(node.statements.nodes());
-        let visited: P<Node> = if using_kind != usingKind::None {
+        let visited: P<Node> = if using_kind == UsingKind::None {
+            self.visitor().visit_each_child(Some(node.as_node())).unwrap()
+        } else {
             // Imports and exports must stay at the top level. This means we must hoist all imports, exports, and
             // top-level function declarations and bindings out of the `try` statements we generate (see using.go for
             // the worked example). We hoist bindings, functions, imports and exports to a new outer statement list
@@ -100,7 +102,7 @@ impl usingDeclarationTransformer {
             let mut pos = 0;
             while pos < rest.len() {
                 let statement = rest[pos];
-                if get_using_kind(statement) != usingKind::None {
+                if get_using_kind(statement) != UsingKind::None {
                     if pos > 0 {
                         top_level_statements
                             .extend_from_slice(self.visitor().visit_slice(&rest[..pos]).0);
@@ -157,7 +159,7 @@ impl usingDeclarationTransformer {
             top_level_statements.extend(self.create_downlevel_using_statements(
                 body_statements,
                 env_binding,
-                using_kind == usingKind::Async,
+                using_kind == UsingKind::Async,
             ));
 
             if let Some(export_equals_binding) = self.export_equals_binding.get() {
@@ -174,8 +176,6 @@ impl usingDeclarationTransformer {
                 f.new_node_list(top_level_statements),
                 node.end_of_file_token,
             )
-        } else {
-            self.visitor().visit_each_child(Some(node.as_node())).unwrap()
         };
         emit_context.add_emit_helper(visited, &emit_context.read_emit_helpers());
         self.export_vars.borrow_mut().clear();
@@ -191,7 +191,7 @@ impl usingDeclarationTransformer {
         let f = self.factory();
         let block = node.as_block();
         let using_kind = get_using_kind_of_statements(block.statements.nodes());
-        if using_kind != usingKind::None {
+        if using_kind != UsingKind::None {
             let (prologue, rest) = f.split_standard_prologue(block.statements.nodes());
             let env_binding = self.create_env_binding();
             let mut statements: Vec<P<Node>> = Vec::with_capacity(prologue.len() + 2);
@@ -204,7 +204,7 @@ impl usingDeclarationTransformer {
             statements.extend(self.create_downlevel_using_statements(
                 body,
                 env_binding,
-                using_kind == usingKind::Async,
+                using_kind == UsingKind::Async,
             ));
             let statement_list = f.new_node_list(statements);
             statement_list.loc.set(block.statements.loc.get());
@@ -217,37 +217,37 @@ impl usingDeclarationTransformer {
     fn visit_for_statement(&self, node: P<Node>) -> P<Node> {
         let f = self.factory();
         let n = node.as_for_statement();
-        if let Some(initializer) = n.initializer {
-            if is_using_variable_declaration_list(initializer) {
-                // given:
-                //
-                //  for (using x = expr; cond; incr) { ... }
-                //
-                // produces a shallow transformation to:
-                //
-                //  {
-                //    using x = expr;
-                //    for (; cond; incr) { ... }
-                //  }
-                //
-                // before handing the shallow transformation back to the visitor for an in-depth transformation.
-                return self
-                    .visitor()
-                    .visit_node(Some(f.new_block(
-                        f.new_node_list(vec![
-                            f.new_variable_statement(None /*modifiers*/, initializer),
-                            f.update_for_statement(
-                                node,
-                                None, /*initializer*/
-                                n.condition,
-                                n.incrementor,
-                                n.statement(),
-                            ),
-                        ]),
-                        false, /*multiLine*/
-                    )))
-                    .unwrap();
-            }
+        if let Some(initializer) = n.initializer
+            && is_using_variable_declaration_list(initializer)
+        {
+            // given:
+            //
+            //  for (using x = expr; cond; incr) { ... }
+            //
+            // produces a shallow transformation to:
+            //
+            //  {
+            //    using x = expr;
+            //    for (; cond; incr) { ... }
+            //  }
+            //
+            // before handing the shallow transformation back to the visitor for an in-depth transformation.
+            return self
+                .visitor()
+                .visit_node(Some(f.new_block(
+                    f.new_node_list(vec![
+                        f.new_variable_statement(None /*modifiers*/, initializer),
+                        f.update_for_statement(
+                            node,
+                            None, /*initializer*/
+                            n.condition,
+                            n.incrementor,
+                            n.statement(),
+                        ),
+                    ]),
+                    false, /*multiLine*/
+                )))
+                .unwrap();
         }
         self.visitor().visit_each_child(Some(node)).unwrap()
     }
@@ -281,7 +281,7 @@ impl usingDeclarationTransformer {
                 });
 
             let is_await_using =
-                get_using_kind_of_variable_declaration_list(for_initializer) == usingKind::Async;
+                get_using_kind_of_variable_declaration_list(for_initializer) == UsingKind::Async;
             let temp = f.new_generated_name_for_node(for_decl.name().unwrap());
             let using_var = f.update_variable_declaration(
                 for_decl,
@@ -377,7 +377,7 @@ impl usingDeclarationTransformer {
 
         for &statement in statements_in {
             let using_kind = get_using_kind(statement);
-            if using_kind != usingKind::None {
+            if using_kind != UsingKind::None {
                 let var_statement = statement.as_variable_statement();
                 let declaration_list = var_statement.declaration_list;
                 let mut declarations: Vec<P<Node>> = Vec::new();
@@ -413,7 +413,7 @@ impl usingDeclarationTransformer {
                         Some(f.new_add_disposable_resource_helper(
                             env_binding,
                             initializer,
-                            using_kind == usingKind::Async,
+                            using_kind == UsingKind::Async,
                         )),
                     ));
                 }
@@ -967,41 +967,41 @@ impl usingDeclarationTransformer {
 // using.go:761
 fn is_using_variable_declaration_list(node: P<Node>) -> bool {
     ast::is_variable_declaration_list(node)
-        && get_using_kind_of_variable_declaration_list(node) != usingKind::None
+        && get_using_kind_of_variable_declaration_list(node) != UsingKind::None
 }
 
 // using.go:765
-fn get_using_kind_of_variable_declaration_list(node: P<Node>) -> usingKind {
+fn get_using_kind_of_variable_declaration_list(node: P<Node>) -> UsingKind {
     let flags = node.flags() & NodeFlags::BlockScoped;
     if flags == NodeFlags::AwaitUsing {
-        usingKind::Async
+        UsingKind::Async
     } else if flags == NodeFlags::Using {
-        usingKind::Sync
+        UsingKind::Sync
     } else {
-        usingKind::None
+        UsingKind::None
     }
 }
 
 // using.go:776
-fn get_using_kind_of_variable_statement(node: P<Node>) -> usingKind {
+fn get_using_kind_of_variable_statement(node: P<Node>) -> UsingKind {
     get_using_kind_of_variable_declaration_list(node.as_variable_statement().declaration_list)
 }
 
 // using.go:780
-fn get_using_kind(statement: P<Node>) -> usingKind {
+fn get_using_kind(statement: P<Node>) -> UsingKind {
     if ast::is_variable_statement(statement) {
         return get_using_kind_of_variable_statement(statement);
     }
-    usingKind::None
+    UsingKind::None
 }
 
 // using.go:787
-fn get_using_kind_of_statements(statements: &[P<Node>]) -> usingKind {
-    let mut result = usingKind::None;
+fn get_using_kind_of_statements(statements: &[P<Node>]) -> UsingKind {
+    let mut result = UsingKind::None;
     for &statement in statements {
         let using_kind = get_using_kind(statement);
-        if using_kind == usingKind::Async {
-            return usingKind::Async;
+        if using_kind == UsingKind::Async {
+            return UsingKind::Async;
         }
         if using_kind > result {
             result = using_kind;

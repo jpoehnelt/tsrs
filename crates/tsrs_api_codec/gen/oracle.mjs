@@ -4,13 +4,13 @@
 // Usage:
 //   # server: built from ts-ref at the workspace pin (Cargo.toml [workspace.metadata.typescript].commit)
 //   (cd ts-ref/tsc && GOWORK=off go build -o /tmp/tsgo/tsc ./cmd/tsc)
-//   # client: the JavaScript API client of the same source (the npm build 7.1.0-dev.20260930.4 is the pinned
-//   # commit plus one commit that only touches tools/pipelines/*.yml, so its dist/api is the pinned source)
-//   pnpm --dir /tmp/tsoracle add typescript@7.1.0-dev.20260930.4
+//   # client: the JavaScript API client of the same source (the pinned npm package)
+//   pnpm --dir /tmp/tsoracle add typescript@7.1.0-beta
 //   TSRS_CODEC_TSC=/tmp/tsgo/tsc TSRS_CODEC_ORACLE=/tmp/tsoracle/node_modules/typescript \
 //     node crates/tsrs_api_codec/gen/oracle.mjs
 //
-// The script refuses to run unless ts-ref is checked out at the pin and TSRS_CODEC_TSC is set, and records the
+// The script refuses to run unless ts-ref is checked out at the pin (or TSRS_CODEC_COMMIT during an in-progress
+// source upgrade) and TSRS_CODEC_TSC is set, and records the
 // source SHA, the Go version and the server executable's sha256 in tests/golden/manifest.json.
 //
 // For every fixture it asks the server to `createSourceFile` (parse + bind through the server's parse cache,
@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process";
 const crateRoot = path.resolve(import.meta.dirname, "..");
 const oracle = process.env.TSRS_CODEC_ORACLE;
 if (!oracle) {
-    console.error("set TSRS_CODEC_ORACLE to an installed typescript@7.1.0-dev.20260930.4 package directory");
+    console.error("set TSRS_CODEC_ORACLE to an installed typescript@7.1.0-beta package directory");
     process.exit(2);
 }
 const tsc = process.env.TSRS_CODEC_TSC;
@@ -35,7 +35,7 @@ if (!tsc) {
     process.exit(2);
 }
 const repoRoot = path.resolve(crateRoot, "../..");
-const pin = fs.readFileSync(path.join(repoRoot, "Cargo.toml"), "utf8").match(/^commit = "([0-9a-f]{40})"/m)[1];
+const pin = process.env.TSRS_CODEC_COMMIT ?? fs.readFileSync(path.join(repoRoot, "Cargo.toml"), "utf8").match(/^commit = "([0-9a-f]{40})"/m)[1];
 const refHead = execFileSync("git", ["-C", path.join(repoRoot, "ts-ref"), "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const refDirty = execFileSync("git", ["-C", path.join(repoRoot, "ts-ref"), "status", "--porcelain", "--", "tsc"], { encoding: "utf8" }).trim();
 if (refHead !== pin || refDirty) {

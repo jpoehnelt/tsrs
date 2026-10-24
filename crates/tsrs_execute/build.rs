@@ -5,7 +5,10 @@
 use std::path::Path;
 
 fn main() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../Cargo.toml")
+        .canonicalize()
+        .expect("locate workspace Cargo.toml");
     println!("cargo:rerun-if-changed={}", manifest.display());
     let text = std::fs::read_to_string(&manifest).expect("read workspace Cargo.toml");
 
@@ -29,10 +32,10 @@ fn metadata_value(text: &str, key: &str) -> String {
         if !in_table {
             continue;
         }
-        if let Some((k, v)) = line.split_once('=') {
-            if k.trim() == key {
-                return v.trim().trim_matches('"').to_string();
-            }
+        if let Some((k, v)) = line.split_once('=')
+            && k.trim() == key
+        {
+            return v.trim().trim_matches('"').to_string();
         }
     }
     panic!("missing `{key}` in [workspace.metadata.typescript] of the workspace Cargo.toml");

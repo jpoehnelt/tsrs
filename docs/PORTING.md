@@ -57,7 +57,13 @@ contributing `impl` blocks to the same type.
 - Go package-level functions -> free functions in the corresponding module.
 - If snake_casing produces a Rust keyword, append `_`: `type_`, `in_`, `as_`, `ref_`, `mod_`, `match_`, `loop_`.
   (`Type()` accessors on nodes are named `type_node()`.)
-- Go types keep their names (`TypeFlags`, `NodeLinks`, `InferenceContext`).
+- Types and traits use UpperCamelCase, including unexported Go types (`configFileEntry` -> `ConfigFileEntry`).
+  Preserve upstream acronym spellings (`ID`, `APIState`, `JSX`). When capitalization would collide with an existing
+  type or trait, give the implementation a distinct name (`logger` -> `LoggerImpl`).
+  Bitflags types keep their upstream names.
+- Constants, statics and associated constants use SCREAMING_SNAKE_CASE, including diagnostic message statics,
+  except for bitflags constants, which keep their upstream names.
+  Generators convert Rust identifiers separately from upstream names, message keys and protocol strings.
 - Struct fields: snake_case of the Go field name.
 - Go getter `Foo()` over private field `foo` -> Rust method `foo()`. Setter `SetFoo` -> `set_foo`.
 
@@ -77,7 +83,9 @@ programs and file versions ([LSP.md](LSP.md#memory-management)). The rules are:
   Rust `static` is an `SP<T>`. Packed words store `p.to_bits()` / `p.key()`, never addresses.
 - Go `*T` that can be nil -> `Option<P<T>>`. Go `*T` that is never nil -> `P<T>`.
   Decide from the Go code (nil checks, `return nil`). When unsure, use `Option`.
-- There are **no lifetime parameters** anywhere in this codebase. Arena data is `'static`.
+- There are **no lifetime parameters** anywhere in this codebase. Arena data is `'static`. One exception (issue #646):
+  `tsrs_module::DefaultResolver<'h>` borrows its resolution host and config parsing takes `&dyn ParseConfigHost`, so
+  the project system and content-mapper lookups pass hosts that live on the caller's stack instead of faking `'static`.
 - Arena objects remain live until their arena is released, unless an explicit recycling site proves them dead
   (rolled-back parses, dropped flow labels, scratch mappers and inference contexts whose escape
   bit is clear; `tsrs_core::arena`, notes/mem-recycle.md). A struct field that keeps a mapper must be a `MapperCell`.
@@ -185,8 +193,8 @@ callback, even when the closure does not need it.
   - `x&F != 0` -> `x.intersects(F)`; `x&F == 0` -> `!x.intersects(F)`; `x&F == F` -> `x.contains(F)`
   - `x | y`, `x & y`, `x &^ y` -> `x | y`, `x & y`, `x & !y`; `x |= y` -> `x |= y` (through `Cell`: `c.set(c.get() | y)`)
 - Go enumerations (`type Kind int16` + `iota`) -> `#[repr(…)] enum` with `#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]`,
-  variants named like flags: `ast.KindBinaryExpression` -> `Kind::BinaryExpression`. Range markers
-  (`KindFirstKeyword`) are associated consts.
+  variants in UpperCamelCase: `ast.KindBinaryExpression` -> `Kind::BinaryExpression`. Range markers
+  (`KindFirstKeyword` -> `Kind::FIRST_KEYWORD`) are associated constants.
 - Go `Tristate` -> `tsrs_core::Tristate` enum (`Unknown`, `False`, `True`).
 
 ### Collections and strings
@@ -242,21 +250,26 @@ unreachable part.
 
 ## Reference tooling
 
+- Every reproduction and fix uses the exact `[workspace.metadata.typescript]` commit in `Cargo.toml`.
+  Follow [reference compiler setup and verification](../CONTRIBUTING.md#reference-compiler) before using the sources,
+  binary, fixtures or baselines. Rebuild reference binaries whenever the pin changes.
 - Go source of truth: `ts-ref/tsc/internal/` (read-only, except oracle tools below).
-- Reference compiler binary (same commit): `$TSRS_WORK/bin/tsgo-ref` (use like `tsc`).
-- Go toolchain: run Go with `GOTOOLCHAIN=auto` from `ts-ref/tsc` (module needs Go 1.27; it auto-downloads).
+- Reference compiler binary: `target/reference/tsgo` (use like `tsc`). A shared `$TSRS_WORK/bin/tsgo-ref` must be built
+  from the same verified checkout.
+- Go toolchain: run Go with `GOTOOLCHAIN=auto GOWORK=off` from `ts-ref/tsc` to select the module's pinned Go version.
   To compare against the Go implementation you may write small oracle programs. Go `internal` packages can only be
   imported from inside that module, so put them in `ts-ref/tsc/cmd/tsrs-oracle-<name>/main.go` and keep a copy of the
   source in this repo under `tools/oracle/<name>/main.go`. Build outputs go to `$TSRS_WORK/bin/`.
-- Test corpus: `ts-ref/tsc/testdata/tests/cases/{compiler,conformance}` (12.7k cases) with reference baselines in
+- Test corpus: `ts-ref/tsc/testdata/tests/cases/{compiler,conformance}` with reference baselines in
   `ts-ref/tsc/testdata/baselines/reference/` (`*.errors.txt`, `*.types`, `*.symbols`). Lib files:
   `ts-ref/tsc/internal/bundled/libs/*.d.ts`.
 - Scratch files go in `target/scratch/<agent-name>/` (git-ignored), never in the source tree.
 
 ## `tsrs_core` as landed (read before guessing names)
 
-- Constants/statics are SCREAMING_CASE: `tspath::EXTENSION_TS`, `SUPPORTED_TS_EXTENSIONS_FLAT`, `RESOLUTION_MODE_ESM`, `EMPTY_COMPILER_OPTIONS`.
-- Enum variants keep Go casing: `ScriptKind::JS`, `ModuleKind::CommonJS`, `ModuleKind::ESM`, `JsxEmit::ReactJSX`, `ScriptTarget::Latest`.
+- Constants/statics are SCREAMING_SNAKE_CASE: `tspath::EXTENSION_TS`, `SUPPORTED_TS_EXTENSIONS_FLAT`, `RESOLUTION_MODE_ESM`, `EMPTY_COMPILER_OPTIONS`.
+- Enum variants keep Go casing (`ScriptKind::JS`). Newtype enum constants use SCREAMING_SNAKE_CASE:
+  `ModuleKind::COMMON_JS`, `ModuleKind::ESM`, `JsxEmit::REACT_JSX`, `ScriptTarget::LATEST`.
   `ResolutionMode` is an alias of `ModuleKind`.
 - `CompilerOptions`: every Go field, snake_case. `[]string` -> `Option<Vec<String>>`, `*int` -> `Option<i32>`,
   `paths` -> `Option<OrderedMap<String, Vec<String>>>`.
@@ -264,8 +277,8 @@ unreachable part.
 - `for_each_ancestor_directory` callback returns `Option<T>` (`Some` stops). Go zero-value-or-found helpers return `Option<T>`.
 - Identity-preserving helpers (`filter`, `same_map`, `concatenate`, `deduplicate`) return `Cow` (borrowed when unchanged).
 - stringutil: predicates take `impl AsRune`; `Rune = i32`; Go stdlib equivalents `equal_fold`, `decode_rune`, `push_rune`, …
-- `collections::{OrderedMap, OrderedSet}` = IndexMap/IndexSet (Fx) with Go-named methods via `OrderedMapExt`/`OrderedSetExt`
-  (`set`, `has`, `delete`, `size`, `entry_at`).
+- `collections::{OrderedMap, OrderedSet}` = IndexMap/IndexSet (Fx), using their native methods. Use `shift_remove`
+  for deletion to preserve insertion order like Go.
 - `LinkStore<K, V>` keyed by `P<K>`; `get`/`try_get`/`has` take `&self`, return `P<V>`.
 - Go `String()` methods are `string()` + `Display`. `get_spelling_suggestion_for_strings` is at the crate root.
 - json: `tsrs_core::json::Value` with `marshal*`/`unmarshal` (key order preserved).

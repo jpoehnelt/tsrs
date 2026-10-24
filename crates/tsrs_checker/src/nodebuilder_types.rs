@@ -57,6 +57,7 @@ pub struct CompositeTypeCacheIdentity {
     pub type_id: TypeId,
     pub flags: Flags,
     pub internal_flags: InternalFlags,
+    pub infer_type_parameters: CacheHashKey,
 }
 
 #[derive(Default)]
@@ -68,11 +69,11 @@ pub struct NodeBuilderLinks {
 /// Go `module.ModeAwareCache[moduleSpecifierResult]` is `map[ModeAwareCacheKey]moduleSpecifierResult`.
 #[derive(Default)]
 pub struct NodeBuilderSymbolLinks {
-    pub specifier_cache: GoMap<ModeAwareCacheKey, moduleSpecifierResult>,
+    pub specifier_cache: GoMap<ModeAwareCacheKey, ModuleSpecifierResult>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct moduleSpecifierResult {
+pub struct ModuleSpecifierResult {
     pub specifier: &'static str,
     pub import_attributes_type: Option<P<Type>>,
 }
@@ -251,11 +252,11 @@ impl CheckerSlot {
     }
 }
 
-pub const defaultMaximumTruncationLength: usize = 160;
-pub const noTruncationMaximumTruncationLength: usize = 1_000_000;
+pub const DEFAULT_MAXIMUM_TRUNCATION_LENGTH: usize = 160;
+pub const NO_TRUNCATION_MAXIMUM_TRUNCATION_LENGTH: usize = 1_000_000;
 
 #[derive(Clone, Debug)]
-pub struct sortedSymbolNamePair {
+pub struct SortedSymbolNamePair {
     pub sym: P<Symbol>,
     pub name: String,
 }
@@ -272,7 +273,7 @@ pub const MAX_REVERSE_MAPPED_NESTING_INSPECTION_DEPTH: usize = 3;
 
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
-pub enum propertyNameNodeKind {
+pub enum PropertyNameNodeKind {
     Identifier,
     NumericLiteral,
     StringLiteral,
@@ -281,7 +282,7 @@ pub enum propertyNameNodeKind {
 // nodebuilderscopes.go
 
 #[derive(Clone, Debug)]
-pub struct localsRecord {
+pub struct LocalsRecord {
     pub name: String,
     pub old_symbol: P<Symbol>,
 }
@@ -301,7 +302,7 @@ impl modulespecifiers::CheckerShape for Checker {
 
 /// Go `recoveryBoundary`, handled as `P<recoveryBoundary>` (the wrapping tracker holds it). Fields Go sets at
 /// construction and only reads are plain; the rest are `Cell`/`RefCell`.
-pub struct recoveryBoundary {
+pub struct RecoveryBoundary {
     pub ctx: P<NodeBuilderContext>,
     pub had_error: Cell<bool>,
     pub deferred_reports: RefCell<Vec<Box<dyn FnOnce()>>>,
@@ -314,7 +315,7 @@ pub struct recoveryBoundary {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct originalRecoveryScopeState {
+pub struct OriginalRecoveryScopeState {
     pub tracked_symbols_top: usize,
     pub unreported_errors_top: usize,
     pub had_error: bool,
@@ -325,12 +326,12 @@ pub struct originalRecoveryScopeState {
 ///
 /// `markError(w.wrapped.ReportX)` passes `Some(Box::new(move || wrapped.report_x()))` with `let wrapped =
 /// self.wrapped;`.
-pub struct wrappingTracker {
+pub struct WrappingTracker {
     pub wrapped: &'static dyn SymbolTracker,
-    pub bound: P<recoveryBoundary>,
+    pub bound: P<RecoveryBoundary>,
 }
 
-impl SymbolTracker for wrappingTracker {
+impl SymbolTracker for WrappingTracker {
     fn track_symbol(
         &self,
         c: &mut Checker,
@@ -338,25 +339,25 @@ impl SymbolTracker for wrappingTracker {
         enclosing_declaration: Option<P<Node>>,
         meaning: SymbolFlags,
     ) -> bool {
-        wrappingTracker::track_symbol(self, c, symbol, enclosing_declaration, meaning)
+        WrappingTracker::track_symbol(self, c, symbol, enclosing_declaration, meaning)
     }
     fn report_inaccessible_this_error(&self) {
-        wrappingTracker::report_inaccessible_this_error(self);
+        WrappingTracker::report_inaccessible_this_error(self);
     }
     fn report_private_in_base_of_class_expression(&self, property_name: &str) {
-        wrappingTracker::report_private_in_base_of_class_expression(self, property_name);
+        WrappingTracker::report_private_in_base_of_class_expression(self, property_name);
     }
     fn report_inaccessible_unique_symbol_error(&self) {
-        wrappingTracker::report_inaccessible_unique_symbol_error(self);
+        WrappingTracker::report_inaccessible_unique_symbol_error(self);
     }
     fn report_cyclic_structure_error(&self) {
-        wrappingTracker::report_cyclic_structure_error(self);
+        WrappingTracker::report_cyclic_structure_error(self);
     }
     fn report_likely_unsafe_import_required_error(&self, specifier: &str, symbol_name: &str) {
-        wrappingTracker::report_likely_unsafe_import_required_error(self, specifier, symbol_name);
+        WrappingTracker::report_likely_unsafe_import_required_error(self, specifier, symbol_name);
     }
     fn report_truncation_error(&self) {
-        wrappingTracker::report_truncation_error(self);
+        WrappingTracker::report_truncation_error(self);
     }
     fn report_nonlocal_augmentation(
         &self,
@@ -364,7 +365,7 @@ impl SymbolTracker for wrappingTracker {
         parent_symbol: P<Symbol>,
         augmenting_symbol: P<Symbol>,
     ) {
-        wrappingTracker::report_nonlocal_augmentation(
+        WrappingTracker::report_nonlocal_augmentation(
             self,
             containing_file,
             parent_symbol,
@@ -372,16 +373,16 @@ impl SymbolTracker for wrappingTracker {
         );
     }
     fn report_non_serializable_property(&self, property_name: &str) {
-        wrappingTracker::report_non_serializable_property(self, property_name);
+        WrappingTracker::report_non_serializable_property(self, property_name);
     }
     fn report_inference_fallback(&self, c: &mut Checker, node: P<Node>) {
-        wrappingTracker::report_inference_fallback(self, c, node);
+        WrappingTracker::report_inference_fallback(self, c, node);
     }
     fn push_error_fallback_node(&self, node: Option<P<Node>>) {
-        wrappingTracker::push_error_fallback_node(self, node);
+        WrappingTracker::push_error_fallback_node(self, node);
     }
     fn pop_error_fallback_node(&self) {
-        wrappingTracker::pop_error_fallback_node(self);
+        WrappingTracker::pop_error_fallback_node(self);
     }
 }
 
@@ -405,6 +406,14 @@ pub struct DeclarationFileLinks {
     pub aliases_marked: Cell<bool>, // if file has had alias visibility marked
 }
 
+/// Go `EmitResolverLinks`: visibility and JSX links outlive a single file's emit resolver.
+#[derive(Default)]
+pub struct EmitResolverLinks {
+    pub jsx_links: tsrs_core::LinkStore<Node, JSXLinks>,
+    pub declaration_links: tsrs_core::LinkStore<Node, DeclarationLinks>,
+    pub declaration_file_links: tsrs_core::LinkStore<Node, DeclarationFileLinks>,
+}
+
 /// Go `EmitResolver`, handled as `P<EmitResolver>`, a checker holder (`&self, c: &mut Checker`).
 ///
 /// Go's `checker` field is dropped and so is `checkerMu`: the exported methods that lock it in Go
@@ -412,10 +421,9 @@ pub struct DeclarationFileLinks {
 /// transformer serializes access to the checker itself (`tsrs_declarations` `Resolver::lock`).
 /// `isValueAliasDeclaration` / `aliasMarkingVisitor` are Go method values of `isValueAliasDeclarationWorker`
 /// / `aliasMarkingVisitorWorker`; Rust calls those methods directly.
-#[derive(Default)]
 pub struct EmitResolver {
     pub reference_resolver: std::cell::OnceCell<P<tsrs_binder::ReferenceResolver<Checker>>>,
-    pub jsx_links: tsrs_core::LinkStore<Node, JSXLinks>,
-    pub declaration_links: tsrs_core::LinkStore<Node, DeclarationLinks>,
-    pub declaration_file_links: tsrs_core::LinkStore<Node, DeclarationFileLinks>,
+    pub emit_context: P<EmitContext>,
+    pub request_node_builder: std::cell::OnceCell<P<NodeBuilder>>,
+    pub links: P<EmitResolverLinks>,
 }

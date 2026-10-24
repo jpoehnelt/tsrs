@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use tsrs_ast::Diagnostic;
 use tsrs_core::collections::OrderedMap;
 use tsrs_core::glob::{self, Glob};
-use tsrs_core::tspath::{self, ComparePathsOptions, Path};
+use tsrs_core::tspath::{self, ComparePathsOptions, ExtensionRewrite, Path};
 use tsrs_core::{
     CompilerOptions, P, ProjectReference, TypeAcquisition, resolve_project_reference_path,
 };
@@ -66,6 +66,7 @@ pub struct ParsedCommandLine {
 
     pub(crate) literal_file_names_len: usize,
     pub(crate) file_names_by_path: OnceLock<FxHashMap<Path, String>>, // maps file names to their paths, used for quick lookups
+    pub(crate) content_mapper_extension_rewrites: OnceLock<Vec<ExtensionRewrite>>,
 }
 
 impl ParsedCommandLine {
@@ -85,6 +86,7 @@ impl ParsedCommandLine {
             resolved_project_reference_paths: OnceLock::new(),
             literal_file_names_len: 0,
             file_names_by_path: OnceLock::new(),
+            content_mapper_extension_rewrites: OnceLock::new(),
         }
     }
 }
@@ -249,7 +251,7 @@ impl ParsedCommandLine {
                 // `rewriteRelativeImportExtensions` import into a referenced project; docs/LSP.md "Memory management").
                 let _region = tsrs_core::arena::enter_owner(std::ptr::from_ref(self) as usize);
                 self.common_source_directory_errors.lock().unwrap().push(tsrs_ast::new_compiler_diagnostic(
-                    &tsrs_diagnostics::File_0_is_not_under_rootDir_1_rootDir_is_expected_to_contain_all_source_files,
+                    &tsrs_diagnostics::FILE_0_IS_NOT_UNDER_ROOT_DIR_1_ROOT_DIR_IS_EXPECTED_TO_CONTAIN_ALL_SOURCE_FILES,
                     &[&absolute_source_file_path, &root_directory],
                 ));
                 all_files_belong_to_path = false;
@@ -293,14 +295,14 @@ impl ParsedCommandLine {
             let js_file_name = outputpaths::get_output_js_file_name(file_name, &options, self);
             let is_json = tspath::file_extension_is(file_name, tspath::EXTENSION_JSON);
             if !js_file_name.is_empty() {
-                if !is_json {
+                if is_json {
+                    result.push(js_file_name);
+                } else {
                     let source_map = outputpaths::get_source_map_file_path(&js_file_name, &options);
                     result.push(js_file_name);
                     if !source_map.is_empty() {
                         result.push(source_map);
                     }
-                } else {
-                    result.push(js_file_name);
                 }
             }
             if is_json {
@@ -441,6 +443,43 @@ impl ParsedCommandLine {
             .collect()
     }
 
+    pub fn content_mapper_extension_rewrites(&self) -> &[ExtensionRewrite] {
+        self.content_mapper_extension_rewrites
+            .get_or_init(|| self.compute_content_mapper_extension_rewrites())
+    }
+
+    fn compute_content_mapper_extension_rewrites(&self) -> Vec<ExtensionRewrite> {
+        let mut result = Vec::new();
+        let mut has_non_identity_mapping = false;
+        let ignore_case = !self.use_case_sensitive_file_names();
+        for mapper in self.content_mappers() {
+            for source in &mapper.definition.extensions {
+                let target = get_content_mapper_output_extension(
+                    &mapper.definition.output_extensions,
+                    source,
+                    ignore_case,
+                );
+                let target = match target {
+                    Some(target)
+                        if target != source
+                            && !(ignore_case
+                                && tsrs_core::stringutil::equal_fold(target, source)) =>
+                    {
+                        has_non_identity_mapping = true;
+                        target.clone()
+                    }
+                    _ => source.clone(),
+                };
+                result.push(ExtensionRewrite { source: source.clone(), target });
+            }
+        }
+        if !has_non_identity_mapping {
+            return Vec::new();
+        }
+        result.sort_by_key(|rewrite| std::cmp::Reverse(rewrite.source.len()));
+        result
+    }
+
     // GetContentMapperForFileName returns the configured content mapper whose extensions include fileName,
     // or nil if no content mapper is registered for the file's extension.
     pub fn get_content_mapper_for_file_name(&self, file_name: &str) -> Option<&Mapper> {
@@ -528,10 +567,10 @@ impl ParsedCommandLine {
             }
         }
         let wildcard_directory_globs = self.wildcard_directory_globs();
-        if !wildcard_directory_globs.is_empty() {
-            if wildcard_directory_globs.iter().any(|glob| glob.match_(file_name)) {
-                return true;
-            }
+        if !wildcard_directory_globs.is_empty()
+            && wildcard_directory_globs.iter().any(|glob| glob.match_(file_name))
+        {
+            return true;
         }
         false
     }
@@ -612,13 +651,33 @@ impl ParsedCommandLine {
     }
 }
 
+#[expect(
+    clippy::implicit_hasher,
+    reason = "The compiler's output extension maps always use FxHashMap."
+)]
+pub fn get_content_mapper_output_extension<'a>(
+    output_extensions: &'a FxHashMap<String, String>,
+    source_extension: &str,
+    ignore_case: bool,
+) -> Option<&'a String> {
+    output_extensions.get(source_extension).or_else(|| {
+        ignore_case
+            .then(|| {
+                output_extensions.iter().find_map(|(source, output)| {
+                    tsrs_core::stringutil::equal_fold(source, source_extension).then_some(output)
+                })
+            })
+            .flatten()
+    })
+}
+
 pub struct SourceOutputAndProjectReference {
     pub source: String,
     pub output_dts: String,
     pub resolved: P<ParsedCommandLine>,
 }
 
-pub(crate) struct SourceAndOutputMaps {
+pub struct SourceAndOutputMaps {
     source_to_project_reference: FxHashMap<Path, P<SourceOutputAndProjectReference>>,
     output_dts_to_project_reference: FxHashMap<Path, P<SourceOutputAndProjectReference>>,
 }
@@ -641,6 +700,10 @@ impl OutputPathsHost for ParsedCommandLine {
 
     fn content_mapper_extensions(&self) -> Vec<String> {
         ParsedCommandLine::content_mapper_extensions(self)
+    }
+
+    fn content_mapper_extension_rewrites(&self) -> Vec<ExtensionRewrite> {
+        ParsedCommandLine::content_mapper_extension_rewrites(self).to_vec()
     }
 
     fn get_current_directory(&self) -> &str {

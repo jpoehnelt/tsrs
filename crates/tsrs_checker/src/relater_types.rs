@@ -185,7 +185,7 @@ pub trait Discriminator {
 }
 
 #[derive(Default, Clone)]
-pub struct errorState {
+pub struct ErrorState {
     pub error_chain: Option<P<ErrorChain>>,
     pub related_info: Vec<P<Diagnostic>>,
 }

@@ -431,7 +431,7 @@ impl InlayHintState<'_> {
         self.result.push(lsproto::InlayHint {
             label: hint,
             position: lsp_position,
-            kind: Some(lsproto::InlayHintKind::Type),
+            kind: Some(lsproto::InlayHintKind::TYPE),
             padding_left: Some(true),
             ..Default::default()
         });
@@ -487,7 +487,7 @@ impl InlayHintState<'_> {
         self.result.push(lsproto::InlayHint {
             label: label_parts,
             position: lsp_position,
-            kind: Some(lsproto::InlayHintKind::Parameter),
+            kind: Some(lsproto::InlayHintKind::PARAMETER),
             padding_right: Some(true),
             ..Default::default()
         });
@@ -591,10 +591,10 @@ impl LabelPartsBuilder<'_, '_> {
             Kind::Identifier => {
                 let identifier_text = node.text();
                 let mut name: Option<P<Node>> = None;
-                if let Some(symbol) = self.id_to_symbol.get(&node) {
-                    if !symbol.declarations().is_empty() {
-                        name = ast::get_name_of_declaration(symbol.declarations()[0]);
-                    }
+                if let Some(symbol) = self.id_to_symbol.get(&node)
+                    && !symbol.declarations().is_empty()
+                {
+                    name = ast::get_name_of_declaration(symbol.declarations()[0]);
                 }
                 if let Some(name) = name {
                     self.parts.push(self.state.get_node_display_part(identifier_text, name));
@@ -683,7 +683,7 @@ impl LabelPartsBuilder<'_, '_> {
                 self.visit_for_display_parts(Some(node.as_array_type_node().element_type));
                 self.parts.push(part("[]"));
             }
-            Kind::TupleType => {
+            Kind::TupleType | Kind::ArrayBindingPattern => {
                 self.parts.push(part("["));
                 self.visit_display_part_list(node.elements(), ", ");
                 self.parts.push(part("]"));
@@ -857,11 +857,6 @@ impl LabelPartsBuilder<'_, '_> {
                     self.visit_for_display_parts(node.type_node());
                 }
             }
-            Kind::ArrayBindingPattern => {
-                self.parts.push(part("["));
-                self.visit_display_part_list(node.elements(), ", ");
-                self.parts.push(part("]"));
-            }
             Kind::ObjectBindingPattern => {
                 self.parts.push(part("{"));
                 if !node.elements().is_empty() {
@@ -887,15 +882,12 @@ impl LabelPartsBuilder<'_, '_> {
                     self.visit_for_display_parts(Some(span));
                 }
             }
-            Kind::TemplateHead => {
+            Kind::TemplateHead | Kind::TemplateMiddle | Kind::TemplateTail => {
                 self.parts.push(part(self.state.get_literal_text(node)));
             }
             Kind::TemplateLiteralTypeSpan => {
                 self.visit_for_display_parts(node.type_node());
                 self.visit_for_display_parts(Some(node.as_template_literal_type_span().literal));
-            }
-            Kind::TemplateMiddle | Kind::TemplateTail => {
-                self.parts.push(part(self.state.get_literal_text(node)));
             }
             Kind::ThisType => {
                 self.parts.push(part("this"));
@@ -1055,21 +1047,21 @@ impl InlayHintState<'_> {
                 element_infos.iter().map(|element_info| element_info.labeled_declaration()),
             );
             let index = pos - param_count;
-            if index < associated_names.len() {
-                if let Some(associated_name) = associated_names[index] {
-                    let name = associated_name.name().unwrap();
-                    assert!(ast::is_identifier(name));
-                    let is_rest_tuple_element = if ast::is_named_tuple_member(associated_name) {
-                        associated_name.as_named_tuple_member().dot_dot_dot_token.is_some()
-                    } else {
-                        associated_name.as_parameter_declaration().dot_dot_dot_token().is_some()
-                    };
-                    return Some(ParameterInfo {
-                        parameter: name,
-                        name: name.text().to_string(),
-                        is_rest_parameter: is_rest_tuple_element,
-                    });
-                }
+            if index < associated_names.len()
+                && let Some(associated_name) = associated_names[index]
+            {
+                let name = associated_name.name().unwrap();
+                assert!(ast::is_identifier(name));
+                let is_rest_tuple_element = if ast::is_named_tuple_member(associated_name) {
+                    associated_name.as_named_tuple_member().dot_dot_dot_token.is_some()
+                } else {
+                    associated_name.as_parameter_declaration().dot_dot_dot_token().is_some()
+                };
+                return Some(ParameterInfo {
+                    parameter: name,
+                    name: name.text().to_string(),
+                    is_rest_parameter: is_rest_tuple_element,
+                });
             }
 
             return None;

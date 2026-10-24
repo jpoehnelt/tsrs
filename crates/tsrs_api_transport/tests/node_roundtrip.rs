@@ -14,7 +14,7 @@ fn pinned_node_clients_round_trip() {
         .map_or_else(|| manifest.join("../../ts-ref"), PathBuf::from);
     let client = ts_ref.join("packages/typescript/src/api/sync/client.ts");
     let node_ok = Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success());
-    let commit = "b85298b6a81f772d080b0455de0ca9d744cd6fd6";
+    let commit = "3e9236361fa97a9e6c685f4833ac457ae2d8c50a";
     assert!(
         node_ok,
         "missing dependency: `node` (>= 22.6) is not on PATH. Install Node 24, or run the Rust-only tests with \

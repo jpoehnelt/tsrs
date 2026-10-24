@@ -1,6 +1,9 @@
 // Method → handler table for the checker lane (Go `Session.HandleRequest` cases for these methods).
 // The param field names follow each method's pinned params struct (`unmarshalers` in proto.go).
 
+use std::sync::LazyLock;
+
+use rustc_hash::FxHashSet;
 use tsrs_core::json::Value;
 
 use super::handlers_ls as ls;
@@ -168,6 +171,10 @@ fn dispatch(h: &dyn CheckerHost, method: &str, p: &Params) -> CheckerResult<Chec
         "getAliasedSymbol" => sym::alias_query(h, p, AliasQuery::Aliased),
         "getImmediateAliasedSymbol" => sym::alias_query(h, p, AliasQuery::ImmediateAliased),
         "getTargetSymbol" => sym::alias_query(h, p, AliasQuery::Target),
+        "getMergedSymbol" => sym::alias_query(h, p, AliasQuery::Merged),
+        "getSymbolOfNode" => sym::get_symbol_of_node(h, p, false),
+        "getSymbolOfDeclarationForChecker" => sym::get_symbol_of_node(h, p, true),
+        "getParentOfSymbolForChecker" => sym::alias_query(h, p, AliasQuery::Parent),
         "getExportSymbolOfSymbolForChecker" => sym::alias_query(h, p, AliasQuery::ExportSymbol),
         "getFullyQualifiedName" => sym::get_fully_qualified_name(h, p),
         "getExportsOfModule" => sym::get_exports_of_module(h, p),
@@ -290,6 +297,10 @@ pub const CHECKER_METHODS: &[&str] = &[
     "getAliasedSymbol",
     "getImmediateAliasedSymbol",
     "getTargetSymbol",
+    "getMergedSymbol",
+    "getSymbolOfNode",
+    "getSymbolOfDeclarationForChecker",
+    "getParentOfSymbolForChecker",
     "getExportSymbolOfSymbolForChecker",
     "getFullyQualifiedName",
     "getExportsOfModule",
@@ -320,5 +331,8 @@ pub const CHECKER_METHODS: &[&str] = &[
 ];
 
 pub fn is_checker_method(method: &str) -> bool {
-    CHECKER_METHODS.contains(&method)
+    // Every request asks: hash the method instead of comparing it with each name in turn.
+    static METHODS: LazyLock<FxHashSet<&'static str>> =
+        LazyLock::new(|| CHECKER_METHODS.iter().copied().collect());
+    METHODS.contains(method)
 }
