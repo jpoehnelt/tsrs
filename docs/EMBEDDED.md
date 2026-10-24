@@ -81,6 +81,18 @@ The SDK must consume owned `Uint8Array` responses and supply raw AST buffers for
 `Session::handle_native_request` bypasses JSON text and preserves handler parameter validation.
 The standalone JSON/CLI adapters remain separate compatibility paths.
 
+Rust hosts can call `Session::create_snapshot_with_file_system` with ordinary snapshot
+parameters and an `Arc<dyn tsrs_vfs::FS>`. Request-file layers take precedence over this
+native base; omitting `fileSystem` creates an empty layer. Snapshots retain their own base,
+and layer updates keep it, so one snapshot cannot replace another's files. Full request
+filesystems retain their ordinary total-replacement behavior. Hosts own the filesystem's
+contents and must keep each snapshot's native base stable. The filesystem must use the
+session's case sensitivity, which is fixed at initialization. Native library files can
+reach the parser without copying their text through a host request frame. Closed sessions
+and invalid parameters are rejected as on the normal API path. The native API state test
+`native_snapshot_filesystems_are_isolated_and_request_layers_keep_precedence` covers same-path
+isolation, layer precedence, updates and implicit layers.
+
 `npm/tsrs-wasm/test/binary.test.mjs` covers framing, UTF-8, bounds, nesting, ownership and malformed
 inputs. Rust binary session tests cover recovery and independent batch errors. Consumer transport
 regressions disable JSON/base64 functions while exercising raw AST reads, printing and batches.

@@ -454,6 +454,12 @@ impl Session {
         };
         self.dispatch_parsed(method, params, info.owner, &[], lexemes)
     }
+    pub(crate) fn ensure_open(&self) -> ApiResult<()> {
+        if *self.closed.lock().unwrap() {
+            return Err(ApiError::client("session is closed"));
+        }
+        Ok(())
+    }
     /// Printing receives an existing binary AST slice without base64 or an object tree of bytes.
     pub fn handle_native_binary_request(
         &self,
@@ -566,9 +572,7 @@ impl Session {
     ) -> ApiResult<Response> {
         // Raw payload and exact number literals of this request, for the objects of this params tree (by address).
         let _request = crate::predecode::enter_request(raw, lexemes, params);
-        if *self.closed.lock().unwrap() {
-            return Err(ApiError::client("session is closed"));
-        }
+        self.ensure_open()?;
         if owner == Owner::Checker {
             return checker::handle(self, method, params)
                 .unwrap_or_else(|| Err(ApiError::unsupported(method)));

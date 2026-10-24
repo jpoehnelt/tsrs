@@ -601,14 +601,18 @@ impl Session {
         p: Params,
         base: Option<&RequestFileSystem>,
         file_changes: &mut FileChangeSummary,
+        native_fs: Option<Arc<dyn tsrs_vfs::FS>>,
     ) -> ApiResult<Option<(Arc<RequestFileSystem>, bool)>> {
-        if !p.has("fileSystem") {
+        if !p.has("fileSystem") && native_fs.is_none() {
             return Ok(None);
         }
-        let params = RequestParams::parse(p.get("fileSystem")).map_err(ApiError::client)?;
+        let empty_layer =
+            (!p.has("fileSystem")).then(|| Obj::new().set("kind", s("layer")).build());
+        let input = empty_layer.as_ref().unwrap_or_else(|| p.get("fileSystem"));
+        let params = RequestParams::parse(input).map_err(ApiError::client)?;
         let fs = requestfs::new_for_update(
             &params,
-            ScopedFs::wrap(self.fs()),
+            ScopedFs::wrap(native_fs.unwrap_or_else(|| self.fs())),
             base,
             self.current_directory(),
             file_changes,
@@ -619,6 +623,38 @@ impl Session {
     }
 
     pub(crate) fn handle_create_snapshot(&self, p: Params) -> ApiResult<Value> {
+        self.create_snapshot_with_base(p, None)
+    }
+
+    /// Native embedding hosts can supply immutable files without round-tripping
+    /// their contents through the request frame. The snapshot retains this FS;
+    /// ordinary request files form a layer over it and updates retain that base.
+    pub fn create_snapshot_with_file_system(
+        &self,
+        params: &Value,
+        fs: Arc<dyn tsrs_vfs::FS>,
+    ) -> ApiResult<Value> {
+        let empty = Obj::new().build();
+        let params = if matches!(params, Value::Null) { &empty } else { params };
+        Params(params).object()?;
+        let ty = crate::methods::params_type("createSnapshot").expect("known snapshot parameters");
+        let lexemes =
+            crate::predecode::predecode("createSnapshot", ty, params, FxHashMap::default())?;
+        let _request = crate::predecode::enter_request(&[], lexemes, params);
+        self.ensure_open()?;
+        if fs.use_case_sensitive_file_names() != self.use_case_sensitive_file_names() {
+            return Err(ApiError::client(
+                "snapshot filesystem case sensitivity must match the session",
+            ));
+        }
+        self.create_snapshot_with_base(Params(params), Some(fs))
+    }
+
+    fn create_snapshot_with_base(
+        &self,
+        p: Params,
+        native_fs: Option<Arc<dyn tsrs_vfs::FS>>,
+    ) -> ApiResult<Value> {
         if !matches!(p.0, Value::Null) {
             p.object()?;
         }
@@ -626,17 +662,19 @@ impl Session {
         let prepare_auto_imports = self.snapshot_preferences_and_auto_imports(p, &mut req)?;
         let open_state = self.reconcile_snapshot_opens(&mut req, &OpenState::default());
         let mut file_changes = self.to_file_change_summary(p.get("fileNotifications"))?;
-        let snapshot_fs =
-            if let Some((fs, replace)) = self.request_file_system(p, None, &mut file_changes)? {
-                req.layered_file_system =
-                    Some(Arc::clone(&fs) as Arc<dyn tsrs_project::LayeredFileSystem>);
-                req.replace_file_system = replace;
-                Some(fs)
-            } else {
-                // Attribution only: same host filesystem, never a replacement.
-                req.file_system = Some(ScopedFs::wrap(self.snapshot_host_fs()));
-                None
-            };
+        let native_base = native_fs.is_some();
+        let snapshot_fs = if let Some((fs, replace)) =
+            self.request_file_system(p, None, &mut file_changes, native_fs)?
+        {
+            req.layered_file_system =
+                Some(Arc::clone(&fs) as Arc<dyn tsrs_project::LayeredFileSystem>);
+            req.replace_file_system = replace || native_base;
+            Some(fs)
+        } else {
+            // Attribution only: same host filesystem, never a replacement.
+            req.file_system = Some(ScopedFs::wrap(self.snapshot_host_fs()));
+            None
+        };
         let ctx = tsrs_core::context::Context::background();
         let root = self.snapshot_host.new_root_snapshot();
         // The root reference is released even if building a program unwinds (see `Snapshot::clone_snapshot`).
@@ -689,8 +727,12 @@ impl Session {
         let prepare_auto_imports = self.snapshot_preferences_and_auto_imports(changes, &mut req)?;
         let open_state = self.reconcile_snapshot_opens(&mut req, &base.open_state);
         let mut file_changes = self.to_file_change_summary(changes.get("fileNotifications"))?;
-        let new_fs =
-            self.request_file_system(changes, base.file_system.as_deref(), &mut file_changes)?;
+        let new_fs = self.request_file_system(
+            changes,
+            base.file_system.as_deref(),
+            &mut file_changes,
+            None,
+        )?;
         let replaced = new_fs.as_ref().is_some_and(|(_, replace)| *replace);
         let snapshot_fs = new_fs.map(|(fs, _)| fs).or_else(|| base.file_system.clone());
         if let Some(fs) = &snapshot_fs {
