@@ -113,6 +113,9 @@ pub mod abi {
     }
     pub fn request_binary_with_extension(extension: Option<super::embedded::RequestExtension>) {
         let request = INPUT.with_borrow_mut(std::mem::take);
+        // Output views expire at the next request. Release the prior reply before
+        // allocating the next one so its storage is reusable during dispatch.
+        OUTPUT.with_borrow_mut(|output| *output = Vec::new());
         let response = super::embedded::binary::dispatch(&request, extension);
         OUTPUT.with_borrow_mut(|output| *output = response);
     }

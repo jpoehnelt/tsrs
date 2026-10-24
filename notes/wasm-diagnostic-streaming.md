@@ -43,3 +43,25 @@ Artifact SHA-256:
 
 - Before: `6958f1bd22f70e86fc93bee9d0ecf6b54612b07cf5144726321779180baf4a21`
 - After: `0d5937da7ccff55542a5b6d33172b5fd492f45b15a025cd5d4ae595875cc5d47`
+
+## Owned output follow-up
+
+A second pass reserves the final result envelope in the streaming buffer and transfers
+that buffer directly for root replies. Nested batches retain their existing framing.
+The ABI releases the preceding output at the next request, when all output views
+expire, so that allocation can be reused while constructing the next reply.
+
+The same workload and baseline were repeated in five alternating fresh-process pairs;
+all answer hashes still match. These measurements are a separate run, not a paired
+comparison with the intermediate streaming module above.
+
+| Whole-process metric | Before, median (range) | After, median (range) |
+| --- | --- | --- |
+| rss | 352845824 (352567296–354598912) | 301694976 (301383680–302825472) |
+| instructions | 18121044277 (17819567304–18426799708) | 11393866431 (11359364479–11400874199) |
+| seconds | 0.81 (0.79–0.85) | 0.58 (0.57–0.6) |
+
+The counter units are bytes, retired instructions and seconds respectively. Artifact
+SHA-256 after this follow-up is `0a3415ddce0a4d00e9ae6e7df3386c319a6a547d6688341390100609f8c3175c`.
+Raw counters are in `wasm-diagnostic-owned.generated.json`. This remains a synthetic
+API transport measurement; it does not establish hosted memory use.

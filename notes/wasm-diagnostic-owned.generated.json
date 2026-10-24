@@ -1,0 +1,143 @@
+{
+  "baseline": "88e46ca23cc90db89740ad16f248bcb85bab58d9",
+  "node": "24.18.0",
+  "build": "release opt-level=s fatLTO oneCodegenUnit wasm-opt=-Os",
+  "stackBytes": 83886080,
+  "workloadSHA256": "d9c20b8720f1f6abcb5708128aa03af94f7c46c01d6a15281b74e90838f0c77b",
+  "artifacts": {
+    "before": "6958f1bd22f70e86fc93bee9d0ecf6b54612b07cf5144726321779180baf4a21",
+    "after": "0a3415ddce0a4d00e9ae6e7df3386c319a6a547d6688341390100609f8c3175c"
+  },
+  "rows": [
+    {
+      "round": 1,
+      "arm": "before",
+      "rss": 352845824,
+      "instructions": 18426799708,
+      "seconds": 0.85,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    },
+    {
+      "round": 1,
+      "arm": "after",
+      "rss": 302612480,
+      "instructions": 11393866431,
+      "seconds": 0.58,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    },
+    {
+      "round": 2,
+      "arm": "after",
+      "rss": 301694976,
+      "instructions": 11360604413,
+      "seconds": 0.57,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    },
+    {
+      "round": 2,
+      "arm": "before",
+      "rss": 354598912,
+      "instructions": 18243348395,
+      "seconds": 0.81,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    },
+    {
+      "round": 3,
+      "arm": "before",
+      "rss": 352780288,
+      "instructions": 18121044277,
+      "seconds": 0.82,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    },
+    {
+      "round": 3,
+      "arm": "after",
+      "rss": 302825472,
+      "instructions": 11397208702,
+      "seconds": 0.59,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    },
+    {
+      "round": 4,
+      "arm": "after",
+      "rss": 301383680,
+      "instructions": 11359364479,
+      "seconds": 0.58,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    },
+    {
+      "round": 4,
+      "arm": "before",
+      "rss": 352567296,
+      "instructions": 17819567304,
+      "seconds": 0.79,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    },
+    {
+      "round": 5,
+      "arm": "before",
+      "rss": 353746944,
+      "instructions": 17956755998,
+      "seconds": 0.79,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    },
+    {
+      "round": 5,
+      "arm": "after",
+      "rss": 301432832,
+      "instructions": 11400874199,
+      "seconds": 0.6,
+      "output": {
+        "queries": 3,
+        "diagnostics": 40000,
+        "sourceHash": "5cbe33634977bff4fea2b8ff6ce9a955c73b279978b0dde64f5083db618ff0dc",
+        "answerHash": "c8132f4e17b2c1195c3d19df8345255a69db9a1fc5cb34b004eabadec4084232"
+      }
+    }
+  ]
+}

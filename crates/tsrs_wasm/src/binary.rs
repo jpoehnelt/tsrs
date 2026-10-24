@@ -12,6 +12,9 @@ use tsrs_core::{
 const MAGIC: &[u8] = b"TSRB\x01";
 const LIMIT: usize = 64 * 1024 * 1024;
 const DEPTH: usize = 128;
+// Reserve the ordinary root result envelope before streamed values. Nested
+// batch replies copy only the value, while a root reply transfers this buffer.
+const RESULT_PREFIX: &[u8] = b"TSRB\x01\x06\x01\0\0\0\x06\0\0\0result";
 #[derive(Clone)]
 enum Reply {
     Encoded(Vec<u8>),
@@ -144,7 +147,7 @@ fn value(out: &mut Vec<u8>, v: &Value) {
 fn reply(out: &mut Vec<u8>, v: &Reply) {
     match v {
         Reply::Value(v) => value(out, v),
-        Reply::Encoded(bytes) => out.extend_from_slice(bytes),
+        Reply::Encoded(bytes) => out.extend_from_slice(&bytes[RESULT_PREFIX.len()..]),
         Reply::Bytes(bytes) => {
             out.push(9);
             length(out, bytes.len());
@@ -291,7 +294,8 @@ fn invoke(
             | "getSuggestionDiagnostics"
             | "getDeclarationDiagnostics"
     ) {
-        let mut out = vec![5, 0, 0, 0, 0];
+        let mut out = RESULT_PREFIX.to_vec();
+        out.extend_from_slice(&[5, 0, 0, 0, 0]);
         let count = tsrs_api::with_compact_diagnostics(|| {
             s.visit_diagnostic_responses(method, params, |diagnostic| {
                 value(&mut out, diagnostic);
@@ -301,7 +305,7 @@ fn invoke(
                 Ok(())
             })
         })?;
-        out[1..5].copy_from_slice(
+        out[RESULT_PREFIX.len() + 1..RESULT_PREFIX.len() + 5].copy_from_slice(
             &u32::try_from(count)
                 .map_err(|_| ApiError::invalid_request("diagnostic count overflow"))?
                 .to_le_bytes(),
@@ -327,6 +331,9 @@ pub fn dispatch(bytes: &[u8], extension: Option<RequestExtension>) -> Vec<u8> {
         }
         invoke(&request, extension, &reader.buffers)
     })();
+    if let Ok(Reply::Encoded(bytes)) = answer {
+        return bytes;
+    }
     let mut out = MAGIC.to_vec();
     let envelope = match answer {
         Ok(result) => Reply::Object(vec![("result".into(), result)]),
