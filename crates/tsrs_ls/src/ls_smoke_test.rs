@@ -1328,3 +1328,87 @@ fn editor_commonjs_observations_do_not_replace_reference_compiler_types() {
     assert!(c.get_editor_symbol_at_location(access).is_some());
     assert_eq!(c.get_symbol_at_location_exported(access), symbol);
 }
+
+#[test]
+fn embedded_cross_file_class_property_uses_assignment_type() {
+    let text = "const value = new Entry(); value.count = 1;";
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":false},"files":["index.ts","entry.ts"]}"#,
+        ),
+        ("/index.ts", text),
+        ("/entry.ts", "class Entry { constructor() {} }"),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let start = text.find("count").unwrap() as u32;
+    let actions = |ls: &LanguageService| {
+        (crate::codeactions_usage::MISSING_MEMBER_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(start, start + 5),
+                error_code: 2339,
+                fix_id: None,
+                program: ls.get_program(),
+                ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap()
+    };
+    let fixes = actions(&ls);
+    assert_eq!(fixes.len(), 2);
+    assert_eq!(fixes[0].description, "Declare property 'count'");
+    assert_eq!(fixes[0].changes_by_file[0].0, lsconv::file_name_to_document_uri("/entry.ts"));
+    assert!(fixes[0].changes_by_file[0].1.iter().any(|e| e.new_text.contains("count: number;")));
+    ls.set_read_only_files(&["/entry.ts".into()]);
+    assert!(actions(&ls).is_empty());
+}
+
+#[test]
+fn legacy_raw_js_fixes_expose_suppression_without_changing_reference_lsp() {
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", "const item = 1; item.missing;"),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.js");
+    let diagnostic = ls
+        .provide_diagnostics(&ctx, &uri)
+        .unwrap()
+        .full_document_diagnostic_report
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|d| d.code.as_ref().and_then(|c| c.integer) == Some(2339))
+        .unwrap();
+    let params = lsproto::CodeActionParams {
+        text_document: lsproto::TextDocumentIdentifier { uri },
+        range: diagnostic.range,
+        context: lsproto::CodeActionContext { diagnostics: vec![diagnostic], ..Default::default() },
+        ..Default::default()
+    };
+    for legacy in [false, true, false] {
+        ls.set_legacy_code_fix_edits(legacy);
+        let actions = ls.embedded_code_fixes(&ctx, &params).unwrap();
+        let suppress =
+            actions.iter().find(|a| a.fix_name.as_deref() == Some("disableJsDiagnostics"));
+        assert_eq!(suppress.is_some(), legacy);
+        if let Some(action) = suppress {
+            assert_eq!(action.description, "Disable checking for this file");
+            assert_eq!(action.changes[0].new_text, "// @ts-nocheck\n");
+        }
+        let reference =
+            ls.provide_code_actions(&ctx, &params).unwrap().command_or_code_action_array.unwrap();
+        assert!(
+            reference.iter().all(|a| a
+                .code_action
+                .as_ref()
+                .is_none_or(|a| !a.title.contains("Disable checking")))
+        );
+    }
+}

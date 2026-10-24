@@ -222,6 +222,32 @@ impl LanguageService {
                 .map(|(_, action)| action),
             );
         }
+        // Raw legacy compiler APIs include this action; editor hosts filter
+        // suppression actions before offering fixes. Keep the reference LSP
+        // and the default embedded API independent of that compatibility rule.
+        if self.legacy_code_fix_edits
+            && !params.context.diagnostics.is_empty()
+            && tsrs_ast::is_in_js_file(file.as_node())
+            && tsrs_ast::is_check_js_enabled_for_file(file, &program.options())
+        {
+            let formatting = self.format_options();
+            let (start, end, newline) = if let Some(directive) = file.check_js_directive() {
+                (directive.range.pos(), directive.range.end(), "")
+            } else {
+                (0, 0, formatting.new_line_character.as_str())
+            };
+            let (start, _) = self.converters.to_lsp_position(&file, start.into());
+            let (end, _) = self.converters.to_lsp_position(&file, end.into());
+            actions.push(CodeAction {
+                fix_name: Some("disableJsDiagnostics".to_string()),
+                description: "Disable checking for this file".to_string(),
+                changes: vec![lsproto::TextEdit {
+                    range: lsproto::Range { start, end },
+                    new_text: format!("// @ts-nocheck{newline}"),
+                }],
+                ..Default::default()
+            });
+        }
         Ok(actions)
     }
 

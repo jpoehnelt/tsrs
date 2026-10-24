@@ -1,6 +1,6 @@
 # Embedded WASM sessions
 
-This fork is pinned to upstream `79ea6d25c011a7f498e02bda7f090308f9fb9ac9`.
+This fork is pinned to upstream `8f135f106a637cf76f0395f146d0417f5287046e`.
 The reactor exports `tsrs_input`, `tsrs_session_request`, `tsrs_output`, and `tsrs_output_len`.
 `npm/tsrs-wasm/core.js` exposes synchronous and asynchronous transports. Browser hosts must
 instantiate asynchronously under normal Chrome WASM policy.
@@ -134,3 +134,5 @@ Legacy JavaScript observations use explicit `get_editor_type_at_location` and
 `get_editor_symbol_at_location` checker methods with a separate sparse cache.
 Ordinary compiler inspection retains the pinned reference types and symbols,
 including after an editor query on the same checker.
+
+Legacy raw compiler fixes also expose the JavaScript disable-checking action when `legacyCodeFixEdits` is selected. Hosts must apply their suppression filtering before presenting actions. Ordinary LSP and reference-default embedded calls retain their provider behavior. Missing typed class properties now infer assignment types and edit the declaring file; explicit read-only roots remain protected. Native regression tests exercise both the raw API and the unchanged reference LSP.

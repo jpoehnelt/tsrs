@@ -565,11 +565,67 @@ fn missing_member(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>
     }
     let name = token.text();
     if ast::is_class_like(declaration) {
-        let Some(call) = access
+        let call = access
             .parent()
-            .filter(|p| ast::is_call_expression(*p) && p.expression() == Some(access))
-        else {
-            return Ok(Vec::new());
+            .filter(|p| ast::is_call_expression(*p) && p.expression() == Some(access));
+        let Some(call) = call else {
+            if ast::is_in_js_file(declaration)
+                || !c.get_signatures_of_type(typ, checker::SignatureKind::Construct).is_empty()
+            {
+                return Ok(Vec::new());
+            }
+            let assigned = access.parent().filter(|p| {
+                ast::is_binary_expression(*p)
+                    && p.as_binary_expression().left == access
+                    && p.as_binary_expression().operator_token.kind() == Kind::EqualsToken
+            });
+            let inferred = assigned.map(|p| {
+                let t = c.get_editor_type_at_location(p.as_binary_expression().right.get());
+                let t = c.get_base_type_of_literal_type(t);
+                c.get_widened_type(t)
+            });
+            let mut result = Vec::new();
+            for index in [false, true] {
+                let mut changes = tracker(ctx, fix);
+                let typ = if index {
+                    Some(changes.new_keyword_type_node(Kind::AnyKeyword))
+                } else {
+                    inferred
+                        .and_then(|t| type_node(&mut c, &changes, t, declaration))
+                        .or_else(|| Some(changes.new_keyword_type_node(Kind::AnyKeyword)))
+                };
+                let member = if index {
+                    let parameter = changes.new_parameter_declaration(
+                        None,
+                        None,
+                        changes.new_identifier("x"),
+                        None,
+                        Some(changes.new_keyword_type_node(Kind::StringKeyword)),
+                        None,
+                    );
+                    changes.new_index_signature_declaration(
+                        None,
+                        Some(changes.new_node_list(vec![parameter])),
+                        typ,
+                    )
+                } else {
+                    changes.new_property_declaration(
+                        None,
+                        changes.new_identifier(name),
+                        None,
+                        typ,
+                        None,
+                    )
+                };
+                changes.insert_member_at_start(file, declaration, member);
+                let description = if index {
+                    format!("Add index signature for property '{name}'")
+                } else {
+                    format!("Declare property '{name}'")
+                };
+                result.extend(action(&mut changes, "fixMissingMember", description));
+            }
+            return Ok(result);
         };
         let mut changes = tracker(ctx, fix);
         let parameters =
