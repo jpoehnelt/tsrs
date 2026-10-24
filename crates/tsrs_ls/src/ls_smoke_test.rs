@@ -1263,3 +1263,37 @@ fn isolated_arrow_edits_keep_reference_default_and_explicit_legacy_mode() {
         assert_eq!(texts.contains(&")"), !legacy, "{texts:?}");
     }
 }
+
+// The pinned Go LSP currently registers only imports, isolated declarations and
+// interface implementation. The expanded catalogue is an explicit embedding API.
+#[test]
+fn embedded_provider_catalogue_does_not_change_reference_lsp_actions() {
+    let text = "declare namespace Audit { function log(text: string): void; } Audit.loog('x');";
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let diagnostics =
+        ls.provide_diagnostics(&ctx, &uri).unwrap().full_document_diagnostic_report.unwrap().items;
+    let diagnostic = diagnostics
+        .into_iter()
+        .find(|d| d.code.as_ref().and_then(|c| c.integer) == Some(2551))
+        .unwrap();
+    let params = lsproto::CodeActionParams {
+        text_document: lsproto::TextDocumentIdentifier { uri },
+        range: diagnostic.range,
+        context: lsproto::CodeActionContext { diagnostics: vec![diagnostic], ..Default::default() },
+        ..Default::default()
+    };
+    assert!(
+        ls.embedded_code_fixes(&ctx, &params)
+            .unwrap()
+            .iter()
+            .any(|a| a.fix_name.as_deref() == Some("spelling"))
+    );
+    assert_eq!(
+        ls.provide_code_actions(&ctx, &params).unwrap().command_or_code_action_array.unwrap(),
+        [] as [lsproto::CommandOrCodeAction; 0]
+    );
+}

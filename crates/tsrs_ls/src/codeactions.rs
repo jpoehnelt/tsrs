@@ -134,31 +134,43 @@ impl CombinedCodeActions {
     }
 }
 
-// codeactions.go:72
-// codeFixProviders is the list of all registered code fix providers
+// The ordinary LSP retains the pinned Go provider catalogue. Additional TS5-style
+// providers are exposed only through the explicit embedded compiler API.
 fn code_fix_providers() -> &'static [&'static CodeFixProvider] {
     static PROVIDERS: std::sync::LazyLock<Vec<&'static CodeFixProvider>> = std::sync::LazyLock::new(
         || {
             vec![
-            &*crate::codeactions_importfixes::IMPORT_FIX_PROVIDER,
-            &*crate::codeactions_fixmissingtypeannotation::ISOLATED_DECLARATIONS_FIX_PROVIDER,
-            &*crate::codeactions_fixclassincorrectlyimplementsinterface::FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_PROVIDER,
-            &crate::codeactions_usage::IMPLICIT_THIS_PROVIDER,
-            &crate::codeactions_usage::INFER_USAGE_PROVIDER,
-            &crate::codeactions_usage::MISSING_PARAMETER_PROVIDER,
-            &crate::codeactions_usage::MISSING_MEMBER_PROVIDER,
-            &crate::codeactions_spelling::SPELLING_PROVIDER,
-            &crate::codeactions_cleanup::CLEANUP_PROVIDER,
-            &crate::codeactions_syntax::SYNTAX_PROVIDER,
-        ]
+        &*crate::codeactions_importfixes::IMPORT_FIX_PROVIDER,
+        &*crate::codeactions_fixmissingtypeannotation::ISOLATED_DECLARATIONS_FIX_PROVIDER,
+        &*crate::codeactions_fixclassincorrectlyimplementsinterface::FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_PROVIDER,
+    ]
         },
     );
     &PROVIDERS
 }
 
+// codeactions.go:72 plus the explicitly embedded provider extensions.
+fn embedded_code_fix_providers() -> &'static [&'static CodeFixProvider] {
+    static PROVIDERS: std::sync::LazyLock<Vec<&'static CodeFixProvider>> =
+        std::sync::LazyLock::new(|| {
+            let mut providers = code_fix_providers().to_vec();
+            providers.extend([
+                &crate::codeactions_usage::IMPLICIT_THIS_PROVIDER,
+                &crate::codeactions_usage::INFER_USAGE_PROVIDER,
+                &crate::codeactions_usage::MISSING_PARAMETER_PROVIDER,
+                &crate::codeactions_usage::MISSING_MEMBER_PROVIDER,
+                &crate::codeactions_spelling::SPELLING_PROVIDER,
+                &crate::codeactions_cleanup::CLEANUP_PROVIDER,
+                &crate::codeactions_syntax::SYNTAX_PROVIDER,
+            ]);
+            providers
+        });
+    &PROVIDERS
+}
+
 /// Embedded clients can avoid checking/serializing a file for a code with no registered fix.
 pub fn supported_code_fix_codes() -> Vec<i32> {
-    let mut codes: Vec<i32> = code_fix_providers()
+    let mut codes: Vec<i32> = embedded_code_fix_providers()
         .iter()
         .flat_map(|provider| provider.error_codes.iter().copied())
         .collect();
@@ -170,7 +182,7 @@ pub fn supported_code_fix_codes() -> Vec<i32> {
 /// Unknown providers retain the conservative prepared-snapshot behavior.
 pub fn code_fix_requires_auto_imports(code: i32) -> bool {
     let mut found = false;
-    for provider in code_fix_providers() {
+    for provider in embedded_code_fix_providers() {
         if provider.error_codes.contains(&code) {
             found = true;
             if provider.requires_auto_imports {
@@ -181,7 +193,7 @@ pub fn code_fix_requires_auto_imports(code: i32) -> bool {
     !found
 }
 pub fn combined_code_fix_requires_auto_imports(id: &str) -> bool {
-    code_fix_providers()
+    embedded_code_fix_providers()
         .iter()
         .find(|provider| provider.fix_ids.contains(&id))
         .is_none_or(|provider| provider.requires_auto_imports)
@@ -198,9 +210,16 @@ impl LanguageService {
         let mut actions = Vec::new();
         for diagnostic in &params.context.diagnostics {
             actions.extend(
-                self.code_fixes_for_diagnostic(ctx, program, file, diagnostic, params)?
-                    .into_iter()
-                    .map(|(_, action)| action),
+                self.code_fixes_for_diagnostic(
+                    ctx,
+                    program,
+                    file,
+                    diagnostic,
+                    params,
+                    embedded_code_fix_providers(),
+                )?
+                .into_iter()
+                .map(|(_, action)| action),
             );
         }
         Ok(actions)
@@ -212,7 +231,7 @@ impl LanguageService {
         uri: &lsproto::DocumentUri,
         fix_id: &str,
     ) -> Result<Option<CombinedCodeActions>, lsproto::Error> {
-        let provider = code_fix_providers()
+        let provider = embedded_code_fix_providers()
             .iter()
             .find(|provider| provider.fix_ids.contains(&fix_id))
             .ok_or_else(|| lsproto::Error::new(format!("Unknown compiler fix ID: {fix_id}")))?;
@@ -242,12 +261,13 @@ impl LanguageService {
         file: P<SourceFile>,
         diagnostic: &lsproto::Diagnostic,
         params: &lsproto::CodeActionParams,
+        providers: &[&'static CodeFixProvider],
     ) -> Result<Vec<(&'static CodeFixProvider, CodeAction)>, lsproto::Error> {
         let Some(error_code) = diagnostic.code.as_ref().and_then(|code| code.integer) else {
             return Ok(Vec::new());
         };
         let mut result = Vec::new();
-        for &provider in code_fix_providers() {
+        for &provider in providers {
             if !code_fix_provider_matches_lsp_diagnostic(provider, diagnostic) {
                 continue;
             }
@@ -312,9 +332,14 @@ impl LanguageService {
             let mut seen: Vec<CodeAction> = Vec::new(); // sorted for binary search dedup, dedup across all diagnostics and providers so if multiple diags produce the same codefix, only one is returned
 
             for diag in &params.context.diagnostics {
-                for (provider, action) in
-                    self.code_fixes_for_diagnostic(ctx, program, file, diag, params)?
-                {
+                for (provider, action) in self.code_fixes_for_diagnostic(
+                    ctx,
+                    program,
+                    file,
+                    diag,
+                    params,
+                    code_fix_providers(),
+                )? {
                     let Err(i) = seen.binary_search_by(|probe| probe.compare(&action)) else {
                         continue;
                     };

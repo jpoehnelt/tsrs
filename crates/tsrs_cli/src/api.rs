@@ -128,6 +128,7 @@ mod tests {
     fn call(s: &Session, method: &str, params: &str) -> Value {
         match s.handle_request(method, params.as_bytes()) {
             Ok(Response::Json(t)) => json::unmarshal(&t).unwrap(),
+            Ok(Response::Value(value)) => value,
             other => panic!("{method}: {other:?}"),
         }
     }
@@ -457,10 +458,19 @@ mod tests {
 mod memory_tests {
     use super::*;
     use tsrs_api::{Handler, Response};
-    // `malloc_trim` is glibc-only and `rss_kib` reads `/proc`; the RSS tests below run only on Linux glibc.
+    use tsrs_core::json;
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    use tsrs_core::json::{self, Value};
+    use tsrs_core::json::Value;
 
+    fn json_response(response: Response) -> String {
+        match response {
+            Response::Json(text) => text,
+            Response::Value(value) => json::marshal(&value).unwrap(),
+            Response::Binary(_) => panic!("expected a JSON build response"),
+        }
+    }
+
+    // `malloc_trim` is glibc-only and `rss_kib` reads `/proc`.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe extern "C" {
         fn malloc_trim(pad: usize) -> i32;
@@ -532,16 +542,11 @@ mod memory_tests {
             run_external_code: false,
         };
         let (s, _) = new_api_session(&flags).unwrap();
-        let Response::Json(r) =
-            s.handle_request("createBuildOrchestrator", br#"{"rootNames":["app"]}"#).unwrap()
-        else {
-            unreachable!()
-        };
+        let r = json_response(
+            s.handle_request("createBuildOrchestrator", br#"{"rootNames":["app"]}"#).unwrap(),
+        );
         assert!(r.contains("\"buildOrchestratorID\":1"), "{r}");
-        let Response::Json(b) = s.handle_request("build", br#"{"buildOrchestratorID":1}"#).unwrap()
-        else {
-            unreachable!()
-        };
+        let b = json_response(s.handle_request("build", br#"{"buildOrchestratorID":1}"#).unwrap());
         assert!(
             b.contains(&format!("\"status\":{}", status.code().unwrap())),
             "cli exit {:?} vs api {b}",
@@ -587,18 +592,14 @@ mod memory_tests {
             run_external_code: false,
         };
         let (s, _) = new_api_session(&flags).unwrap();
-        let id =
-            match s.handle_request("createBuildOrchestrator", br#"{"rootNames":["."]}"#).unwrap() {
-                Response::Json(t) => {
-                    let v = json::unmarshal(&t).unwrap();
-                    let id = match &v {
-                        Value::Object(o) => o.get("buildOrchestratorID").unwrap().clone(),
-                        _ => unreachable!(),
-                    };
-                    json::marshal(&id).unwrap()
-                }
-                Response::Binary(_) => unreachable!(),
-            };
+        let value = json::unmarshal(&json_response(
+            s.handle_request("createBuildOrchestrator", br#"{"rootNames":["."]}"#).unwrap(),
+        ))
+        .unwrap();
+        let Value::Object(object) = value else {
+            panic!("expected build handle");
+        };
+        let id = json::marshal(object.get("buildOrchestratorID").unwrap()).unwrap();
         let n: usize = std::env::var("N").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
         let mut before = 0;
         for i in 0..n + 5 {
@@ -645,18 +646,17 @@ mod memory_tests {
             run_external_code: false,
         };
         let (s, _) = new_api_session(&flags).unwrap();
-        let create = || match s
-            .handle_request(
+        let create = || match json::unmarshal(&json_response(
+            s.handle_request(
                 "createBuildOrchestrator",
                 br#"{"rootNames":["."],"compilerOptions":{"moduleResolution":-1}}"#,
             )
-            .unwrap()
+            .unwrap(),
+        ))
+        .unwrap()
         {
-            Response::Json(t) => match json::unmarshal(&t).unwrap() {
-                Value::Object(o) => json::marshal(o.get("buildOrchestratorID").unwrap()).unwrap(),
-                _ => unreachable!(),
-            },
-            Response::Binary(_) => unreachable!(),
+            Value::Object(o) => json::marshal(o.get("buildOrchestratorID").unwrap()).unwrap(),
+            _ => unreachable!(),
         };
         let id = create();
         let fail = |i: usize| {

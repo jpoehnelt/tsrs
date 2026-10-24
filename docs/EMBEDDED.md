@@ -124,3 +124,8 @@ pinned Go reference and insert the required parentheses. A legacy client can opt
 into the older TypeScript 5 edit shape, including that historical omission.
 The setting belongs to each newly created language service and cannot leak across
 requests. Invalid non-boolean values are rejected.
+
+The expanded TypeScript 5 provider catalogue is selected by `editor.codeFixes` and
+`editor.combinedCodeFix`. The ordinary LSP retains the three providers registered
+by the pinned Go reference. This keeps reference LSP behavior independent from
+the additional embedding API; the Go Fourslash suite exercises the former.
