@@ -180,6 +180,19 @@ fn editor_closure_callback_types_are_explicit_and_position_preserving() {
         let diagnostics = file.jsdoc_diagnostics();
         assert_eq!(diagnostics.is_empty(), legacy, "{legacy}: {diagnostics:?}");
         assert_eq!(file.text(), source);
+        if legacy {
+            fn visit(node: P<tsrs_ast::Node>) {
+                assert!(!node.pos().is_synthetic(), "{:?}", node.kind());
+                assert!(!node.end().is_synthetic(), "{:?}", node.kind());
+                node.for_each_child(&mut |child| {
+                    visit(child);
+                    false
+                });
+            }
+            for doc in file.statements().nodes()[0].jsdoc(Some(file.get())) {
+                visit(*doc);
+            }
+        }
     }
 }
 

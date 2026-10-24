@@ -648,7 +648,9 @@ impl Parser {
                 instance_type = Some(type_node);
             } else {
                 if rest.is_some() {
-                    type_node = self.factory.new_array_type_node(type_node);
+                    let array = self.factory.new_array_type_node(type_node);
+                    array.set_loc(type_node.loc());
+                    type_node = array;
                 }
                 let name = self.factory.new_identifier(tsrs_core::alloc_str(&if receiver
                     == Some(Kind::ThisKeyword)
@@ -657,7 +659,14 @@ impl Parser {
                 } else {
                     format!("arg{}", parameters.len())
                 }));
-                let question = optional.then(|| self.factory.new_token(Kind::QuestionToken));
+                // These names are synthesized, but source AST consumers still need
+                // a stable zero-width location in the original annotation.
+                name.set_loc(tsrs_core::new_text_range(parameter_pos, parameter_pos));
+                let question = optional.then(|| {
+                    let token = self.factory.new_token(Kind::QuestionToken);
+                    token.set_loc(tsrs_core::new_text_range(self.node_pos(), self.node_pos()));
+                    token
+                });
                 let parameter = self.factory.new_parameter_declaration(
                     None,
                     rest,
@@ -676,7 +685,9 @@ impl Parser {
         let return_type = if self.parse_optional(Kind::ColonToken) {
             self.parse_jsdoc_type()
         } else {
-            self.factory.new_keyword_type_node(Kind::AnyKeyword)
+            let any = self.factory.new_keyword_type_node(Kind::AnyKeyword);
+            any.set_loc(tsrs_core::new_text_range(self.node_pos(), self.node_pos()));
+            any
         };
         let parameters =
             self.new_node_list(tsrs_core::new_text_range(list_pos, self.node_pos()), &parameters);
