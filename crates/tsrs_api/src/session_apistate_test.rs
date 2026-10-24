@@ -687,3 +687,77 @@ fn native_snapshot_filesystems_are_isolated_and_request_layers_keep_precedence()
         "session is closed"
     );
 }
+
+#[test]
+fn diagnostic_visitors_match_native_replies_and_retain_snapshot_during_callbacks() {
+    let (_, host) = setup(&[("/code.ts", "const value:number='wrong'; missing;")]);
+    let api = Session::new(ApiSessionOptions {
+        cwd: "/".into(),
+        default_library_path: bundled::lib_path(),
+        fs: host,
+        binary_responses: false,
+        run_external_code: false,
+    });
+    let params:Value=json::unmarshal(r#"{"createPrograms":[{"rootFiles":["/code.ts"],"compilerOptions":{"noLib":true,"noEmit":true}}]}"#).unwrap();
+    let Response::Value(snapshot) = api.handle_native_request("createSnapshot", &params).unwrap()
+    else {
+        panic!("native response")
+    };
+    let project = str_of(get(&snapshot, "operation.createdPrograms.0"));
+    let params: Value = json::unmarshal(&format!(
+        r#"{{"snapshot":{},"project":"{project}","files":["/code.ts"]}}"#,
+        handle(&snapshot)
+    ))
+    .unwrap();
+    for method in [
+        "getSyntacticDiagnostics",
+        "getBindDiagnostics",
+        "getSemanticDiagnostics",
+        "getSuggestionDiagnostics",
+        "getDeclarationDiagnostics",
+    ] {
+        let Response::Value(expected) = api.handle_native_request(method, &params).unwrap() else {
+            panic!("native response")
+        };
+        let mut values = Vec::new();
+        let count = api
+            .visit_diagnostic_responses(method, &params, |value| {
+                values.push(value.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(count, values.len());
+        if method == "getSemanticDiagnostics" {
+            assert!(count > 0);
+        }
+        assert_eq!(Value::Array(values), expected);
+    }
+    let mut calls = 0;
+    assert_eq!(
+        api.visit_diagnostic_responses("getSemanticDiagnostics", &params, |_| {
+            calls += 1;
+            Err(crate::ApiError::client("stop visitor"))
+        })
+        .unwrap_err()
+        .message,
+        "stop visitor"
+    );
+    assert_eq!(calls, 1);
+    let release: Value =
+        json::unmarshal(&format!(r#"{{"snapshot":{}}}"#, handle(&snapshot))).unwrap();
+    let mut released = false;
+    let count = api
+        .visit_diagnostic_responses("getSemanticDiagnostics", &params, |value| {
+            if !released {
+                api.handle_native_request("release", &release)?;
+                released = true;
+            }
+            assert!(matches!(get(value, "text"), Value::String(_)));
+            Ok(())
+        })
+        .unwrap();
+    assert!(count > 0);
+    assert!(api.visit_diagnostic_responses("getSemanticDiagnostics", &params, |_| Ok(())).is_err());
+    api.close();
+    assert!(api.visit_diagnostic_responses("getSemanticDiagnostics", &params, |_| Ok(())).is_err());
+}

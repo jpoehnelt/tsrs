@@ -14,6 +14,7 @@ const LIMIT: usize = 64 * 1024 * 1024;
 const DEPTH: usize = 128;
 #[derive(Clone)]
 enum Reply {
+    Encoded(Vec<u8>),
     Value(Value),
     Bytes(Vec<u8>),
     Array(Vec<Reply>),
@@ -143,6 +144,7 @@ fn value(out: &mut Vec<u8>, v: &Value) {
 fn reply(out: &mut Vec<u8>, v: &Reply) {
     match v {
         Reply::Value(v) => value(out, v),
+        Reply::Encoded(bytes) => out.extend_from_slice(bytes),
         Reply::Bytes(bytes) => {
             out.push(9);
             length(out, bytes.len());
@@ -281,6 +283,31 @@ fn invoke(
     if matches!(method, "printNode" | "formatNodeForInsertion") {
         return Err(ApiError::invalid_request("embedded printing requires a raw AST buffer"));
     }
+    if matches!(
+        method,
+        "getSyntacticDiagnostics"
+            | "getBindDiagnostics"
+            | "getSemanticDiagnostics"
+            | "getSuggestionDiagnostics"
+            | "getDeclarationDiagnostics"
+    ) {
+        let mut out = vec![5, 0, 0, 0, 0];
+        let count = tsrs_api::with_compact_diagnostics(|| {
+            s.visit_diagnostic_responses(method, params, |diagnostic| {
+                value(&mut out, diagnostic);
+                if out.len() > LIMIT {
+                    return Err(ApiError::invalid_request("binary response limit"));
+                }
+                Ok(())
+            })
+        })?;
+        out[1..5].copy_from_slice(
+            &u32::try_from(count)
+                .map_err(|_| ApiError::invalid_request("diagnostic count overflow"))?
+                .to_le_bytes(),
+        );
+        return Ok(Reply::Encoded(out));
+    }
     match tsrs_api::with_compact_diagnostics(|| s.handle_native_request(method, params))? {
         Response::Value(value) => Ok(Reply::Value(value)),
         Response::Binary(bytes) => Ok(Reply::Bytes(bytes)),
@@ -353,6 +380,66 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(Params(&rows[0]).get("result"), &Value::String("pong".into()));
         assert_ne!(Params(&rows[1]).str("error").unwrap(), "");
+        send(&Obj::new().set("method", Value::String("closeSession".into())).build());
+    }
+    #[test]
+    fn streamed_diagnostic_wire_matches_native_values_and_batches() {
+        send(&Obj::new().set("method", Value::String("openSession".into())).build());
+        let create: Value = tsrs_core::json::unmarshal(r#"{"method":"createSnapshot","params":{"fileSystem":{"kind":"layer","files":{"/code.ts":"const value:number='wrong'; missing;"}},"createPrograms":[{"rootFiles":["/code.ts"],"compilerOptions":{"noLib":true,"noEmit":true}}]}}"#).unwrap();
+        let Reply::Value(snapshot) = send(&create) else { panic!("snapshot") };
+        let Value::Array(programs) =
+            Params(Params(&snapshot).get("operation")).get("createdPrograms")
+        else {
+            panic!("programs")
+        };
+        let params = Obj::new()
+            .set("snapshot", Params(&snapshot).get("snapshot").clone())
+            .set("project", programs[0].clone())
+            .set("files", Value::Array(vec![Value::String("/code.ts".into())]))
+            .build();
+        let s = session().unwrap();
+        let mut requests = Vec::new();
+        let mut expected = Vec::new();
+        for method in [
+            "getSyntacticDiagnostics",
+            "getBindDiagnostics",
+            "getSemanticDiagnostics",
+            "getSuggestionDiagnostics",
+            "getDeclarationDiagnostics",
+        ] {
+            let Response::Value(answer) =
+                tsrs_api::with_compact_diagnostics(|| s.handle_native_request(method, &params))
+                    .unwrap()
+            else {
+                panic!("native value")
+            };
+            let request = Obj::new()
+                .set("method", Value::String(method.into()))
+                .set("params", params.clone())
+                .build();
+            let encoded = invoke(&request, None, &[]).unwrap();
+            let mut actual = Vec::new();
+            reply(&mut actual, &encoded);
+            let mut old = Vec::new();
+            value(&mut old, &answer);
+            assert_eq!(actual, old, "{method}");
+            requests.push(request);
+            expected.push(
+                Obj::new()
+                    .set("method", Value::String(method.into()))
+                    .set("result", answer)
+                    .build(),
+            );
+        }
+        let Reply::Value(batch) = send(
+            &Obj::new()
+                .set("method", Value::String("batchRequests".into()))
+                .set("params", Obj::new().set("requests", Value::Array(requests)).build())
+                .build(),
+        ) else {
+            panic!("batch")
+        };
+        assert_eq!(Params(&batch).get("responses"), &Value::Array(expected));
         send(&Obj::new().set("method", Value::String("closeSession".into())).build());
     }
     #[test]

@@ -13,7 +13,7 @@ use tsrs_core::context::{CheckerLifetime, Context, with_checker_lifetime};
 use tsrs_core::json::Value;
 use tsrs_project::ID as ProjectID;
 
-use crate::diagnostics::diagnostic_responses;
+use crate::diagnostics::{diagnostic_response, diagnostic_responses};
 use crate::handler::{ApiError, ApiResult};
 use crate::session::Session;
 use crate::wire::{DocumentIdentifier, Obj, Params, b, s, strings};
@@ -59,6 +59,48 @@ impl Session {
         p: Params,
         kind: DiagnosticKind,
     ) -> ApiResult<Value> {
+        self.with_diagnostics(p, kind, |diagnostics| Ok(nullable_diagnostics(diagnostics)))
+    }
+    /// Visit owned wire values one diagnostic at a time while retaining the
+    /// snapshot and program. Native transports can encode them without holding
+    /// a second tree containing the entire diagnostic response.
+    pub fn visit_diagnostic_responses(
+        &self,
+        method: &str,
+        params: &Value,
+        mut visitor: impl FnMut(&Value) -> ApiResult<()>,
+    ) -> ApiResult<usize> {
+        let kind = match method {
+            "getSyntacticDiagnostics" => DiagnosticKind::Syntactic,
+            "getBindDiagnostics" => DiagnosticKind::Bind,
+            "getSemanticDiagnostics" => DiagnosticKind::Semantic,
+            "getSuggestionDiagnostics" => DiagnosticKind::Suggestion,
+            "getDeclarationDiagnostics" => DiagnosticKind::Declaration,
+            _ => return Err(ApiError::invalid_request("expected a per-file diagnostic method")),
+        };
+        let empty = Value::Object(tsrs_core::json::JsonMap::new());
+        let params = if matches!(params, Value::Null) { &empty } else { params };
+        if !matches!(params, Value::Object(_)) {
+            return Err(ApiError::invalid_request("params must be an object"));
+        }
+        let ty = crate::methods::params_type(method).expect("diagnostic parameters");
+        let lexemes =
+            crate::predecode::predecode(method, ty, params, rustc_hash::FxHashMap::default())?;
+        let _request = crate::predecode::enter_request(&[], lexemes, params);
+        self.ensure_open()?;
+        self.with_diagnostics(Params(params), kind, |diagnostics| {
+            for diagnostic in diagnostics {
+                visitor(&diagnostic_response(diagnostic))?;
+            }
+            Ok(diagnostics.len())
+        })
+    }
+    fn with_diagnostics<T>(
+        &self,
+        p: Params,
+        kind: DiagnosticKind,
+        operation: impl FnOnce(&[P<Diagnostic>]) -> ApiResult<T>,
+    ) -> ApiResult<T> {
         let (_sd, program) = self.program_of(p)?;
         let ctx = with_checker_lifetime(&Context::background(), CheckerLifetime::Diagnostics);
         let get = |file: Option<P<SourceFile>>| -> Vec<P<Diagnostic>> {
@@ -79,9 +121,9 @@ impl Session {
                     all.extend(get(Some(source_file)));
                     Ok::<_, ApiError>(all)
                 })?;
-            return Ok(nullable_diagnostics(&all));
+            return operation(&all);
         }
-        Ok(nullable_diagnostics(&get(None)))
+        operation(&get(None))
     }
 
     pub(crate) fn handle_get_config_file_parsing_diagnostics(&self, p: Params) -> ApiResult<Value> {

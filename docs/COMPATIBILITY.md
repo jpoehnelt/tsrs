@@ -83,3 +83,5 @@ defaults, unsupported features and known parity gaps.
 
 
 The optional parser `embedding-limits` feature adds a scoped native parse-recursion budget with recoverable exhaustion. Ordinary builds retain the reference parser without this guard. Parser tests cover recovery, deep expressions/types/bindings and dense arrays.
+
+Binary embedding streams per-file diagnostic wire values while retaining the snapshot, avoiding a second full response tree. Native API and binary batch tests compare exact values and bytes; JSON/CLI behavior is unchanged. See [diagnostic allocation evidence](../notes/wasm-diagnostic-streaming.md).

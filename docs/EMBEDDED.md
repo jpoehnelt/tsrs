@@ -81,6 +81,13 @@ The SDK must consume owned `Uint8Array` responses and supply raw AST buffers for
 `Session::handle_native_request` bypasses JSON text and preserves handler parameter validation.
 The standalone JSON/CLI adapters remain separate compatibility paths.
 
+`Session::visit_diagnostic_responses` validates per-file diagnostic requests and visits one
+owned diagnostic wire value at a time. The snapshot stays alive through every callback,
+and callback errors stop traversal. The binary reactor encodes these values directly
+into its response array without retaining a second tree for all diagnostics. Ordering,
+fields, nested messages, empty arrays and batch framing remain unchanged. JSON/native
+value callers keep their existing response shape. See [the allocation measurement](../notes/wasm-diagnostic-streaming.md).
+
 Rust hosts can call `Session::create_snapshot_with_file_system` with ordinary snapshot
 parameters and an `Arc<dyn tsrs_vfs::FS>`. Request-file layers take precedence over this
 native base; omitting `fileSystem` creates an empty layer. Snapshots retain their own base,
