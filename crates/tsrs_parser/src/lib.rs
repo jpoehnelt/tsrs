@@ -1,3 +1,7 @@
+#[cfg(feature = "embedding-limits")]
+mod budget;
+#[cfg(feature = "embedding-limits")]
+pub use budget::{ParseRecursionLimit, with_parse_recursion_limit};
 mod jsdoc;
 mod parser_1;
 mod parser_2;

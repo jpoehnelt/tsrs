@@ -154,3 +154,11 @@ Legacy raw compiler fixes also expose the JavaScript disable-checking action whe
 An embedded editor can set the root tsconfig property `"tsrsEditorLegacyJSDocFunctionTypes": true` for its virtual projects. This explicitly restores Closure callback annotations such as `function(string): boolean`, which the pinned Go reference removed (`ts-ref/tsc/CHANGES.md`). The native parser lowers them into ordinary typed function/constructor nodes in the same source AST, retaining original text and positions. Optional/rest parameters, nested callbacks and receiver annotations retain their type checks. The setting belongs to the project's native parse-cache identity; it does not alter default compiler/LSP programs or the reference wire parse-options keys. The property must be set on each editor project's own configuration; it is not inherited through `extends`.
 
 Parser and language-service regressions check explicit/default parsing and typed argument errors. This is an editor compatibility policy, not an upstream Go parser fix.
+
+Native syntax preflights can enable the parser's `embedding-limits` feature and
+wrap a parse in `with_parse_recursion_limit`. Exceeding the scoped budget stops
+parsing at EOF and returns an error without unwinding or trapping; the next parse
+starts with a fresh budget. This is a host resource guard, separate from an AST
+complexity policy. Ordinary builds leave the feature disabled and retain the
+reference parser path. Hosts must validate their admitted syntax against their
+chosen budget and available native stack.

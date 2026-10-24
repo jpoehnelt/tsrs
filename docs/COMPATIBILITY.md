@@ -80,3 +80,6 @@ defaults, unsupported features and known parity gaps.
 | `--generateTrace` | no | warns "Failed to start tracing" (tsgo's message when it can't write a trace) and type-checks as without the flag |
 | Ctrl-C, SIGTERM | `--lsp` and `--api`: yes. Command line: stops at once | the language server exits with status 1 ("context canceled"), the API server with status 0 after the next message or EOF, as in tsgo. tsgo's command line catches the signals too but finishes a non-incremental run anyway; tsrs keeps their default action so a check can be interrupted. Windows: default action everywhere |
 | Prebuilt binaries | yes | macOS arm64, Linux x64/arm64 (glibc and musl since 0.14.0). Intel macOS (`@tsrs/darwin-x64`, `x86_64-apple-darwin`) and Windows x64 are configured for the next release; releases from 0.14.0 through 0.18.0 have neither package. The Intel macOS release job uses `macos-15-intel` for native PGO training and installed-package CLI/Node API smoke tests, and publishing requires its artifact |
+
+
+The optional parser `embedding-limits` feature adds a scoped native parse-recursion budget with recoverable exhaustion. Ordinary builds retain the reference parser without this guard. Parser tests cover recovery, deep expressions/types/bindings and dense arrays.

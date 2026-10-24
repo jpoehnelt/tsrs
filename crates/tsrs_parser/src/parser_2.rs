@@ -319,6 +319,10 @@ impl Parser {
     // TYPES
 
     pub(crate) fn parse_type(&mut self) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         let save_context_flags = self.context_flags;
         self.set_context_flags(NodeFlags::TypeExcludesFlags, false);
         let mut type_node;
@@ -751,6 +755,10 @@ impl Parser {
     }
 
     pub(crate) fn parse_jsdoc_type(&mut self) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         self.scanner.set_skip_jsdoc_leading_asterisks(true);
         let pos = self.node_pos();
 
@@ -2374,6 +2382,10 @@ impl Parser {
     }
 
     pub(crate) fn parse_expression(&mut self) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         // Expression[in]:
         //      AssignmentExpression[in]
         //      Expression[in] , AssignmentExpression[in]
