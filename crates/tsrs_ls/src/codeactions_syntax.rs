@@ -287,7 +287,7 @@ fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Plan> 
                     return None;
                 }
                 let mut c = fix.program.get_type_checker_for_file(ctx, f);
-                if c.get_symbol_at_location_exported(n).is_some() {
+                if c.get_editor_symbol_at_location(n).is_some() {
                     return None;
                 }
                 plan(

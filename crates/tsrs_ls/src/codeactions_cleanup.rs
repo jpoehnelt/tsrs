@@ -90,7 +90,7 @@ fn plans(ctx: &Context, fix: &CodeFixContext, all: bool) -> Vec<Plan> {
     let single = match fix.error_code {
         2588 => {
             let mut c = fix.program.get_type_checker_for_file(ctx, fix.source_file);
-            c.get_symbol_at_location_exported(node)
+            c.get_editor_symbol_at_location(node)
                 .and_then(|symbol| symbol.value_declaration())
                 .and_then(|d| d.parent())
                 .filter(|d| ast::is_variable_declaration_list(*d))

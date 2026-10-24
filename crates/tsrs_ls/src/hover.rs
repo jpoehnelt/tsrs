@@ -1395,7 +1395,7 @@ impl QuickInfoWriter {
             self.dpw.write("type parameter");
             self.dpw.write_punctuation(") ");
             if ast::is_identifier(node) && ast::is_type_reference_node(node.parent().unwrap()) {
-                let t = c.get_type_at_location(node.parent().unwrap());
+                let t = c.get_editor_type_at_location(node.parent().unwrap());
                 if checker::is_distributed_type_parameter(t) {
                     self.dpw.write_punctuation("(");
                     self.dpw.write("distributed");
@@ -1496,7 +1496,7 @@ impl QuickInfoWriter {
             self.dpw.write_operator(" = ");
             let type_alias_type = match node.parent() {
                 Some(parent) if ast::is_const_type_reference(parent) => {
-                    c.get_type_at_location(parent)
+                    c.get_editor_type_at_location(parent)
                 }
                 _ => c.get_declared_type_of_symbol_exported(symbol),
             };
@@ -1560,13 +1560,13 @@ pub fn get_quick_info_and_declaration_at_location(
     {
         w.dpw.write_keyword("this");
         w.dpw.write_punctuation(": ");
-        let t = c.get_type_at_location(node);
+        let t = c.get_editor_type_at_location(node);
         w.write_type_classified(c, t, container, TYPE_FORMAT_FLAGS);
         return SymbolDisplayInfo { display_parts: w.dpw, declaration: None };
     }
     let Some(symbol) = symbol else {
         if should_get_type(node) {
-            let t = c.get_type_at_location(node);
+            let t = c.get_editor_type_at_location(node);
             w.write_type_classified(c, t, container, TYPE_FORMAT_FLAGS);
         }
         return SymbolDisplayInfo { display_parts: w.dpw, declaration: None };
@@ -1622,7 +1622,7 @@ fn get_symbol_at_location_for_quick_info(c: &mut Checker, node: P<Node>) -> Opti
             return Some(properties[0]);
         }
     }
-    c.get_symbol_at_location_exported(node)
+    c.get_editor_symbol_at_location(node)
 }
 
 // hover.go:985

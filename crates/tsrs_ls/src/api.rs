@@ -26,7 +26,7 @@ impl LanguageService {
         // Go checks the token for nil; astnav.GetTokenAtPosition never returns nil.
         let node = astnav::get_token_at_position(file, position);
         let mut checker = program.get_type_checker_for_file(ctx, file);
-        Ok(checker.get_symbol_at_location_exported(node))
+        Ok(checker.get_editor_symbol_at_location(node))
     }
 
     // api.go:32
@@ -34,7 +34,7 @@ impl LanguageService {
         let program = self.get_program();
         let mut checker =
             program.get_type_checker_for_file(ctx, ast::get_source_file_of_node(node).unwrap());
-        checker.get_symbol_at_location_exported(node)
+        checker.get_editor_symbol_at_location(node)
     }
 
     // api.go:39

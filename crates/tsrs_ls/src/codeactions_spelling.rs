@@ -24,13 +24,13 @@ fn info(ctx: &Context, fix: &CodeFixContext) -> Option<(P<Node>, P<Symbol>)> {
     let parent = node.parent()?;
     let mut c = fix.program.get_type_checker_for_file(ctx, fix.source_file);
     let suggestion = if ast::is_property_access_expression(parent) && parent.name() == Some(node) {
-        let mut t = c.get_type_at_location(parent.expression()?);
+        let mut t = c.get_editor_type_at_location(parent.expression()?);
         if parent.flags().intersects(NodeFlags::OptionalChain) {
             t = c.get_non_nullable_type(t);
         }
         c.get_suggested_symbol_for_nonexistent_property(node, t)
     } else if ast::is_qualified_name(parent) && parent.as_qualified_name().right == node {
-        let symbol = c.get_symbol_at_location_exported(parent.as_qualified_name().left)?;
+        let symbol = c.get_editor_symbol_at_location(parent.as_qualified_name().left)?;
         c.get_suggested_symbol_for_nonexistent_module(node, symbol)
     } else if ast::is_identifier(node) && matches!(fix.error_code, 2552 | 2570 | 2833) {
         let meaning = utilities::get_meaning_from_location(node);

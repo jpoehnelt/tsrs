@@ -21,7 +21,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
         {
             return vec![];
         }
-        let Some(symbol) = function.name().and_then(|name| c.get_symbol_at_location_exported(name))
+        let Some(symbol) = function.name().and_then(|name| c.get_editor_symbol_at_location(name))
         else {
             return vec![];
         };
@@ -64,7 +64,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
             } else {
                 (receiver, true)
             };
-            if c.get_symbol_at_location_exported(receiver) != Some(symbol) {
+            if c.get_editor_symbol_at_location(receiver) != Some(symbol) {
                 continue;
             }
             if let Some(body) = value.body() {
@@ -134,7 +134,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
             }) else {
                 continue;
             };
-            let receiver_type = c.get_type_at_location(access.expression().unwrap());
+            let receiver_type = c.get_editor_type_at_location(access.expression().unwrap());
             if c.get_promised_type_of_promise(receiver_type).is_none() {
                 continue;
             }
@@ -153,7 +153,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
             let Some(name) = parameter.name().filter(|p| ast::is_identifier(*p)) else {
                 continue;
             };
-            let Some(parameter_symbol) = c.get_symbol_at_location_exported(name) else {
+            let Some(parameter_symbol) = c.get_editor_symbol_at_location(name) else {
                 continue;
             };
             let mut refs = FxHashSet::default();
@@ -232,7 +232,7 @@ fn collect_callback_references(
     symbol: P<ast::Symbol>,
     out: &mut FxHashSet<P<Node>>,
 ) {
-    if ast::is_identifier(n) && checker.get_symbol_at_location_exported(n) == Some(symbol) {
+    if ast::is_identifier(n) && checker.get_editor_symbol_at_location(n) == Some(symbol) {
         out.insert(n);
     }
     n.for_each_child(&mut |child| {

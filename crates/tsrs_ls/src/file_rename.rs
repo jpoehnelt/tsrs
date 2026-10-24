@@ -423,7 +423,7 @@ impl LanguageService {
         importing_source_file_moved: bool,
         user_preferences: &modulespecifiers::UserPreferences,
     ) -> String {
-        let imported_module_symbol = checker.get_symbol_at_location_exported(import_literal);
+        let imported_module_symbol = checker.get_editor_symbol_at_location(import_literal);
         if is_ambient_module_symbol(imported_module_symbol) {
             return String::new();
         }

@@ -1139,7 +1139,7 @@ impl LanguageService {
                 .as_jsx_element()
                 .opening_element
                 .tag_name();
-            let tag_symbol = type_checker.get_symbol_at_location_exported(tag_name);
+            let tag_symbol = type_checker.get_editor_symbol_at_location(tag_name);
             if let Some(tag_symbol) = tag_symbol {
                 s.symbols = vec![tag_symbol];
             }
@@ -1328,7 +1328,7 @@ impl GetCompletionDataState {
             let left_most_name = get_left_most_name(computed_property_name.expression().unwrap()); // The completion is for `Symbol`, not `iterator`.
             let mut name_symbol: Option<P<Symbol>> = None;
             if let Some(left_most_name) = left_most_name {
-                name_symbol = type_checker.get_symbol_at_location_exported(left_most_name);
+                name_symbol = type_checker.get_editor_symbol_at_location(left_most_name);
             }
             // If this is nested like for `namespace N { export const sym = Symbol(); }`, we'll add the completion for `N`.
             let mut first_accessible_symbol: Option<P<Symbol>> = None;
@@ -1477,7 +1477,7 @@ impl GetCompletionDataState {
                 self.is_new_identifier_location = true;
                 self.default_commit_characters = Some(Vec::new());
             }
-            let symbol = type_checker.get_symbol_at_location_exported(node);
+            let symbol = type_checker.get_editor_symbol_at_location(node);
             if let Some(symbol) = symbol {
                 let symbol = checker::skip_alias(symbol, type_checker);
                 if symbol.flags().intersects(SymbolFlags::Module | SymbolFlags::Enum) {
@@ -1567,7 +1567,7 @@ impl GetCompletionDataState {
             // we will check (and cache) the type of `this` *before* checking the type of the node.
             type_checker
                 .try_get_this_type_at_ex_exported(node, false /*includeGlobalThis*/, None);
-            let type_at_location = type_checker.get_type_at_location(node);
+            let type_at_location = type_checker.get_editor_type_at_location(node);
             let mut t = type_checker.get_non_optional_type(type_at_location);
 
             if is_type_location {
@@ -1761,7 +1761,8 @@ impl GetCompletionDataState {
             }
             if can_get_type {
                 // Go checks the type for nil; GetTypeAtLocation never returns nil.
-                let type_for_object = type_checker.get_type_at_location(object_like_container);
+                let type_for_object =
+                    type_checker.get_editor_type_at_location(object_like_container);
                 let properties = type_checker.get_properties_of_type_exported(type_for_object);
                 type_members = properties
                     .iter()
@@ -2005,7 +2006,7 @@ impl GetCompletionDataState {
         };
 
         let Some(module_specifier_symbol) =
-            type_checker.get_symbol_at_location_exported(module_specifier)
+            type_checker.get_editor_symbol_at_location(module_specifier)
         else {
             self.is_new_identifier_location = true;
             return Ok(GlobalsSearch::Fail);
@@ -2068,7 +2069,7 @@ impl GetCompletionDataState {
             import_attributes.as_import_attributes().attributes.nodes();
         let existing: FxHashSet<&'static str> =
             elements.iter().map(|el| el.as_import_attribute().name.unwrap().text()).collect();
-        let type_at_location = type_checker.get_type_at_location(import_attributes);
+        let type_at_location = type_checker.get_editor_type_at_location(import_attributes);
         let uniques: Vec<P<Symbol>> = type_checker
             .get_apparent_properties(type_at_location)
             .into_iter()
@@ -2231,7 +2232,7 @@ impl GetCompletionDataState {
                 base_type_nodes
                     .into_iter()
                     .filter_map(|base_type_node| {
-                        let t = type_checker.get_type_at_location(base_type_node);
+                        let t = type_checker.get_editor_type_at_location(base_type_node);
                         if class_element_modifier_flags.intersects(ModifierFlags::Static) {
                             if let Some(t_symbol) = t.symbol() {
                                 let type_of_symbol = type_checker

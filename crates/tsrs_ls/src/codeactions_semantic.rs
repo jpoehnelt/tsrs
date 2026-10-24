@@ -21,7 +21,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
             ancestor(n, &[Kind::CallExpression]).or(Some(n))
         };
         if let Some(expr) = expr {
-            let typ = c.get_type_at_location(expr);
+            let typ = c.get_editor_type_at_location(expr);
             if c.get_promised_type_of_promise(typ).is_some()
                 && ast::find_ancestor(expr, |p| {
                     ast::is_function_like(p)
@@ -32,7 +32,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
                 let mut initializer = None;
                 if ast::is_identifier(expr) {
                     initializer = c
-                        .get_symbol_at_location_exported(expr)
+                        .get_editor_symbol_at_location(expr)
                         .and_then(|s| s.value_declaration())
                         .filter(|d| ast::is_variable_declaration(*d) && d.type_node().is_none())
                         .and_then(|d| d.initializer().map(|v| (d, v)));
@@ -107,7 +107,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
                 let stmt = body.statements()[0];
                 if ast::is_expression_statement(stmt) {
                     let expr = stmt.expression().unwrap();
-                    let actual = c.get_type_at_location(expr);
+                    let actual = c.get_editor_type_at_location(expr);
                     if c.is_type_assignable_to_exported(actual, expected) {
                         let mut p = plan(
                             "returnValueCorrect",
@@ -193,7 +193,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
         && let Some(var) = ancestor(n, &[Kind::VariableDeclaration])
         && let (Some(target), Some(value)) = (var.type_node(), var.initializer())
         && let Some(decl) = c
-            .get_type_at_location(value)
+            .get_editor_type_at_location(value)
             .symbol()
             .and_then(|s| s.declarations().first().copied())
             .filter(|p| {
@@ -332,7 +332,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
         && let (Some(target), Some(value)) = (decl.type_node(), decl.initializer())
     {
         let target = c.get_type_from_type_node(target);
-        let value = c.get_type_at_location(value);
+        let value = c.get_editor_type_at_location(value);
         let mut edits = Vec::new();
         let mut file = None;
         for &symbol in c.get_properties_of_type(target) {
@@ -376,7 +376,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
     if fix.error_code == 2515
         && let Some(class) = ancestor(n, &[Kind::ClassDeclaration])
     {
-        let typ = c.get_type_at_location(class);
+        let typ = c.get_editor_type_at_location(class);
         let mut edits = Vec::new();
         for &base in c.get_base_types(typ) {
             for &symbol in c.get_properties_of_type(base) {
@@ -424,7 +424,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
             member
                 .parent()
                 .and_then(ast::get_class_extends_heritage_element)
-                .map(|base| c.get_type_at_location(base))
+                .map(|base| c.get_editor_type_at_location(base))
                 .and_then(|base| c.get_property_of_type(base, member.name().unwrap().text()))
                 .and_then(|s| s.value_declaration())
                 .filter(|d| ast::is_property_declaration(*d))

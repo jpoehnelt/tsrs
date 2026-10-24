@@ -129,3 +129,8 @@ The expanded TypeScript 5 provider catalogue is selected by `editor.codeFixes` a
 `editor.combinedCodeFix`. The ordinary LSP retains the three providers registered
 by the pinned Go reference. This keeps reference LSP behavior independent from
 the additional embedding API; the Go Fourslash suite exercises the former.
+
+Legacy JavaScript observations use explicit `get_editor_type_at_location` and
+`get_editor_symbol_at_location` checker methods with a separate sparse cache.
+Ordinary compiler inspection retains the pinned reference types and symbols,
+including after an editor query on the same checker.

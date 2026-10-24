@@ -3,6 +3,18 @@
 //! `CommonJS` assignment declarations and constructor-function instance members.
 use crate::*;
 impl Checker {
+    /// Historical editor observations are separate from the pinned compiler API.
+    pub fn get_editor_type_at_location(&mut self, node: P<Node>) -> P<Type> {
+        let node = ast::get_reparsed_node_for_node(node).unwrap();
+        self.editor_js_type(node).unwrap_or_else(|| self.get_type_at_location(node))
+    }
+
+    /// Resolve `CommonJS` assignment ownership without replacing native symbol links.
+    pub fn get_editor_symbol_at_location(&mut self, node: P<Node>) -> Option<P<Symbol>> {
+        self.editor_module_exports_symbol(node)
+            .or_else(|| self.get_symbol_at_location_exported(node))
+    }
+
     pub(crate) fn editor_module_exports_symbol(&mut self, node: P<Node>) -> Option<P<Symbol>> {
         if !ast::is_in_js_file(node) {
             return None;
@@ -19,11 +31,9 @@ impl Checker {
         }
         let file = ast::get_source_file_of_node(access)?;
         let export = file.symbol()?.exports()?.lookup(ast::INTERNAL_SYMBOL_NAME_EXPORT_EQUALS)?;
-        let links = self.symbol_node_links.get(access);
-        if let Some(symbol) = links
-            .resolved_symbol
-            .get()
-            .filter(|s| s.value_declaration() == export.value_declaration())
+        let links = self.editor_node_links.get(access);
+        if let Some(symbol) =
+            links.symbol.get().filter(|s| s.value_declaration() == export.value_declaration())
         {
             return Some(symbol);
         }
@@ -33,7 +43,7 @@ impl Checker {
         symbol.set_value_declaration(export.value_declaration());
         symbol.set_parent(Some(module));
         self.value_symbol_links.get(symbol).resolved_type.set(Some(typ));
-        links.resolved_symbol.set(Some(symbol));
+        links.symbol.set(Some(symbol));
         Some(symbol)
     }
     pub(crate) fn editor_js_type(&mut self, node: P<Node>) -> Option<P<Type>> {
@@ -66,15 +76,15 @@ impl Checker {
             }
             let symbol = container.symbol()?;
             let members = symbol.members().filter(|m| !m.is_empty())?;
-            let links = self.declared_type_links.get(symbol);
-            if let Some(typ) = links.declared_type.get() {
+            let links = self.editor_node_links.get(container);
+            if let Some(typ) = links.typ.get() {
                 return Some(typ);
             }
             let instance = self.new_anonymous_type(None, Some(members), &[], &[], &[]);
             let typ = self.new_type_parameter(Some(symbol));
             typ.as_type_parameter().is_this_type.set(true);
             typ.as_type_parameter().constraint.set(Some(instance));
-            links.declared_type.set(Some(typ));
+            links.typ.set(Some(typ));
             return Some(typ);
         }
         None

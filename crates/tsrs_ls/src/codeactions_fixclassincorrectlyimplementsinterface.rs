@@ -172,8 +172,8 @@ fn add_changes(
 ) {
     let locale = locale_from_context(context);
     let constructor = get_constructor(Some(class_declaration));
-    let implemented_type = type_checker.get_type_at_location(implemented_type_node);
-    let class_type = type_checker.get_type_at_location(class_declaration);
+    let implemented_type = type_checker.get_editor_type_at_location(implemented_type_node);
+    let class_type = type_checker.get_editor_type_at_location(class_declaration);
 
     if type_checker.get_number_index_type(class_type).is_none() {
         let number_type = type_checker.get_number_type();
@@ -359,7 +359,7 @@ fn get_inherited_members(
         return FxHashMap::default();
     };
 
-    let base_type = type_checker.get_type_at_location(type_node);
+    let base_type = type_checker.get_editor_type_at_location(type_node);
 
     let mut inherited_members = FxHashMap::default();
     inherited_members.extend(type_checker.get_properties_of_type(base_type).iter().filter_map(

@@ -15,7 +15,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
         if !ast::is_identifier(n) {
             return None;
         }
-        let s = c.get_symbol_at_location_exported(n)?;
+        let s = c.get_editor_symbol_at_location(n)?;
         s.declarations().iter().find_map(|&d| ancestor(d, &[Kind::ImportDeclaration]))
     });
     if let Some(import) = import {
@@ -25,7 +25,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
             let ci = clause.as_import_clause();
             if fix.error_code == 80003
                 && (fix.fix_id.is_none()
-                    || c.get_symbol_at_location_exported(module).is_some_and(|s| {
+                    || c.get_editor_symbol_at_location(module).is_some_and(|s| {
                         s.declarations()
                             .iter()
                             .copied()
@@ -157,7 +157,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
                 result.push(p);
             }
             if fix.error_code == 2459
-                && let Some(target) = c.get_symbol_at_location_exported(module).and_then(|s| {
+                && let Some(target) = c.get_editor_symbol_at_location(module).and_then(|s| {
                     s.declarations().iter().copied().find(|d| d.kind() == Kind::SourceFile)
                 })
             {
@@ -193,7 +193,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
                 }
             }
             if fix.error_code == 1272
-                && let Some(spec) = c.get_symbol_at_location_exported(n).and_then(|s| {
+                && let Some(spec) = c.get_editor_symbol_at_location(n).and_then(|s| {
                     s.declarations().iter().copied().find(|d| d.kind() == Kind::ImportSpecifier)
                 })
             {
@@ -212,7 +212,7 @@ pub fn plans(ctx: &Context, fix: &CodeFixContext, t: &change::Tracker) -> Vec<Pl
                 let bindings = ci.named_bindings().unwrap();
                 let mut edits = vec![Edit::Replace(bindings, namespace)];
                 let mut refs = Vec::new();
-                if let Some(symbol) = c.get_symbol_at_location_exported(spec.name().unwrap()) {
+                if let Some(symbol) = c.get_editor_symbol_at_location(spec.name().unwrap()) {
                     collect_import_references(f.as_node(), &mut c, symbol, &mut refs);
                 }
                 for reference in refs {
@@ -294,7 +294,7 @@ fn collect_import_references(
     out: &mut Vec<P<Node>>,
 ) {
     if ast::is_identifier(n)
-        && c.get_symbol_at_location_exported(n) == Some(symbol)
+        && c.get_editor_symbol_at_location(n) == Some(symbol)
         && ast::find_ancestor(n, |p| p.kind() == Kind::ImportDeclaration).is_none()
     {
         out.push(n);

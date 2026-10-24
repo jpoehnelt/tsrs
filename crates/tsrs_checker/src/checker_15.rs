@@ -2430,9 +2430,6 @@ impl Checker {
         // !!!
         // const node = getParseTreeNode(nodeIn);
 
-        if let Some(symbol) = self.editor_module_exports_symbol(node) {
-            return Some(symbol);
-        }
         // set ignoreErrors: true because any lookups invoked by the API shouldn't cause any new errors
         self.get_symbol_at_location(
             ast::get_reparsed_node_for_node(node).unwrap(),
@@ -3204,11 +3201,7 @@ impl Checker {
 
     // checker.go:32652
     pub fn get_type_at_location(&mut self, node: P<Node>) -> P<Type> {
-        let node = ast::get_reparsed_node_for_node(node).unwrap();
-        if let Some(typ) = self.editor_js_type(node) {
-            return typ;
-        }
-        self.get_type_of_node(node)
+        self.get_type_of_node(ast::get_reparsed_node_for_node(node).unwrap())
     }
 
     // checker.go:32656

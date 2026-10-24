@@ -1015,7 +1015,7 @@ fn get_jsdoc_param_annotation(
         } else {
             if let Some(initializer) = initializer {
                 let inferred_type =
-                    type_checker.get_type_at_location(initializer.parent().unwrap());
+                    type_checker.get_editor_type_at_location(initializer.parent().unwrap());
                 if !inferred_type.flags().intersects(TypeFlags::Any | TypeFlags::Void) {
                     let file = ast::get_source_file_of_node(initializer).unwrap();
                     let quote_preference = lsutil::get_quote_preference(file, preferences);
@@ -1327,7 +1327,7 @@ impl LanguageService {
     ) -> Result<Option<lsproto::CompletionItem>, lsproto::Error> {
         let clauses = case_block.as_case_block().clauses.nodes();
         let switch_type =
-            c.get_type_at_location(case_block.parent().unwrap().expression().unwrap());
+            c.get_editor_type_at_location(case_block.parent().unwrap().expression().unwrap());
         if switch_type.is_union() && switch_type.types().iter().all(|&t| is_literal(t)) {
             // Collect constant values in existing clauses.
             let mut tracker = new_case_clause_tracker(c, clauses);

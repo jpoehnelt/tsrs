@@ -400,7 +400,7 @@ fn missing_parameter(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeActi
         return Ok(Vec::new());
     };
     let mut c = fix.program.get_type_checker_for_file(ctx, fix.source_file);
-    let typ = c.get_type_at_location(call.expression().unwrap());
+    let typ = c.get_editor_type_at_location(call.expression().unwrap());
     let function = c
         .get_resolved_signature(call, None, checker::CheckMode::Normal)
         .declaration()
@@ -433,11 +433,11 @@ fn missing_parameter(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeActi
     let mut existing = 0;
     let mut unnamed = 0;
     for (i, &arg) in call.arguments().iter().enumerate() {
-        let t = c.get_type_at_location(arg);
+        let t = c.get_editor_type_at_location(arg);
         let t = c.get_base_type_of_literal_type(t);
         let t = c.get_widened_type(t);
         if let Some(&parameter) = function.parameters().get(existing) {
-            let parameter_type = c.get_type_at_location(parameter);
+            let parameter_type = c.get_editor_type_at_location(parameter);
             if c.is_type_assignable_to(t, parameter_type) {
                 existing += 1;
                 continue;
@@ -550,7 +550,7 @@ fn missing_member(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>
         return Ok(Vec::new());
     };
     let mut c = fix.program.get_type_checker_for_file(ctx, fix.source_file);
-    let typ = c.get_type_at_location(access.expression().unwrap());
+    let typ = c.get_editor_type_at_location(access.expression().unwrap());
     let Some(declaration) = typ.symbol().and_then(|s| {
         s.declarations()
             .iter()
@@ -609,7 +609,7 @@ fn missing_member(ctx: &Context, fix: &CodeFixContext) -> Result<Vec<CodeAction>
                 .filter(|n| ast::is_call_expression(*n) && n.expression() == Some(access))
         {
             for (index, &argument) in call.arguments().iter().enumerate() {
-                let t = c.get_type_at_location(argument);
+                let t = c.get_editor_type_at_location(argument);
                 let t = c.get_base_type_of_literal_type(t);
                 let t = c.get_widened_type(t);
                 let parameter_type = type_node(&mut c, &changes, t, declaration);
@@ -761,7 +761,7 @@ fn method_parameters(
             let typ = if js {
                 None
             } else {
-                let v = c.get_type_at_location(arg);
+                let v = c.get_editor_type_at_location(arg);
                 let v = c.get_base_type_of_literal_type(v);
                 let v = c.get_widened_type(v);
                 type_node(c, changes, v, location)
@@ -792,7 +792,7 @@ fn missing_function(ctx: &Context, fix: &CodeFixContext, name: P<Node>) -> Vec<C
         return Vec::new();
     };
     let mut c = fix.program.get_type_checker_for_file(ctx, fix.source_file);
-    if c.get_symbol_at_location_exported(name).is_some() {
+    if c.get_editor_symbol_at_location(name).is_some() {
         return Vec::new();
     }
     let mut changes = tracker(ctx, fix);

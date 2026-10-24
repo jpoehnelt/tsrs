@@ -774,6 +774,20 @@ pub struct NodeLinks {
     pub has_reported_statement_in_ambient_context: Cell<bool>, // Cache boolean if we report statements in ambient context
 }
 
+/// Sparse compatibility observations, isolated from compiler type/symbol caches.
+#[derive(Default)]
+pub struct EditorNodeLinks {
+    pub symbol: Cell<Option<P<Symbol>>>,
+    pub typ: Cell<Option<P<Type>>>,
+}
+
+impl crate::links::LinkCopy for EditorNodeLinks {
+    fn copy_link_from(&self, frozen: &Self) {
+        self.symbol.set(frozen.symbol.get());
+        self.typ.set(frozen.typ.get());
+    }
+}
+
 #[derive(Default)]
 pub struct SymbolNodeLinks {
     pub resolved_symbol: Cell<Option<P<Symbol>>>, // Resolved symbol associated with node

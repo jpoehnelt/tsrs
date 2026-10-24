@@ -118,7 +118,7 @@ fn free_names(file: P<SourceFile>, expression: P<Node>, checker: &mut Checker) -
         .into_iter()
         .filter(|node| is_reference(*node))
         .filter_map(|node| {
-            let symbol = checker.get_symbol_at_location_exported(node)?;
+            let symbol = checker.get_editor_symbol_at_location(node)?;
             if !symbol
                 .declarations()
                 .iter()
@@ -180,7 +180,7 @@ fn template_part(file: P<SourceFile>, node: P<Node>, checker: &mut Checker, resu
         result.push_str(&escape_template(node.text()));
     } else if node.kind() == Kind::BinaryExpression
         && node.as_binary_expression().operator_token().kind() == Kind::PlusToken
-        && checker.get_type_at_location(node).flags().intersects(TypeFlags::StringLike)
+        && checker.get_editor_type_at_location(node).flags().intersects(TypeFlags::StringLike)
     {
         template_part(file, node.as_binary_expression().left(), checker, result);
         template_part(file, node.as_binary_expression().right(), checker, result);
@@ -286,7 +286,10 @@ impl LanguageService {
                 right - left
             });
         if let Some(expression) = concatenation
-            && checker.get_type_at_location(expression).flags().intersects(TypeFlags::StringLike)
+            && checker
+                .get_editor_type_at_location(expression)
+                .flags()
+                .intersects(TypeFlags::StringLike)
         {
             let mut replacement = "`".to_string();
             template_part(file, expression, &mut checker, &mut replacement);

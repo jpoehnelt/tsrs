@@ -318,7 +318,7 @@ impl IsolatedDeclarationsFixer<'_> {
             return String::new();
         };
 
-        let t = self.checker.get_type_at_location(expando_func);
+        let t = self.checker.get_editor_type_at_location(expando_func);
         let elements = self.checker.get_properties_of_type(t);
         if elements.is_empty() {
             return String::new();
@@ -437,7 +437,8 @@ impl IsolatedDeclarationsFixer<'_> {
         }
 
         let variable_declaration = ast::find_ancestor_kind(target_node, Kind::VariableDeclaration);
-        let variable_type = variable_declaration.map(|d| self.checker.get_type_at_location(d));
+        let variable_type =
+            variable_declaration.map(|d| self.checker.get_editor_type_at_location(d));
         // Can't use typeof on unique symbols
         if variable_type.is_some_and(|t| t.flags().intersects(TypeFlags::UniqueESSymbol)) {
             return String::new();
@@ -1076,7 +1077,7 @@ impl IsolatedDeclarationsFixer<'_> {
             }
             Some(self.checker.get_return_type_of_signature_exported(signature))
         } else {
-            Some(self.checker.get_type_at_location(node))
+            Some(self.checker.get_editor_type_at_location(node))
         };
 
         let mut t = t?;
@@ -1506,7 +1507,7 @@ impl IsolatedDeclarationsFixer<'_> {
 
             // Check if this import is from the same module
             let Some(import_module_symbol) =
-                self.checker.get_symbol_at_location_exported(import_decl.module_specifier)
+                self.checker.get_editor_symbol_at_location(import_decl.module_specifier)
             else {
                 continue;
             };
@@ -1614,7 +1615,7 @@ fn find_expando_function(ch: &mut Checker, node: P<Node>) -> Option<P<Node>> {
         return None;
     };
 
-    let target_type = ch.get_type_at_location(expression);
+    let target_type = ch.get_editor_type_at_location(expression);
 
     let properties = ch.get_properties_of_type(target_type);
     let found = properties.iter().any(|&p| {

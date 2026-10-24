@@ -690,7 +690,7 @@ fn embedded_commonjs_export_assignment_symbol() {
     let node =
         crate::astnav::get_touching_property_name(file, text.find("exports").unwrap() as u32 + 1);
     let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
-    let symbol = c.get_symbol_at_location_exported(node).unwrap();
+    let symbol = c.get_editor_symbol_at_location(node).unwrap();
     assert!(
         symbol.declarations().iter().any(|d| tsrs_ast::is_binary_expression(*d)),
         "{:?}",
@@ -712,9 +712,11 @@ fn embedded_constructor_this_has_instance_fields() {
     let node =
         crate::astnav::get_touching_property_name(file, text.find("this._bubble").unwrap() as u32);
     let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
-    let t = c.get_type_at_location(node);
+    let native = c.get_type_at_location(node);
+    let t = c.get_editor_type_at_location(node);
     let names: Vec<_> = c.get_properties_of_type(t).iter().map(|s| s.name()).collect();
     assert!(names.contains(&"_n") && names.contains(&"_data"), "{names:?}");
+    assert_eq!(c.get_type_at_location(node), native);
 }
 
 #[test]
@@ -737,7 +739,7 @@ fn embedded_quick_info_budget_isolated_from_normal_serialization() {
     let file = ls.get_program().get_source_file("/index.ts").unwrap();
     let node = crate::astnav::get_touching_property_name(file, 9);
     let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
-    let typ = c.get_type_at_location(node);
+    let typ = c.get_editor_type_at_location(node);
     let builder = checker::new_node_builder(&c, tsrs_printer::new_emit_context());
     let flags = Flags::MultilineObjectLiterals | Flags::UseAliasDefinedOutsideCurrentScope;
     builder
@@ -1296,4 +1298,33 @@ fn embedded_provider_catalogue_does_not_change_reference_lsp_actions() {
         ls.provide_code_actions(&ctx, &params).unwrap().command_or_code_action_array.unwrap(),
         [] as [lsproto::CommandOrCodeAction; 0]
     );
+}
+
+// Pinned reference compiler/javascriptCommonjsModule.types exposes a module
+// container with `exports`, while a legacy editor observes the assigned class.
+#[test]
+fn editor_commonjs_observations_do_not_replace_reference_compiler_types() {
+    let text = "class Foo {} class Bar extends Foo {} module.exports = Bar;";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"module":"commonjs"},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let node =
+        crate::astnav::get_touching_property_name(file, text.find("module").unwrap() as u32 + 1);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let native = c.get_type_at_location(node);
+    let names: Vec<_> = c.get_properties_of_type(native).iter().map(|s| s.name()).collect();
+    assert_eq!(names, ["exports"]);
+    let editor = c.get_editor_type_at_location(node);
+    assert_ne!(editor, native);
+    assert_eq!(c.get_type_at_location(node), native);
+    let access =
+        crate::astnav::get_touching_property_name(file, text.find("exports").unwrap() as u32 + 1);
+    let symbol = c.get_symbol_at_location_exported(access);
+    assert!(c.get_editor_symbol_at_location(access).is_some());
+    assert_eq!(c.get_symbol_at_location_exported(access), symbol);
 }

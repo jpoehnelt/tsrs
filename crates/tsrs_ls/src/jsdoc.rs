@@ -237,7 +237,7 @@ pub fn get_jsdoc_or_tag(
     {
         let name = node.property_name_or_name().unwrap();
         if ast::is_identifier(name) {
-            let object_type = c.get_type_at_location(node.parent().unwrap());
+            let object_type = c.get_editor_type_at_location(node.parent().unwrap());
             if let Some(prop) = c.get_property_of_type_exported(object_type, name.text())
                 && let Some(result) = prop.declarations().iter().find_map(|&d| {
                     if let Some(jsdoc) = get_jsdoc(d) {
