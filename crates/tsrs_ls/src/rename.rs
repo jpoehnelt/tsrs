@@ -263,7 +263,7 @@ impl LanguageService {
         let mut ch = program.get_type_checker(ctx);
         let ch: &mut Checker = &mut ch;
 
-        let symbol = ch.get_symbol_at_location_exported(node);
+        let symbol = ch.get_editor_symbol_at_location(node);
         let Some(symbol) = symbol else {
             if ast::is_string_literal_like(node) {
                 // Allow renaming of string literal types with contextual string literal types
@@ -609,7 +609,7 @@ impl LanguageService {
                 let original_symbol = if ast::is_export_specifier(original_node.parent().unwrap()) {
                     ch.get_export_specifier_local_target_symbol(original_node.parent().unwrap())
                 } else {
-                    ch.get_symbol_at_location_exported(original_node)
+                    ch.get_editor_symbol_at_location(original_node)
                 };
                 if original_symbol.is_some_and(|s| s.declarations().contains(&parent)) {
                     return format!("{name} as {new_text}");
@@ -618,8 +618,8 @@ impl LanguageService {
             } else if ast::is_export_specifier(parent) && parent.property_name().is_none() {
                 // If the symbol for the node is same as declared node symbol use prefix text
                 if Some(original_node) == entry.node
-                    || ch.get_symbol_at_location_exported(original_node)
-                        == ch.get_symbol_at_location_exported(entry.node.unwrap())
+                    || ch.get_editor_symbol_at_location(original_node)
+                        == ch.get_editor_symbol_at_location(entry.node.unwrap())
                 {
                     return format!("{name} as {new_text}");
                 }

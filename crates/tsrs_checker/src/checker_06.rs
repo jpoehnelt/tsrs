@@ -1669,7 +1669,7 @@ impl Checker {
     }
 
     // checker.go:11809
-    pub(crate) fn get_suggested_symbol_for_nonexistent_property(
+    pub fn get_suggested_symbol_for_nonexistent_property(
         &mut self,
         name: P<Node>,
         containing_type: P<Type>,

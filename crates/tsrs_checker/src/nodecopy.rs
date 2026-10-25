@@ -277,7 +277,11 @@ impl NodeBuilderImpl {
         ctx.tracker.set(bound.old_tracker);
         *ctx.tracked_symbols.borrow_mut() = bound.old_tracked_symbols.take();
         ctx.encountered_error.set(bound.old_encountered_error);
-        ctx.approximate_length.set(bound.old_approximate_length);
+        // TSServer counts names qualified while reusing annotations in its hover budget.
+        // Go's serializer discards that work and counts only the original span.
+        if !ctx.legacy_quick_info {
+            ctx.approximate_length.set(bound.old_approximate_length);
+        }
 
         let deferred_reports = bound.deferred_reports.take();
         for f in deferred_reports {
@@ -787,7 +791,14 @@ impl ExistingNodeTree {
         }
         let type_name = node.as_type_reference_node().type_name;
         let (introduces_error, new_name, _) = self.track_existing_entity_name(c, type_name, None);
-        if introduces_error {
+        // A TSServer quick-info type is printed outside the declaration's namespace.
+        // Qualify borrowed bare names before budgeting, rather than relying on the
+        // printer's later symbol-name substitution (which has its own context).
+        let qualify_legacy_name = b.ctx().legacy_quick_info
+            && b.ctx().enclosing_declaration.get().is_none_or(ast::is_source_file)
+            && ast::is_identifier(type_name)
+            && s.parent().is_some_and(|p| p.flags().intersects(SymbolFlags::Namespace));
+        if introduces_error || qualify_legacy_name {
             let type_arguments = self.visit_nodes(c, v, node.type_argument_list());
             let serialized_name = b.serialize_type_name(c, type_name, false, type_arguments);
             if let Some(serialized_name) = serialized_name {

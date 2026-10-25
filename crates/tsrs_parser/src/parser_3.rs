@@ -20,6 +20,10 @@ use crate::utilities::{is_keyword_or_punctuation, token_is_identifier_or_keyword
 
 impl Parser {
     pub(crate) fn parse_assignment_expression_or_higher(&mut self) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         self.parse_assignment_expression_or_higher_worker(
             true, /*allowReturnTypeInArrowFunction*/
         )
@@ -808,6 +812,10 @@ impl Parser {
 
     #[inline]
     pub(crate) fn parse_unary_expression_or_higher(&mut self) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         // ES7 UpdateExpression:
         //      1) LeftHandSideExpression[?Yield]
         //      2) LeftHandSideExpression[?Yield][no LineTerminator here]++
@@ -932,6 +940,10 @@ impl Parser {
         opening_tag: Option<P<Node>>,
         must_be_unary: bool,
     ) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         let pos = self.node_pos();
         let opening = self
             .parse_jsx_opening_or_self_closing_element_or_opening_fragment(in_expression_context);
@@ -1417,6 +1429,10 @@ impl Parser {
     }
 
     pub(crate) fn parse_simple_unary_expression(&mut self) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         let token = self.token;
         match token {
             Kind::PlusToken | Kind::MinusToken | Kind::TildeToken | Kind::ExclamationToken => {
@@ -2491,6 +2507,10 @@ impl Parser {
     }
 
     pub(crate) fn parse_new_expression_or_new_dot_target(&mut self) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         let pos = self.node_pos();
         self.parse_expected(Kind::NewKeyword);
         if self.parse_optional(Kind::DotToken) {

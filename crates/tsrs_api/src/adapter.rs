@@ -25,6 +25,9 @@ impl transport::Handler for SessionHandler {
         match self.0.handle_nested_request(method, params, cx.depth) {
             // `echo` returns the client's bytes and `batchRequests` can embed an `echo` result: the transport
             // validates those as Go's json.Marshal does. Every other JSON result is `json::marshal` output.
+            Ok(crate::Response::Value(value)) => tsrs_core::json::marshal(&value)
+                .map(|s| transport::Response::ValidJson(s.into_bytes()))
+                .map_err(transport::ApiError::internal),
             Ok(crate::Response::Json(s)) if matches!(method, "echo" | "batchRequests") => {
                 Ok(transport::Response::Json(s.into_bytes()))
             }

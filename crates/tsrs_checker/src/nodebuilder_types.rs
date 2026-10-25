@@ -53,6 +53,7 @@ pub struct SerializedTypeEntry {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct CompositeTypeCacheIdentity {
+    pub legacy_quick_info: bool,
     pub type_id: TypeId,
     pub flags: Flags,
     pub internal_flags: InternalFlags,
@@ -94,6 +95,7 @@ pub struct NodeBuilderContext {
     pub internal_flags: Cell<InternalFlags>,
     pub depth: Cell<usize>,
     pub max_expansion_depth: Cell<Option<usize>>,
+    pub legacy_quick_info: bool,
     /// `ExpandSymbolForHover` pushes a nil sentinel, hence `Option`.
     pub type_stack: RefCell<Vec<Option<P<Type>>>>,
     pub can_increase_expansion_depth: Cell<bool>,
@@ -134,6 +136,7 @@ impl NodeBuilderContext {
             internal_flags: Cell::new(InternalFlags::None),
             depth: Cell::new(0),
             max_expansion_depth: Cell::new(Some(0)),
+            legacy_quick_info: false,
             type_stack: RefCell::default(),
             can_increase_expansion_depth: Cell::new(false),
             expansion_truncated: Cell::new(false),

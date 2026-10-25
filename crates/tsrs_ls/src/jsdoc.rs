@@ -63,24 +63,29 @@ pub fn get_symbol_jsdoc_tags(symbol: Option<P<Symbol>>) -> Vec<JSDocTagInfo> {
         if !seen.insert(decl) {
             continue;
         }
-        let tags = declaration_jsdoc_tags(decl);
-        // Skip comments containing @typedef/@callback since they're not associated with a
-        // particular declaration, unless they also carry @param/@return (treated as local docs).
-        let has_typedef = tags
-            .iter()
-            .any(|t| t.kind() == Kind::JSDocTypedefTag || t.kind() == Kind::JSDocCallbackTag);
-        let has_param_or_return = tags
-            .iter()
-            .any(|t| t.kind() == Kind::JSDocParameterTag || t.kind() == Kind::JSDocReturnTag);
-        if has_typedef && !has_param_or_return {
-            continue;
-        }
-        infos.extend(tags.iter().map(|&tag| JSDocTagInfo {
-            name: tag.tag_name().text().to_string(),
-            text: get_jsdoc_tag_text(tag),
-        }));
+        infos.extend(get_declaration_jsdoc_tag_info(decl));
     }
     infos
+}
+
+/// The selected overload's tags, without merging unrelated declarations.
+pub fn get_declaration_jsdoc_tag_info(decl: P<Node>) -> Vec<JSDocTagInfo> {
+    let tags = declaration_jsdoc_tags(decl);
+    let has_typedef = tags
+        .iter()
+        .any(|t| t.kind() == Kind::JSDocTypedefTag || t.kind() == Kind::JSDocCallbackTag);
+    let has_param_or_return = tags
+        .iter()
+        .any(|t| t.kind() == Kind::JSDocParameterTag || t.kind() == Kind::JSDocReturnTag);
+    if has_typedef && !has_param_or_return {
+        return Vec::new();
+    }
+    tags.iter()
+        .map(|&tag| JSDocTagInfo {
+            name: tag.tag_name().text().to_string(),
+            text: get_jsdoc_tag_text(tag),
+        })
+        .collect()
 }
 
 // declarationJSDocTags returns the JSDoc tags associated with a declaration, walking the
@@ -232,7 +237,7 @@ pub fn get_jsdoc_or_tag(
     {
         let name = node.property_name_or_name().unwrap();
         if ast::is_identifier(name) {
-            let object_type = c.get_type_at_location(node.parent().unwrap());
+            let object_type = c.get_editor_type_at_location(node.parent().unwrap());
             if let Some(prop) = c.get_property_of_type_exported(object_type, name.text())
                 && let Some(result) = prop.declarations().iter().find_map(|&d| {
                     if let Some(jsdoc) = get_jsdoc(d) {

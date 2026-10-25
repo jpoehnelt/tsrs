@@ -541,3 +541,47 @@ fn inferred_project_rebuild_frees_safely() {
         call(&s, "release", &format!("{{\"snapshot\":{snap}}}"));
     }
 }
+
+#[test]
+fn editor_callback_parse_policy_changes_do_not_reuse_default_asts() {
+    let dir = TempDir::new("editor-callback");
+    let cfg = dir.write(
+        "tsconfig.json",
+        r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["a.js"]}"#,
+    );
+    dir.write(
+        "a.js",
+        "/** @param {function(string): boolean} cb */\nfunction use(cb) { return cb(123); }",
+    );
+    let s = session(&dir.dir(), true);
+    let first = call(&s, "createSnapshot", &format!("{{\"openProjects\":[{}]}}", quote(&cfg)));
+    let project = str_of(get(&first, "projects.0.id")).to_string();
+    let mut snapshot = get(&first, "snapshot").clone();
+    for editor in [false, true, false] {
+        std::fs::write(&cfg, format!(r#"{{"tsrsEditorLegacyJSDocFunctionTypes":{editor},"compilerOptions":{{"allowJs":true,"checkJs":true,"strict":true}},"files":["a.js"]}}"#)).unwrap();
+        let next = call(
+            &s,
+            "updateSnapshot",
+            &format!(
+                "{{\"snapshot\":{},\"changes\":{{\"ensurePrograms\":true,\"fileNotifications\":{{\"changed\":[{}]}}}}}}",
+                json::marshal(&snapshot).unwrap(),
+                quote(&cfg)
+            ),
+        );
+        snapshot = get(&next, "snapshot").clone();
+        let diagnostics = call(
+            &s,
+            "getSemanticDiagnostics",
+            &format!(
+                "{{\"snapshot\":{},\"project\":{}}}",
+                json::marshal(&snapshot).unwrap(),
+                quote(&project)
+            ),
+        );
+        let codes: Vec<_> = arr(&diagnostics).iter().map(|d| get(d, "code").clone()).collect();
+        assert_eq!(codes.contains(&Value::Number(1005.0)), !editor, "{editor}: {diagnostics:?}");
+        if editor {
+            assert_eq!(codes, [Value::Number(2345.0)], "{diagnostics:?}");
+        }
+    }
+}

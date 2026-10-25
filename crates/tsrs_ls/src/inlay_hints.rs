@@ -196,7 +196,8 @@ impl InlayHintState<'_> {
 
             let mut spread_args = 0;
             if ast::is_spread_element(arg) {
-                let spread_type = self.checker.get_type_at_location(arg.expression().unwrap());
+                let spread_type =
+                    self.checker.get_editor_type_at_location(arg.expression().unwrap());
                 if spread_type.is_tuple_type() {
                     let tuple_type = spread_type.target().unwrap().as_tuple_type();
                     let element_flags = tuple_type.element_flags();
@@ -267,7 +268,11 @@ impl InlayHintState<'_> {
     fn visit_variable_like_declaration(&mut self, decl: P<Node>) {
         let missing_initializer_without_specific_property_type = decl.initializer().is_none()
             && (!ast::is_property_declaration(decl)
-                || self.checker.get_type_at_location(decl).flags().intersects(TypeFlags::Any));
+                || self
+                    .checker
+                    .get_editor_type_at_location(decl)
+                    .flags()
+                    .intersects(TypeFlags::Any));
         if missing_initializer_without_specific_property_type
             || ast::is_binding_pattern(decl.name().unwrap())
             || (ast::is_variable_declaration(decl) && !is_hintable_declaration(decl))
@@ -280,7 +285,7 @@ impl InlayHintState<'_> {
             return;
         }
 
-        let declaration_type = self.checker.get_type_at_location(decl);
+        let declaration_type = self.checker.get_editor_type_at_location(decl);
         if is_module_reference_type(declaration_type) {
             return;
         }

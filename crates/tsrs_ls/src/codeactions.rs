@@ -17,6 +17,8 @@ use crate::spanmap::Feature;
 // CodeFixProvider represents a provider for a specific type of code fix
 pub struct CodeFixProvider {
     pub error_codes: &'static [i32],
+    /// Whether this provider reads the prepared package-export/auto-import view.
+    pub requires_auto_imports: bool,
     pub get_code_actions:
         fn(ctx: &Context, fix_context: &CodeFixContext) -> Result<Vec<CodeAction>, lsproto::Error>,
     pub fix_ids: &'static [&'static str],
@@ -34,6 +36,7 @@ pub struct CodeFixContext<'a> {
     pub source_file: P<SourceFile>,
     pub span: TextRange,
     pub error_code: i32,
+    pub fix_id: Option<&'a str>,
     pub program: &'static Program,
     pub ls: &'a LanguageService,
     pub diagnostic: Option<&'a lsproto::Diagnostic>,
@@ -47,10 +50,23 @@ pub struct CodeAction {
     pub description: String,
     pub changes: Vec<lsproto::TextEdit>,
     pub fix_id: String,
+    pub fix_name: Option<String>,
+    pub changes_by_file: Vec<(lsproto::DocumentUri, Vec<lsproto::TextEdit>)>,
     pub fix_all_description: String,
 }
 
 impl CodeAction {
+    pub fn workspace_edit(&self, uri: &lsproto::DocumentUri) -> lsproto::WorkspaceEdit {
+        let mut changes = OrderedMap::default();
+        if !self.changes.is_empty() {
+            changes.insert(uri.clone(), self.changes.clone());
+        }
+        for (uri, edits) in &self.changes_by_file {
+            changes.entry(uri.clone()).or_default().extend(edits.iter().cloned());
+        }
+        lsproto::WorkspaceEdit { changes: Some(changes), ..Default::default() }
+    }
+
     // codeactions.go:49
     // Compare defines a total ordering for CodeAction values, comparing description
     // then text edits lexicographically. Used with slices.BinarySearchFunc.
@@ -73,6 +89,24 @@ impl CodeAction {
         }) {
             return result;
         }
+        let c = self.changes_by_file.len().cmp(&b.changes_by_file.len());
+        if c != Ordering::Equal {
+            return c;
+        }
+        for ((uri, edits), (other_uri, other_edits)) in
+            self.changes_by_file.iter().zip(&b.changes_by_file)
+        {
+            let c = uri.cmp(other_uri).then_with(|| edits.len().cmp(&other_edits.len()));
+            if c != Ordering::Equal {
+                return c;
+            }
+            for (edit, other) in edits.iter().zip(other_edits) {
+                let c = edit.compare(other);
+                if c != Ordering::Equal {
+                    return c;
+                }
+            }
+        }
         Ordering::Equal
     }
 }
@@ -87,25 +121,206 @@ fn go_compare<T: Ord + ?Sized>(a: &T, b: &T) -> Ordering {
 pub struct CombinedCodeActions {
     pub description: String,
     pub changes: Vec<lsproto::TextEdit>,
+    pub changes_by_file: Vec<(lsproto::DocumentUri, Vec<lsproto::TextEdit>)>,
+}
+impl CombinedCodeActions {
+    pub fn workspace_edit(&self, uri: &lsproto::DocumentUri) -> lsproto::WorkspaceEdit {
+        CodeAction {
+            changes: self.changes.clone(),
+            changes_by_file: self.changes_by_file.clone(),
+            ..Default::default()
+        }
+        .workspace_edit(uri)
+    }
 }
 
-// codeactions.go:72
-// codeFixProviders is the list of all registered code fix providers
+// The ordinary LSP retains the pinned Go provider catalogue. Additional TS5-style
+// providers are exposed only through the explicit embedded compiler API.
 fn code_fix_providers() -> &'static [&'static CodeFixProvider] {
     static PROVIDERS: std::sync::LazyLock<Vec<&'static CodeFixProvider>> = std::sync::LazyLock::new(
         || {
             vec![
-            &*crate::codeactions_importfixes::IMPORT_FIX_PROVIDER,
-            &*crate::codeactions_fixmissingtypeannotation::ISOLATED_DECLARATIONS_FIX_PROVIDER,
-            &*crate::codeactions_fixclassincorrectlyimplementsinterface::FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_PROVIDER,
-            // Add more code fix providers here as they are implemented
-        ]
+        &*crate::codeactions_importfixes::IMPORT_FIX_PROVIDER,
+        &*crate::codeactions_fixmissingtypeannotation::ISOLATED_DECLARATIONS_FIX_PROVIDER,
+        &*crate::codeactions_fixclassincorrectlyimplementsinterface::FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_PROVIDER,
+    ]
         },
     );
     &PROVIDERS
 }
 
+// codeactions.go:72 plus the explicitly embedded provider extensions.
+fn embedded_code_fix_providers() -> &'static [&'static CodeFixProvider] {
+    static PROVIDERS: std::sync::LazyLock<Vec<&'static CodeFixProvider>> =
+        std::sync::LazyLock::new(|| {
+            let mut providers = code_fix_providers().to_vec();
+            providers.extend([
+                &crate::codeactions_usage::IMPLICIT_THIS_PROVIDER,
+                &crate::codeactions_usage::INFER_USAGE_PROVIDER,
+                &crate::codeactions_usage::MISSING_PARAMETER_PROVIDER,
+                &crate::codeactions_usage::MISSING_MEMBER_PROVIDER,
+                &crate::codeactions_spelling::SPELLING_PROVIDER,
+                &crate::codeactions_cleanup::CLEANUP_PROVIDER,
+                &crate::codeactions_syntax::SYNTAX_PROVIDER,
+            ]);
+            providers
+        });
+    &PROVIDERS
+}
+
+/// Embedded clients can avoid checking/serializing a file for a code with no registered fix.
+pub fn supported_code_fix_codes() -> Vec<i32> {
+    let mut codes: Vec<i32> = embedded_code_fix_providers()
+        .iter()
+        .flat_map(|provider| provider.error_codes.iter().copied())
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    codes
+}
+
+/// Unknown providers retain the conservative prepared-snapshot behavior.
+pub fn code_fix_requires_auto_imports(code: i32) -> bool {
+    let mut found = false;
+    for provider in embedded_code_fix_providers() {
+        if provider.error_codes.contains(&code) {
+            found = true;
+            if provider.requires_auto_imports {
+                return true;
+            }
+        }
+    }
+    !found
+}
+pub fn combined_code_fix_requires_auto_imports(id: &str) -> bool {
+    embedded_code_fix_providers()
+        .iter()
+        .find(|provider| provider.fix_ids.contains(&id))
+        .is_none_or(|provider| provider.requires_auto_imports)
+}
+
 impl LanguageService {
+    /// Preserve compiler fix IDs that the LSP `CodeAction` representation does not carry.
+    pub fn embedded_code_fixes(
+        &self,
+        ctx: &Context,
+        params: &lsproto::CodeActionParams,
+    ) -> Result<Vec<CodeAction>, lsproto::Error> {
+        let (program, file) = self.get_program_and_file(&params.text_document.uri);
+        let mut actions = Vec::new();
+        for diagnostic in &params.context.diagnostics {
+            actions.extend(
+                self.code_fixes_for_diagnostic(
+                    ctx,
+                    program,
+                    file,
+                    diagnostic,
+                    params,
+                    embedded_code_fix_providers(),
+                )?
+                .into_iter()
+                .map(|(_, action)| action),
+            );
+        }
+        // Raw legacy compiler APIs include this action; editor hosts filter
+        // suppression actions before offering fixes. Keep the reference LSP
+        // and the default embedded API independent of that compatibility rule.
+        if self.legacy_code_fix_edits
+            && !params.context.diagnostics.is_empty()
+            && tsrs_ast::is_in_js_file(file.as_node())
+            && tsrs_ast::is_check_js_enabled_for_file(file, &program.options())
+        {
+            let formatting = self.format_options();
+            let (start, end, newline) = if let Some(directive) = file.check_js_directive() {
+                (directive.range.pos(), directive.range.end(), "")
+            } else {
+                (0, 0, formatting.new_line_character.as_str())
+            };
+            let (start, _) = self.converters.to_lsp_position(&file, start.into());
+            let (end, _) = self.converters.to_lsp_position(&file, end.into());
+            actions.push(CodeAction {
+                fix_name: Some("disableJsDiagnostics".to_string()),
+                description: "Disable checking for this file".to_string(),
+                changes: vec![lsproto::TextEdit {
+                    range: lsproto::Range { start, end },
+                    new_text: format!("// @ts-nocheck{newline}"),
+                }],
+                ..Default::default()
+            });
+        }
+        Ok(actions)
+    }
+
+    pub fn embedded_combined_code_fix(
+        &self,
+        ctx: &Context,
+        uri: &lsproto::DocumentUri,
+        fix_id: &str,
+    ) -> Result<Option<CombinedCodeActions>, lsproto::Error> {
+        let provider = embedded_code_fix_providers()
+            .iter()
+            .find(|provider| provider.fix_ids.contains(&fix_id))
+            .ok_or_else(|| lsproto::Error::new(format!("Unknown compiler fix ID: {fix_id}")))?;
+        let Some(get_all) = provider.get_all_code_actions else {
+            return Ok(None);
+        };
+        let (program, file) = self.get_program_and_file(uri);
+        get_all(
+            ctx,
+            &CodeFixContext {
+                source_file: file,
+                span: TextRange::default(),
+                error_code: 0,
+                fix_id: Some(fix_id),
+                program,
+                ls: self,
+                diagnostic: None,
+                params: None,
+            },
+        )
+    }
+
+    fn code_fixes_for_diagnostic(
+        &self,
+        ctx: &Context,
+        program: &'static Program,
+        file: P<SourceFile>,
+        diagnostic: &lsproto::Diagnostic,
+        params: &lsproto::CodeActionParams,
+        providers: &[&'static CodeFixProvider],
+    ) -> Result<Vec<(&'static CodeFixProvider, CodeAction)>, lsproto::Error> {
+        let Some(error_code) = diagnostic.code.as_ref().and_then(|code| code.integer) else {
+            return Ok(Vec::new());
+        };
+        let mut result = Vec::new();
+        for &provider in providers {
+            if !code_fix_provider_matches_lsp_diagnostic(provider, diagnostic) {
+                continue;
+            }
+            for mapped in self.converters.from_lsp_range_for_source_file(
+                file,
+                diagnostic.range,
+                Feature::CodeActions,
+            ) {
+                let context = CodeFixContext {
+                    source_file: mapped.script,
+                    span: mapped.span,
+                    error_code,
+                    fix_id: None,
+                    program,
+                    ls: self,
+                    diagnostic: Some(diagnostic),
+                    params: Some(params),
+                };
+                result.extend(
+                    (provider.get_code_actions)(ctx, &context)?
+                        .into_iter()
+                        .map(|action| (provider, action)),
+                );
+            }
+        }
+        Ok(result)
+    }
     // codeactions.go:80
     // ProvideCodeActions returns code actions for the given range and context
     pub fn provide_code_actions(
@@ -143,47 +358,26 @@ impl LanguageService {
             let mut seen: Vec<CodeAction> = Vec::new(); // sorted for binary search dedup, dedup across all diagnostics and providers so if multiple diags produce the same codefix, only one is returned
 
             for diag in &params.context.diagnostics {
-                let Some(error_code) = diag.code.as_ref().and_then(|c| c.integer) else {
-                    continue;
-                };
-
-                for &provider in code_fix_providers() {
-                    if !code_fix_provider_matches_lsp_diagnostic(provider, diag) {
+                for (provider, action) in self.code_fixes_for_diagnostic(
+                    ctx,
+                    program,
+                    file,
+                    diag,
+                    params,
+                    code_fix_providers(),
+                )? {
+                    let Err(i) = seen.binary_search_by(|probe| probe.compare(&action)) else {
                         continue;
+                    };
+                    actions.push(convert_to_lsp_code_action(
+                        &action,
+                        diag,
+                        &params.text_document.uri,
+                    ));
+                    if !action.fix_id.is_empty() {
+                        fix_id_seen.insert(action.fix_id.clone(), provider);
                     }
-
-                    for mapped in self.converters.from_lsp_range_for_source_file(
-                        file,
-                        diag.range,
-                        Feature::CodeActions,
-                    ) {
-                        let fix_context = CodeFixContext {
-                            source_file: mapped.script,
-                            span: mapped.span,
-                            error_code,
-                            program,
-                            ls: self,
-                            diagnostic: Some(diag),
-                            params: Some(params),
-                        };
-
-                        let provider_actions = (provider.get_code_actions)(ctx, &fix_context)?;
-                        for action in provider_actions {
-                            let Err(i) = seen.binary_search_by(|probe| probe.compare(&action))
-                            else {
-                                continue;
-                            };
-                            actions.push(convert_to_lsp_code_action(
-                                &action,
-                                diag,
-                                &params.text_document.uri,
-                            ));
-                            if !action.fix_id.is_empty() {
-                                fix_id_seen.insert(action.fix_id.clone(), provider);
-                            }
-                            seen.insert(i, action);
-                        }
-                    }
+                    seen.insert(i, action);
                 }
             }
 
@@ -213,14 +407,7 @@ impl LanguageService {
     ) -> Result<Vec<lsproto::CommandOrCodeAction>, lsproto::Error> {
         let mut actions = Vec::new();
 
-        // Deduplicate providers; multiple fixIds may map to the same provider.
-        let mut seen: Vec<&'static CodeFixProvider> = Vec::new();
-        for &provider in fix_id_seen.values() {
-            if seen.iter().any(|&p| std::ptr::eq(p, provider)) {
-                continue;
-            }
-            seen.push(provider);
-
+        for (fix_id, &provider) in fix_id_seen {
             let Some(get_all_code_actions) = provider.get_all_code_actions else {
                 continue;
             };
@@ -233,6 +420,7 @@ impl LanguageService {
                 source_file: file,
                 span: TextRange::default(),
                 error_code: 0,
+                fix_id: Some(fix_id),
                 program,
                 ls: self,
                 diagnostic: None,
@@ -240,19 +428,14 @@ impl LanguageService {
             };
             let combined = get_all_code_actions(ctx, &fix_context)?;
             if let Some(combined) = combined
-                && !combined.changes.is_empty()
+                && (!combined.changes.is_empty() || !combined.changes_by_file.is_empty())
             {
-                let kind = lsproto::CodeActionKind::QUICK_FIX;
-                let mut changes = OrderedMap::default();
-                changes.insert(uri.clone(), combined.changes);
+                let edit = combined.workspace_edit(uri);
                 actions.push(lsproto::CommandOrCodeAction {
                     code_action: Some(lsproto::CodeAction {
                         title: combined.description,
-                        kind: Some(kind),
-                        edit: Some(lsproto::WorkspaceEdit {
-                            changes: Some(changes),
-                            ..Default::default()
-                        }),
+                        kind: Some(lsproto::CodeActionKind::QUICK_FIX),
+                        edit: Some(edit),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -286,6 +469,7 @@ impl LanguageService {
                 source_file: file,
                 span: TextRange::default(),
                 error_code: 0,
+                fix_id: None,
                 program,
                 ls: self,
                 diagnostic: None,
@@ -294,9 +478,11 @@ impl LanguageService {
 
             let combined = get_all_code_actions(ctx, &fix_context)?;
             if let Some(combined) = combined
-                && !combined.changes.is_empty()
+                && let Some(changes) = combined.workspace_edit(uri).changes
             {
-                lsp_changes.entry(uri.clone()).or_default().extend(combined.changes);
+                for (uri, edits) in changes {
+                    lsp_changes.entry(uri).or_default().extend(edits);
+                }
             }
         }
 
@@ -473,15 +659,13 @@ fn convert_to_lsp_code_action(
     uri: &lsproto::DocumentUri,
 ) -> lsproto::CommandOrCodeAction {
     let kind = lsproto::CodeActionKind::QUICK_FIX;
-    let mut changes = OrderedMap::default();
-    changes.insert(uri.clone(), action.changes.clone());
     let diagnostics = vec![diag.clone()];
 
     lsproto::CommandOrCodeAction {
         code_action: Some(lsproto::CodeAction {
             title: action.description.clone(),
             kind: Some(kind),
-            edit: Some(lsproto::WorkspaceEdit { changes: Some(changes), ..Default::default() }),
+            edit: Some(action.workspace_edit(uri)),
             diagnostics: Some(diagnostics),
             ..Default::default()
         }),

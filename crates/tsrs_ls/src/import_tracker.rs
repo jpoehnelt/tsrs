@@ -137,7 +137,7 @@ pub fn get_direct_imports_map(
             return result;
         }
         for_each_import(program, source_file, &mut |import_decl, module_specifier| {
-            if let Some(module_symbol) = checker.get_symbol_at_location_exported(module_specifier) {
+            if let Some(module_symbol) = checker.get_editor_symbol_at_location(module_specifier) {
                 result.entry(module_symbol).or_default().push(import_decl);
             }
         });
@@ -503,7 +503,7 @@ pub fn find_namespace_re_exports(
     name: P<Node>,
     checker: &mut Checker,
 ) -> bool {
-    let namespace_import_symbol = checker.get_symbol_at_location_exported(name);
+    let namespace_import_symbol = checker.get_editor_symbol_at_location(name);
     for_each_possible_import_or_export_statement(source_file_like, &mut |statement| {
         if !ast::is_export_declaration(statement) {
             return false;
@@ -550,7 +550,7 @@ impl SearchesFromDirectImports {
         if self.export_kind == ExportKind::ExportEquals
             && (!self.is_for_rename || self.is_name_match(import_name.text()))
         {
-            let symbol = checker.get_symbol_at_location_exported(import_name);
+            let symbol = checker.get_editor_symbol_at_location(import_name);
             self.add_search(import_name, symbol);
         }
     }
@@ -572,7 +572,7 @@ impl SearchesFromDirectImports {
                 // But do rename `foo` in ` { default as foo }` if that's the original export name.
                 if !self.is_for_rename || name.text() == self.export_symbol.name() {
                     // Search locally for `bar`.
-                    let symbol = checker.get_symbol_at_location_exported(name);
+                    let symbol = checker.get_editor_symbol_at_location(name);
                     self.add_search(name, symbol);
                 }
             } else {
@@ -580,7 +580,7 @@ impl SearchesFromDirectImports {
                     if ast::is_export_specifier(element) && element.property_name().is_some() {
                         checker.get_export_specifier_local_target_symbol(element)
                     } else {
-                        checker.get_symbol_at_location_exported(name)
+                        checker.get_editor_symbol_at_location(name)
                     };
                 self.add_search(name, local_symbol);
             }
@@ -643,7 +643,7 @@ impl SearchesFromDirectImports {
                 && (!self.is_for_rename
                     || name.text() == symbol_name_no_default(self.export_symbol))
             {
-                let default_import_alias = checker.get_symbol_at_location_exported(name);
+                let default_import_alias = checker.get_editor_symbol_at_location(name);
                 self.add_search(name, default_import_alias);
             }
         }
@@ -765,8 +765,7 @@ pub fn get_import_or_export_symbol(
                 if coming_from_export {
                     return None;
                 }
-                let lhs_symbol =
-                    checker.get_symbol_at_location_exported(export_node.name().unwrap());
+                let lhs_symbol = checker.get_editor_symbol_at_location(export_node.name().unwrap());
                 return Some(ImportExportSymbol {
                     kind: ImpExpKind::Import,
                     symbol: lhs_symbol,
@@ -925,7 +924,7 @@ pub fn skip_export_specifier_symbol(symbol: P<Symbol>, checker: &mut Checker) ->
             && !ast::is_private_identifier(declaration.name().unwrap())
         {
             // Export of form 'module.exports.propName = expr';
-            return Some(checker.get_symbol_at_location_exported(declaration));
+            return Some(checker.get_editor_symbol_at_location(declaration));
         } else if ast::is_shorthand_property_assignment(declaration)
             && ast::is_binary_expression(declaration.parent().unwrap().parent().unwrap())
             && ast::get_assignment_declaration_kind(declaration.parent().unwrap().parent().unwrap())
@@ -1045,7 +1044,7 @@ pub fn find_module_references(
 
         // Check all imports (including require() calls)
         for_each_import(program, referencing_file, &mut |import_decl, module_specifier| {
-            let module_symbol = checker.get_symbol_at_location_exported(module_specifier);
+            let module_symbol = checker.get_editor_symbol_at_location(module_specifier);
             if module_symbol == Some(search_module_symbol) {
                 if ast::node_is_synthesized(import_decl) {
                     refs.push(ModuleReference {

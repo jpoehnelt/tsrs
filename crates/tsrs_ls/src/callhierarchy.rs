@@ -172,7 +172,7 @@ fn get_symbol_of_call_hierarchy_declaration(c: &mut Checker, node: P<Node>) -> O
         return None;
     }
     let location = get_call_hierarchy_declaration_reference_node(Some(node))?;
-    c.get_symbol_at_location_exported(location)
+    c.get_editor_symbol_at_location(location)
 }
 
 // Gets the text and range for the name of a call hierarchy declaration.
@@ -217,7 +217,7 @@ fn get_call_hierarchy_item_name(program: &'static Program, node: P<Node>) -> (St
         let end = pos + 6; // "static".length
         let mut c = program.get_type_checker_for_file(&Context::background(), source_file);
         let c: &mut Checker = &mut c;
-        let symbol = c.get_symbol_at_location_exported(node.parent().unwrap());
+        let symbol = c.get_editor_symbol_at_location(node.parent().unwrap());
         let mut prefix = String::new();
         if let Some(symbol) = symbol {
             prefix = c.symbol_to_string_exported(symbol) + " ";
@@ -292,7 +292,7 @@ fn get_text_of_call_hierarchy_name(
             ast::get_source_file_of_node(source_node).unwrap(),
         );
         let c: &mut Checker = &mut c;
-        let symbol = c.get_symbol_at_location_exported(name);
+        let symbol = c.get_editor_symbol_at_location(name);
         if let Some(symbol) = symbol {
             let text = c.symbol_to_string_exported(symbol);
             if !text.is_empty() {
@@ -591,7 +591,7 @@ pub fn resolve_call_hierarchy_declaration(
         }
 
         if !following_symbol {
-            let symbol = c.get_symbol_at_location_exported(location);
+            let symbol = c.get_editor_symbol_at_location(location);
             if let Some(mut symbol) = symbol {
                 if symbol.flags().intersects(SymbolFlags::Alias) {
                     symbol = c.get_aliased_symbol(symbol);

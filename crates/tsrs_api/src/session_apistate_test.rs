@@ -51,6 +51,7 @@ fn get_current(session: &Session, params: &str) -> ApiResult<Value> {
     match session.handle_request("getCurrentLanguageServerSnapshot", params.as_bytes())? {
         Response::Json(text) => Ok(json::unmarshal(&text).unwrap()),
         Response::Binary(_) => panic!("unexpected binary response"),
+        Response::Value(_) => panic!("wire handler returned an unserialized native response"),
     }
 }
 
@@ -613,4 +614,150 @@ fn open_projects_with_circular_extends_report_circularity() {
     assert_eq!(codes, [18000.0]);
     session.close();
     project_session.close();
+}
+
+#[test]
+fn native_snapshot_filesystems_are_isolated_and_request_layers_keep_precedence() {
+    let (_, host) = setup(&[("/code.ts", "export const value = 3;")]);
+    let api = Session::new(ApiSessionOptions {
+        cwd: "/".into(),
+        default_library_path: bundled::lib_path(),
+        fs: host,
+        binary_responses: false,
+        run_external_code: false,
+    });
+    let source_fs = |text: &str| -> Arc<dyn FS> {
+        Arc::new(vfstest::from_map(
+            [
+                ("/code.ts", vfstest::MapFile::from(text.to_owned())),
+                ("/overlay.ts", vfstest::MapFile::from("const native = 0;".to_owned())),
+            ],
+            false,
+        ))
+    };
+    let params: Value = json::unmarshal(r#"{"createPrograms":[{"rootFiles":["/code.ts","/overlay.ts"],"compilerOptions":{"noEmit":true,"noLib":true}}],"fileSystem":{"kind":"layer","files":{"/overlay.ts":"const layer: number = 2;"}}}"#).unwrap();
+    let first = api
+        .create_snapshot_with_file_system(&params, source_fs("export const value = 1;"))
+        .unwrap();
+    let second = api
+        .create_snapshot_with_file_system(&params, source_fs("export const value = 2;"))
+        .unwrap();
+    let read = |response: &Value, file: &str| {
+        let data = api.snapshot_data(handle(response)).unwrap();
+        let id = str_of(get(response, "operation.createdPrograms.0"));
+        data.get_program(&tsrs_project::ID(id.into()))
+            .unwrap()
+            .get_source_file(file)
+            .unwrap()
+            .text()
+            .to_owned()
+    };
+    assert_eq!(read(&first, "/code.ts"), "export const value = 1;");
+    assert_eq!(read(&second, "/code.ts"), "export const value = 2;");
+    assert_eq!(read(&first, "/overlay.ts"), "const layer: number = 2;");
+    let program_id = str_of(get(&first, "operation.createdPrograms.0"));
+    // Explicitly created programs follow the API's reconfigurePrograms lifecycle.
+    let update: Value = json::unmarshal(&format!(r#"{{"snapshot":{},"changes":{{"reconfigurePrograms":[{{"id":"{program_id}","rootFiles":["/code.ts","/overlay.ts"],"compilerOptions":{{"noEmit":true,"noLib":true}}}}],"fileSystem":{{"kind":"layer","files":{{"/overlay.ts":"const updated = 4;"}}}}}}}}"#,handle(&first))).unwrap();
+    let Response::Value(child) = api.handle_native_request("updateSnapshot", &update).unwrap()
+    else {
+        panic!("native response")
+    };
+    let data = api.snapshot_data(handle(&child)).unwrap();
+    let id = str_of(get(&first, "operation.createdPrograms.0"));
+    let program = data.get_program(&tsrs_project::ID(id.into())).unwrap();
+    assert_eq!(program.get_source_file("/code.ts").unwrap().text(), "export const value = 1;");
+    assert_eq!(program.get_source_file("/overlay.ts").unwrap().text(), "const updated = 4;");
+    assert_eq!(read(&second, "/overlay.ts"), "const layer: number = 2;");
+    // An absent request filesystem still creates an empty layer over the native base.
+    let bare:Value=json::unmarshal(r#"{"createPrograms":[{"rootFiles":["/code.ts"],"compilerOptions":{"noEmit":true,"noLib":true}}]}"#).unwrap();
+    let bare =
+        api.create_snapshot_with_file_system(&bare, source_fs("export const value = 5;")).unwrap();
+    assert_eq!(read(&bare, "/code.ts"), "export const value = 5;");
+    let different_case: Arc<dyn FS> =
+        Arc::new(vfstest::from_map([("/code.ts", "export const value = 6;".to_owned())], true));
+    assert_eq!(
+        api.create_snapshot_with_file_system(&params, different_case).unwrap_err().message,
+        "snapshot filesystem case sensitivity must match the session"
+    );
+    api.close();
+    assert_eq!(
+        api.create_snapshot_with_file_system(&params, source_fs("export const value = 6;"))
+            .unwrap_err()
+            .message,
+        "session is closed"
+    );
+}
+
+#[test]
+fn diagnostic_visitors_match_native_replies_and_retain_snapshot_during_callbacks() {
+    let (_, host) = setup(&[("/code.ts", "const value:number='wrong'; missing;")]);
+    let api = Session::new(ApiSessionOptions {
+        cwd: "/".into(),
+        default_library_path: bundled::lib_path(),
+        fs: host,
+        binary_responses: false,
+        run_external_code: false,
+    });
+    let params:Value=json::unmarshal(r#"{"createPrograms":[{"rootFiles":["/code.ts"],"compilerOptions":{"noLib":true,"noEmit":true}}]}"#).unwrap();
+    let Response::Value(snapshot) = api.handle_native_request("createSnapshot", &params).unwrap()
+    else {
+        panic!("native response")
+    };
+    let project = str_of(get(&snapshot, "operation.createdPrograms.0"));
+    let params: Value = json::unmarshal(&format!(
+        r#"{{"snapshot":{},"project":"{project}","files":["/code.ts"]}}"#,
+        handle(&snapshot)
+    ))
+    .unwrap();
+    for method in [
+        "getSyntacticDiagnostics",
+        "getBindDiagnostics",
+        "getSemanticDiagnostics",
+        "getSuggestionDiagnostics",
+        "getDeclarationDiagnostics",
+    ] {
+        let Response::Value(expected) = api.handle_native_request(method, &params).unwrap() else {
+            panic!("native response")
+        };
+        let mut values = Vec::new();
+        let count = api
+            .visit_diagnostic_responses(method, &params, |value| {
+                values.push(value.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(count, values.len());
+        if method == "getSemanticDiagnostics" {
+            assert!(count > 0);
+        }
+        assert_eq!(Value::Array(values), expected);
+    }
+    let mut calls = 0;
+    assert_eq!(
+        api.visit_diagnostic_responses("getSemanticDiagnostics", &params, |_| {
+            calls += 1;
+            Err(crate::ApiError::client("stop visitor"))
+        })
+        .unwrap_err()
+        .message,
+        "stop visitor"
+    );
+    assert_eq!(calls, 1);
+    let release: Value =
+        json::unmarshal(&format!(r#"{{"snapshot":{}}}"#, handle(&snapshot))).unwrap();
+    let mut released = false;
+    let count = api
+        .visit_diagnostic_responses("getSemanticDiagnostics", &params, |value| {
+            if !released {
+                api.handle_native_request("release", &release)?;
+                released = true;
+            }
+            assert!(matches!(get(value, "text"), Value::String(_)));
+            Ok(())
+        })
+        .unwrap();
+    assert!(count > 0);
+    assert!(api.visit_diagnostic_responses("getSemanticDiagnostics", &params, |_| Ok(())).is_err());
+    api.close();
+    assert!(api.visit_diagnostic_responses("getSemanticDiagnostics", &params, |_| Ok(())).is_err());
 }

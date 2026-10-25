@@ -104,7 +104,7 @@ fn strict_json_params_like_go() {
     call(&s, "initialize", "not json");
     match tsrs_api::Handler::handle_request(&*s, "echo", br#""x\ud800""#).unwrap() {
         tsrs_api::Response::Binary(b) => assert_eq!(b, br#""x\ud800""#.to_vec()),
-        r @ tsrs_api::Response::Json(_) => panic!("{r:?}"),
+        r @ (tsrs_api::Response::Json(_) | tsrs_api::Response::Value(_)) => panic!("{r:?}"),
     }
 }
 
@@ -532,6 +532,7 @@ fn unknown_enum_values_and_go_int_options_match_go() {
         method,
         payload.as_bytes(),
     ) {
+        Ok(tsrs_api::Response::Value(_)) => panic!("legacy handler returned native value"),
         Ok(tsrs_api::Response::Json(t)) => Ok(t),
         Ok(_) => unreachable!(),
         Err(e) => Err(e.to_string()),

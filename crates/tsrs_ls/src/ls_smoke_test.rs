@@ -603,3 +603,839 @@ fn semantic_tokens_property_of_lazily_resolved_interface() {
         r#"{"data":[0,10,1,3,1,0,2,1,5,1,0,6,1,7,1,0,12,1,3,0,0,2,1,5,0,0,4,3,9,1,0,5,1,3,0,0,2,1,5,0,0,4,3,14,1,1,17,6,13,1,0,7,1,5,1,0,3,1,7,1,0,3,1,5,0,0,4,1,3,0,0,2,1,5,0,1,0,6,13,0,0,10,3,9,0,0,4,3,14,0]}"#
     );
 }
+
+#[test]
+fn embedded_usage_inference_edits_and_unicode_positions() {
+    let text = "// 🧪\nfunction repeat(value) { return value.repeat(2); } repeat('x');";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let start = text.find("value)").unwrap() as u32;
+    let fix = crate::codeactions::CodeFixContext {
+        source_file: file,
+        span: tsrs_core::TextRange::new(start, start + 5),
+        error_code: 7006,
+        fix_id: None,
+        program: ls.get_program(),
+        ls: &ls,
+        diagnostic: None,
+        params: None,
+    };
+    let actions =
+        (crate::codeactions_usage::INFER_USAGE_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].fix_name.as_deref(), Some("inferFromUsage"));
+    let edits = &actions[0].changes_by_file[0].1;
+    assert!(edits.iter().any(|e| e.new_text.contains("@param {string} value")), "{edits:?}");
+    assert!(edits.iter().all(|e| e.range.start.line >= 1));
+}
+
+#[test]
+fn embedded_usage_reference_scopes() {
+    let sources = [
+        "function convert(value) { function nested() { return value.repeat(2); } function shadow(value) { return value + 1; } return nested(); } convert('x');",
+        r"function convert(\u0076alue) { return \u0076alue.repeat(2); } convert('x');",
+        "function convert(value) { return value; } // value and convert are not references here",
+    ];
+    for text in sources {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js","other.js"]}"#,
+            ),
+            ("/index.js", text),
+            ("/other.js", "convert('external'); function shadow(value) { return value + 1; }"),
+        ]);
+        let file = ls.get_program().get_source_file("/index.js").unwrap();
+        let start = text.find("value)").or_else(|| text.find(r"\u0076alue)")).unwrap() as u32;
+        let fix = crate::codeactions::CodeFixContext {
+            source_file: file,
+            span: tsrs_core::TextRange::new(start, start + 5),
+            error_code: 7006,
+            fix_id: None,
+            program: ls.get_program(),
+            ls: &ls,
+            diagnostic: None,
+            params: None,
+        };
+        let actions =
+            (crate::codeactions_usage::INFER_USAGE_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+        assert_eq!(actions.len(), 1, "{text}");
+        assert!(
+            actions[0].changes_by_file[0]
+                .1
+                .iter()
+                .any(|e| e.new_text.contains("@param {string} value")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn embedded_commonjs_export_assignment_symbol() {
+    let text = "!function(root, factory) { typeof module !== 'undefined' ? module.exports = factory() : root.library = factory(); }(this, function() { function library() {} library.version = '1'; return library; });";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let node =
+        crate::astnav::get_touching_property_name(file, text.find("exports").unwrap() as u32 + 1);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let symbol = c.get_editor_symbol_at_location(node).unwrap();
+    assert!(
+        symbol.declarations().iter().any(|d| tsrs_ast::is_binary_expression(*d)),
+        "{:?}",
+        symbol.declarations().iter().map(|d| d.kind()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn embedded_constructor_this_has_instance_fields() {
+    let text = "function Item(n) { this._n = n; this._data = {}; this._bubble(); }";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let node =
+        crate::astnav::get_touching_property_name(file, text.find("this._bubble").unwrap() as u32);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let native = c.get_type_at_location(node);
+    let t = c.get_editor_type_at_location(node);
+    let names: Vec<_> = c.get_properties_of_type(t).iter().map(|s| s.name()).collect();
+    assert!(names.contains(&"_n") && names.contains(&"_data"), "{names:?}");
+    assert_eq!(c.get_type_at_location(node), native);
+}
+
+#[test]
+fn embedded_quick_info_budget_isolated_from_normal_serialization() {
+    use std::cell::Cell;
+    use tsrs_checker::{self as checker, Flags, InternalFlags, VerbosityContext};
+    let members =
+        (0..32).map(|i| format!("readonly PROPERTY_{i}: Item;")).collect::<Vec<_>>().join("\n");
+    let declarations = format!(
+        "declare namespace Catalog {{ type Item = {{readonly brand: unique symbol}}; const Item: {{ {members} }}; }}"
+    );
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true},"files":["index.ts","types.d.ts"]}"#,
+        ),
+        ("/index.ts", "Catalog.Item;"),
+        ("/types.d.ts", &declarations),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let node = crate::astnav::get_touching_property_name(file, 9);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let typ = c.get_editor_type_at_location(node);
+    let builder = checker::new_node_builder(&c, tsrs_printer::new_emit_context());
+    let flags = Flags::MultilineObjectLiterals | Flags::UseAliasDefinedOutsideCurrentScope;
+    builder
+        .type_to_type_node(&mut c, typ, Some(file.as_node()), flags, InternalFlags::None, None)
+        .unwrap();
+    builder.verbosity.set(Some(P::new(VerbosityContext {
+        level: Cell::new(0),
+        max_truncation_length: Cell::new(500),
+        disable_expansion: true,
+        can_increase_verbosity: Cell::new(false),
+        truncated: Cell::new(false),
+    })));
+    let display = builder
+        .type_to_type_node(&mut c, typ, Some(file.as_node()), flags, InternalFlags::None, None)
+        .unwrap();
+    assert_eq!(display.as_type_literal_node().members.nodes().len(), 13);
+}
+
+#[test]
+fn embedded_inference_preserves_nested_jsdoc() {
+    let text = "/** @param {object} options\n * @param {string} options.name\n */\nfunction convert(options, value) { return value.repeat(2); }";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let start = text.find("value)").unwrap() as u32;
+    let fix = crate::codeactions::CodeFixContext {
+        source_file: file,
+        span: tsrs_core::TextRange::new(start, start + 5),
+        error_code: 7006,
+        fix_id: None,
+        program: ls.get_program(),
+        ls: &ls,
+        diagnostic: None,
+        params: None,
+    };
+    let actions =
+        (crate::codeactions_usage::INFER_USAGE_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].changes_by_file[0].1.iter().any(
+        |e| e.new_text.contains("options.name") && e.new_text.contains("@param {string} value")
+    ));
+}
+#[test]
+fn embedded_missing_method_infers_call_parameters() {
+    let text = "/** @type {Widget} */ let widget; widget.render(1, 'x');";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js","types.d.ts"]}"#,
+        ),
+        ("/index.js", text),
+        ("/types.d.ts", "interface Widget { existing():void; }"),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let start = text.find("render").unwrap() as u32;
+    let fix = crate::codeactions::CodeFixContext {
+        source_file: file,
+        span: tsrs_core::TextRange::new(start, start + 6),
+        error_code: 2339,
+        fix_id: None,
+        program: ls.get_program(),
+        ls: &ls,
+        diagnostic: None,
+        params: None,
+    };
+    let actions =
+        (crate::codeactions_usage::MISSING_MEMBER_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+    assert!(
+        actions[0].changes_by_file[0]
+            .1
+            .iter()
+            .any(|e| e.new_text.contains("arg0: number") && e.new_text.contains("arg1: string"))
+    );
+}
+
+#[test]
+fn embedded_spelling_edits_and_fix_all() {
+    let text = "// 🧪\ndeclare namespace Audit { function log(text: string): void; }\nAudit.loog('x'); Audit?.loog('y');\nconst count = 1; console.log(coutn);";
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let diagnostics =
+        ls.provide_diagnostics(&ctx, &uri).unwrap().full_document_diagnostic_report.unwrap().items;
+    let spelling: Vec<_> = diagnostics
+        .into_iter()
+        .filter(|d| d.code.as_ref().and_then(|c| c.integer).is_some_and(|c| c == 2551 || c == 2552))
+        .collect();
+    assert_eq!(spelling.len(), 3);
+    assert!(crate::supported_code_fix_codes().contains(&2552));
+    // The minimal host has no prepared auto-import registry. Property corrections
+    // exercise the registered dispatch; fix-all below also covers the name correction.
+    for diagnostic in
+        spelling.iter().filter(|d| d.code.as_ref().and_then(|c| c.integer) == Some(2551))
+    {
+        let actions = ls
+            .embedded_code_fixes(
+                &ctx,
+                &lsproto::CodeActionParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    range: diagnostic.range,
+                    context: lsproto::CodeActionContext {
+                        diagnostics: vec![diagnostic.clone()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let action = actions.iter().find(|a| a.fix_name.as_deref() == Some("spelling")).unwrap();
+        assert_eq!(action.fix_id, "fixSpelling");
+        let edits = action.workspace_edit(&uri).changes.unwrap();
+        assert_eq!(edits[&uri].len(), 1);
+        assert_eq!(edits[&uri][0].range, diagnostic.range);
+    }
+    let all = ls.embedded_combined_code_fix(&ctx, &uri, "fixSpelling").unwrap().unwrap();
+    let all_edits = all.workspace_edit(&uri).changes.unwrap();
+    assert_eq!(all_edits[&uri].len(), 3);
+    assert_eq!(
+        all_edits[&uri].iter().map(|e| e.new_text.as_str()).collect::<Vec<_>>(),
+        vec!["log", "log", "count"]
+    );
+}
+
+#[test]
+fn embedded_cleanup_providers_and_fix_all() {
+    for (text, code, name, id) in [
+        (
+            "const count = 1; count = 2; count = 3;",
+            2588,
+            "fixConvertConstToLet",
+            "fixConvertConstToLet",
+        ),
+        (
+            "function read(unused: number) { return 1; } read(2);",
+            6133,
+            "unusedIdentifier",
+            "unusedIdentifier_prefix",
+        ),
+        (
+            "function read() { await 1; await 2; }",
+            1308,
+            "fixAwaitInSyncFunction",
+            "fixAwaitInSyncFunction",
+        ),
+        (
+            "class Counter { value = 1; read() { return value; } }",
+            2663,
+            "forgottenThisPropertyAccess",
+            "forgottenThisPropertyAccess",
+        ),
+        (
+            "function read() { return 1; let unused = 2; unused++; }",
+            7027,
+            "fixUnreachableCode",
+            "fixUnreachableCode",
+        ),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"strict":true,"noUnusedLocals":true,"noUnusedParameters":true,"allowUnreachableCode":false},"files":["index.ts"]}"#,
+            ),
+            ("/index.ts", text),
+        ]);
+        let uri = lsconv::file_name_to_document_uri("/index.ts");
+        let diagnostics = ls
+            .provide_diagnostics(&ctx, &uri)
+            .unwrap()
+            .full_document_diagnostic_report
+            .unwrap()
+            .items;
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| d.code.as_ref().and_then(|c| c.integer) == Some(code))
+            .unwrap();
+        assert!(crate::supported_code_fix_codes().contains(&code));
+        let file = ls.get_program().get_source_file("/index.ts").unwrap();
+        let span = crate::diagnostics::get_all_diagnostics(&ctx, ls.get_program(), file)
+            .into_iter()
+            .find(|d| d.code() == code)
+            .unwrap()
+            .loc()
+            .unwrap();
+        // This minimal host has no auto-import registry. The prepared embedded
+        // transport tests separately cover dispatch shared with import providers.
+        let actions = (crate::codeactions_cleanup::CLEANUP_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span,
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: Some(diagnostic),
+                params: None,
+            },
+        )
+        .unwrap();
+        assert!(actions.iter().any(|a| a.fix_name.as_deref() == Some(name)), "{name}");
+        let combined = ls.embedded_combined_code_fix(&ctx, &uri, id).unwrap().unwrap();
+        let changes = combined.workspace_edit(&uri).changes.unwrap();
+        assert!(!changes[&uri].is_empty(), "{id}");
+        if code == 2588 || code == 1308 {
+            assert_eq!(changes[&uri].len(), 1);
+        }
+    }
+}
+
+#[test]
+fn embedded_missing_member_respects_explicit_read_only_roots() {
+    let text = "declare const item: LibraryItem; item.missing();";
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true},"files":["index.ts","types.d.ts"]}"#,
+        ),
+        ("/index.ts", text),
+        ("/types.d.ts", "interface LibraryItem { read(): void; }"),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let start = text.find("missing").unwrap() as u32;
+    let actions = |ls: &LanguageService| {
+        (crate::codeactions_usage::MISSING_MEMBER_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(start, start + 7),
+                error_code: 2339,
+                fix_id: None,
+                program: ls.get_program(),
+                ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(actions(&ls).len(), 3);
+    ls.set_read_only_files(&["/types.d.ts".into()]);
+    assert!(actions(&ls).is_empty());
+}
+
+#[test]
+fn embedded_quick_info_structured_documentation() {
+    let text = "/** Reads a value.\n * @returns The value.\n * @example\n * const value = read();\n * @see https://example.com/reference\n */\ndeclare function read(): string;\nread();";
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ]);
+    let (documentation, tags) = ls.quick_info_documentation(
+        &ctx,
+        &lsproto::HoverParams {
+            text_document: lsproto::TextDocumentIdentifier {
+                uri: lsconv::file_name_to_document_uri("/index.ts"),
+            },
+            position: lsproto::Position { line: 7, character: 1 },
+            ..Default::default()
+        },
+    );
+    assert_eq!(documentation, "Reads a value.");
+    assert_eq!(
+        tags.iter().map(|t| (t.name.as_str(), t.text.as_str())).collect::<Vec<_>>(),
+        vec![
+            ("returns", "The value."),
+            ("example", "const value = read();"),
+            ("see", "https://example.com/reference")
+        ]
+    );
+}
+
+#[test]
+fn unused_fix_all_does_not_edit_descendants_of_deleted_declarations() {
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true,"noUnusedLocals":true,"noUnusedParameters":true},"files":["index.ts"]}"#,
+        ),
+        ("/index.ts", "export {}; class Obsolete { method(argument: number) {} }"),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let combined =
+        ls.embedded_combined_code_fix(&ctx, &uri, "unusedIdentifier_delete").unwrap().unwrap();
+    let edits = combined.workspace_edit(&uri).changes.unwrap();
+    assert_eq!(edits[&uri].len(), 1);
+    assert_eq!(edits[&uri][0].new_text, "");
+}
+
+#[test]
+fn embedded_local_syntax_repairs_use_parsed_nodes() {
+    for (text, code, name) in [
+        ("class Widget {} const instance = Widget();", 2348, "addMissingNewOperator"),
+        ("const options = {enabled = true};", 1312, "fixPropertyAssignment"),
+        ("const result = 'abc' as number;", 2352, "addConvertToUnknownForNonOverlappingTypes"),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"strict":true,"target":"esnext"},"files":["index.ts"]}"#,
+            ),
+            ("/index.ts", text),
+        ]);
+        let file = ls.get_program().get_source_file("/index.ts").unwrap();
+        let diagnostic = crate::diagnostics::get_all_diagnostics(&ctx, ls.get_program(), file)
+            .into_iter()
+            .find(|d| d.code() == code)
+            .unwrap();
+        let fixes = (crate::codeactions_syntax::SYNTAX_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: diagnostic.loc().unwrap(),
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        assert!(fixes.iter().any(|f| f.fix_name.as_deref() == Some(name)), "{name}");
+        let uri = lsconv::file_name_to_document_uri("/index.ts");
+        let all = ls.embedded_combined_code_fix(&ctx, &uri, name).unwrap().unwrap();
+        assert_ne!(
+            all.workspace_edit(&uri).changes.unwrap()[&uri],
+            [] as [tsrs_lsproto::TextEdit; 0]
+        );
+    }
+}
+
+#[test]
+fn embedded_provider_repairs_handle_suggestions_and_semantic_nodes() {
+    for (source, needle, code, name) in [
+        ("const same = 4 === NaN;", "4", 2845, "fixNaNEquality"),
+        (
+            "class A {} class B extends A { constructor() {} }",
+            "constructor",
+            2377,
+            "constructorForDerivedNeedSuperCall",
+        ),
+        ("class Unit { size: number; }", "size", 2564, "strictClassInitialization"),
+        (
+            "type Table = { [entry: 'x' | 'y']: boolean };",
+            "entry",
+            1337,
+            "fixConvertToMappedObjectType",
+        ),
+        (
+            "type Columns = 'x' | 'y'; type Row = { [Columns]: boolean };",
+            "Columns]:",
+            2690,
+            "convertLiteralTypeToMappedType",
+        ),
+        (
+            "interface Shape {} class Polygon extends Shape {}",
+            "Shape {}",
+            2689,
+            "extendsInterfaceBecomesImplements",
+        ),
+        (
+            "/** @param {string} absent */ function invoke(actual) { return actual; }",
+            "absent",
+            8024,
+            "deleteUnmatchedParameter",
+        ),
+        (
+            "/** @param {string} input @returns {string} */ function echo(input) { return input; }",
+            "echo",
+            80004,
+            "annotateWithTypeFromJSDoc",
+        ),
+        ("let choice: ?boolean;", "?", 17019, "jdocTypes"),
+        ("new Promise(done => { done(); });", "done();", 2794, "addVoidToPromise"),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"strict":true,"target":"esnext"},"files":["index.ts"]}"#,
+            ),
+            ("/index.ts", source),
+        ]);
+        let file = ls.get_program().get_source_file("/index.ts").unwrap();
+        let at = source.rfind(needle).unwrap() as u32;
+        let fixes = (crate::codeactions_syntax::SYNTAX_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(at, at + needle.len() as u32),
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        assert!(fixes.iter().any(|f| f.fix_name.as_deref() == Some(name)), "{name}: {fixes:?}");
+        assert!(fixes.iter().all(|f| !f.changes_by_file.is_empty()));
+    }
+}
+
+#[test]
+fn embedded_migrations_preserve_methods_and_generated_names() {
+    for (source, code, name, required) in [
+        (
+            "function Box() { this.total = 0; } Box.prototype.open = function() { return this.total; };",
+            80002,
+            "convertFunctionToEs6Class",
+            "open()",
+        ),
+        (
+            "function load() { return Promise.resolve(3).then(item => item * 2); }",
+            80006,
+            "convertToAsyncFunction",
+            "item_1",
+        ),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"checkJs":true,"allowJs":true,"target":"esnext"},"files":["index.js"]}"#,
+            ),
+            ("/index.js", source),
+        ]);
+        let file = ls.get_program().get_source_file("/index.js").unwrap();
+        let actions = (crate::codeactions_syntax::SYNTAX_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(9, 12),
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        let action = actions.iter().find(|a| a.fix_name.as_deref() == Some(name)).unwrap();
+        assert!(
+            action
+                .changes_by_file
+                .iter()
+                .flat_map(|(_, edits)| edits)
+                .any(|edit| edit.new_text.contains(required)),
+            "{name}: {action:?}"
+        );
+        let uri = lsconv::file_name_to_document_uri("/index.js");
+        let all = ls.embedded_combined_code_fix(&ctx, &uri, name).unwrap().unwrap();
+        assert!(
+            all.workspace_edit(&uri).changes.unwrap()[&uri]
+                .iter()
+                .any(|edit| edit.new_text.contains(required))
+        );
+    }
+}
+
+#[test]
+fn combined_missing_members_choose_one_alternative() {
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        (
+            "/index.ts",
+            "interface Transport {} const client: Transport = {}; client.deliver(3); client.deliver(4);",
+        ),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let combined = ls.embedded_combined_code_fix(&ctx, &uri, "fixMissingMember").unwrap().unwrap();
+    let edits = combined.workspace_edit(&uri).changes.unwrap();
+    assert_eq!(edits[&uri].len(), 2);
+    assert!(
+        edits[&uri].iter().any(|edit| edit.new_text.contains("deliver(arg0: number): unknown;"))
+    );
+}
+
+#[test]
+fn isolated_arrow_edits_keep_reference_default_and_explicit_legacy_mode() {
+    let source = "export const read = value => value.toUpperCase();";
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"isolatedDeclarations":true,"declaration":true,"target":"esnext"},"files":["index.ts"]}"#,
+        ),
+        ("/index.ts", source),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let provider =
+        &*crate::codeactions_fixmissingtypeannotation::ISOLATED_DECLARATIONS_FIX_PROVIDER;
+    for legacy in [false, true, false] {
+        ls.set_legacy_code_fix_edits(legacy);
+        let actions = (provider.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(20, 25),
+                error_code: 9007,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        let action =
+            actions.iter().find(|a| a.description == "Add annotation of type 'any'").unwrap();
+        let mut texts: Vec<_> = action.changes.iter().map(|edit| edit.new_text.as_str()).collect();
+        for (_, edits) in &action.changes_by_file {
+            texts.extend(edits.iter().map(|edit| edit.new_text.as_str()));
+        }
+        assert!(texts.contains(&": any"), "{texts:?}");
+        assert_eq!(texts.contains(&"("), !legacy, "{texts:?}");
+        assert_eq!(texts.contains(&")"), !legacy, "{texts:?}");
+    }
+}
+
+// The pinned Go LSP currently registers only imports, isolated declarations and
+// interface implementation. The expanded catalogue is an explicit embedding API.
+#[test]
+fn embedded_provider_catalogue_does_not_change_reference_lsp_actions() {
+    let text = "declare namespace Audit { function log(text: string): void; } Audit.loog('x');";
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let diagnostics =
+        ls.provide_diagnostics(&ctx, &uri).unwrap().full_document_diagnostic_report.unwrap().items;
+    let diagnostic = diagnostics
+        .into_iter()
+        .find(|d| d.code.as_ref().and_then(|c| c.integer) == Some(2551))
+        .unwrap();
+    let params = lsproto::CodeActionParams {
+        text_document: lsproto::TextDocumentIdentifier { uri },
+        range: diagnostic.range,
+        context: lsproto::CodeActionContext { diagnostics: vec![diagnostic], ..Default::default() },
+        ..Default::default()
+    };
+    assert!(
+        ls.embedded_code_fixes(&ctx, &params)
+            .unwrap()
+            .iter()
+            .any(|a| a.fix_name.as_deref() == Some("spelling"))
+    );
+    assert_eq!(
+        ls.provide_code_actions(&ctx, &params).unwrap().command_or_code_action_array.unwrap(),
+        [] as [lsproto::CommandOrCodeAction; 0]
+    );
+}
+
+// Pinned reference compiler/javascriptCommonjsModule.types exposes a module
+// container with `exports`, while a legacy editor observes the assigned class.
+#[test]
+fn editor_commonjs_observations_do_not_replace_reference_compiler_types() {
+    let text = "class Foo {} class Bar extends Foo {} module.exports = Bar;";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"module":"commonjs"},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let node =
+        crate::astnav::get_touching_property_name(file, text.find("module").unwrap() as u32 + 1);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let native = c.get_type_at_location(node);
+    let names: Vec<_> = c.get_properties_of_type(native).iter().map(|s| s.name()).collect();
+    assert_eq!(names, ["exports"]);
+    let editor = c.get_editor_type_at_location(node);
+    assert_ne!(editor, native);
+    assert_eq!(c.get_type_at_location(node), native);
+    let access =
+        crate::astnav::get_touching_property_name(file, text.find("exports").unwrap() as u32 + 1);
+    let symbol = c.get_symbol_at_location_exported(access);
+    assert!(c.get_editor_symbol_at_location(access).is_some());
+    assert_eq!(c.get_symbol_at_location_exported(access), symbol);
+}
+
+#[test]
+fn embedded_cross_file_class_property_uses_assignment_type() {
+    let text = "const value = new Entry(); value.count = 1;";
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":false},"files":["index.ts","entry.ts"]}"#,
+        ),
+        ("/index.ts", text),
+        ("/entry.ts", "class Entry { constructor() {} }"),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let start = text.find("count").unwrap() as u32;
+    let actions = |ls: &LanguageService| {
+        (crate::codeactions_usage::MISSING_MEMBER_PROVIDER.get_code_actions)(
+            &ctx,
+            &crate::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(start, start + 5),
+                error_code: 2339,
+                fix_id: None,
+                program: ls.get_program(),
+                ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap()
+    };
+    let fixes = actions(&ls);
+    assert_eq!(fixes.len(), 2);
+    assert_eq!(fixes[0].description, "Declare property 'count'");
+    assert_eq!(fixes[0].changes_by_file[0].0, lsconv::file_name_to_document_uri("/entry.ts"));
+    assert!(fixes[0].changes_by_file[0].1.iter().any(|e| e.new_text.contains("count: number;")));
+    ls.set_read_only_files(&["/entry.ts".into()]);
+    assert!(actions(&ls).is_empty());
+}
+
+#[test]
+fn legacy_raw_js_fixes_expose_suppression_without_changing_reference_lsp() {
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", "const item = 1; item.missing;"),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.js");
+    let diagnostic = ls
+        .provide_diagnostics(&ctx, &uri)
+        .unwrap()
+        .full_document_diagnostic_report
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|d| d.code.as_ref().and_then(|c| c.integer) == Some(2339))
+        .unwrap();
+    let params = lsproto::CodeActionParams {
+        text_document: lsproto::TextDocumentIdentifier { uri },
+        range: diagnostic.range,
+        context: lsproto::CodeActionContext { diagnostics: vec![diagnostic], ..Default::default() },
+        ..Default::default()
+    };
+    for legacy in [false, true, false] {
+        ls.set_legacy_code_fix_edits(legacy);
+        let actions = ls.embedded_code_fixes(&ctx, &params).unwrap();
+        let suppress =
+            actions.iter().find(|a| a.fix_name.as_deref() == Some("disableJsDiagnostics"));
+        assert_eq!(suppress.is_some(), legacy);
+        if let Some(action) = suppress {
+            assert_eq!(action.description, "Disable checking for this file");
+            assert_eq!(action.changes[0].new_text, "// @ts-nocheck\n");
+        }
+        let reference =
+            ls.provide_code_actions(&ctx, &params).unwrap().command_or_code_action_array.unwrap();
+        assert!(
+            reference.iter().all(|a| a
+                .code_action
+                .as_ref()
+                .is_none_or(|a| !a.title.contains("Disable checking")))
+        );
+    }
+}
+
+#[test]
+fn editor_closure_callbacks_keep_typed_arguments_and_reference_defaults() {
+    for editor in [false, true, false] {
+        let config = format!(
+            r#"{{"tsrsEditorLegacyJSDocFunctionTypes":{editor},"compilerOptions":{{"allowJs":true,"checkJs":true,"strict":true}},"files":["index.js"]}}"#
+        );
+        let (ls, ctx) = setup(&[
+            ("/tsconfig.json", &config),
+            (
+                "/index.js",
+                "/** @param {function(string): boolean} callback */\nfunction use(callback) { return callback(123); }",
+            ),
+        ]);
+        let diagnostics = ls
+            .provide_diagnostics(&ctx, &lsconv::file_name_to_document_uri("/index.js"))
+            .unwrap()
+            .full_document_diagnostic_report
+            .unwrap()
+            .items;
+        let codes: Vec<_> = diagnostics.iter().filter_map(|d| d.code.as_ref()?.integer).collect();
+        assert_eq!(codes.contains(&1005), !editor, "{editor}: {diagnostics:?}");
+        if editor {
+            assert_eq!(codes, [2345], "{diagnostics:?}");
+        }
+    }
+}

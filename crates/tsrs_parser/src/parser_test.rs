@@ -163,3 +163,94 @@ fn test_parse_escaped_dynamic_import_phase() {
         assert!(!file.as_node().flags().contains(NodeFlags::PossiblyContainsImportMeta));
     }
 }
+
+#[test]
+fn editor_closure_callback_types_are_explicit_and_position_preserving() {
+    let source = "/** @param {function(string, number): boolean} callback */\nfunction use(callback) { return callback('a', 1); }";
+    for legacy in [false, true] {
+        let file = parse_source_file(
+            SourceFileParseOptions {
+                file_name: "/editor.js".into(),
+                editor_legacy_jsdoc_function_types: legacy,
+                ..Default::default()
+            },
+            source,
+            ScriptKind::JS,
+        );
+        let diagnostics = file.jsdoc_diagnostics();
+        assert_eq!(diagnostics.is_empty(), legacy, "{legacy}: {diagnostics:?}");
+        assert_eq!(file.text(), source);
+        if legacy {
+            fn visit(node: P<tsrs_ast::Node>) {
+                assert!(!node.pos().is_synthetic(), "{:?}", node.kind());
+                assert!(!node.end().is_synthetic(), "{:?}", node.kind());
+                node.for_each_child(&mut |child| {
+                    visit(child);
+                    false
+                });
+            }
+            for doc in file.statements().nodes()[0].jsdoc(Some(file.get())) {
+                visit(*doc);
+            }
+        }
+    }
+}
+
+#[test]
+fn editor_closure_callback_types_support_nested_optional_rest_and_receivers() {
+    for annotation in [
+        "function(string=, ...number): boolean",
+        "function(this: { value: string }, function(number): string): void",
+        "function(new: Date, number): Date",
+        "Array<function(string): boolean>",
+        "function(): function(number): string",
+    ] {
+        let source = format!("/** @type {{{annotation}}} */\nlet callback;");
+        let file = parse_source_file(
+            SourceFileParseOptions {
+                file_name: "/editor.js".into(),
+                editor_legacy_jsdoc_function_types: true,
+                ..Default::default()
+            },
+            &source,
+            ScriptKind::JS,
+        );
+        assert!(file.diagnostics().is_empty(), "{annotation}: {:?}", file.diagnostics());
+        assert!(
+            file.jsdoc_diagnostics().is_empty(),
+            "{annotation}: {:?}",
+            file.jsdoc_diagnostics()
+        );
+        assert_eq!(file.text(), source);
+    }
+}
+
+#[test]
+#[cfg(feature = "embedding-limits")]
+fn bounded_embedding_parse_recovers_without_changing_ordinary_parses() {
+    use crate::with_parse_recursion_limit;
+    for source in [
+        format!("const x={}1{};", "(".repeat(2000), ")".repeat(2000)),
+        format!("const x={}true;", "!".repeat(2000)),
+        format!("const x={}A();", "new ".repeat(2000)),
+        format!("const {}value{}=source;", "[".repeat(2000), "]".repeat(2000)),
+        format!("type T={}number{};", "(".repeat(2000), ")".repeat(2000)),
+        format!("{};{}", "{".repeat(2000), "}".repeat(2000)),
+    ] {
+        assert!(with_parse_recursion_limit(128, || parse(&source)).is_err());
+        let file = with_parse_recursion_limit(128, || parse("const answer=42;")).ok().unwrap();
+        assert_eq!(file.diagnostics(), []);
+    }
+    for source in [
+        format!("const x={}1{};", "(".repeat(196), ")".repeat(196)),
+        format!("const x={}true;", "!".repeat(196)),
+        format!("type T={}number{};", "(".repeat(196), ")".repeat(196)),
+        format!("const x={};", vec!["1"; 500].join("+")),
+        format!("const x=[{}];", "0,".repeat(100_000)),
+    ] {
+        let bounded = with_parse_recursion_limit(1024, || parse(&source)).ok().unwrap();
+        let ordinary = parse(&source);
+        assert_eq!(bounded.diagnostics().len(), ordinary.diagnostics().len());
+        assert_eq!(bounded.text(), ordinary.text());
+    }
+}

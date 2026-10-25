@@ -58,6 +58,40 @@ pub struct Invocation {
 }
 
 impl LanguageService {
+    /// Keep the apparent argument count/index and edit span that LSP's clamped activeParameter loses.
+    pub fn embedded_signature_arguments(
+        &self,
+        ctx: &Context,
+        uri: &lsproto::DocumentUri,
+        position: lsproto::Position,
+    ) -> Option<(u32, u32, TextRange)> {
+        let (program, file) = self.get_program_and_file(uri);
+        for projection in self.converters.from_lsp_position_for_source_file(
+            file,
+            position,
+            Feature::SignatureHelp,
+        ) {
+            if !projection.fidelity.is_single_segment() {
+                continue;
+            }
+            let token = astnav::find_preceding_token(projection.script, projection.position)?;
+            let mut checker = program.get_type_checker_for_file(ctx, projection.script);
+            let info = get_containing_argument_info(
+                token,
+                projection.script,
+                &mut checker,
+                true,
+                projection.position,
+            )?;
+            return Some((
+                u32::try_from(info.argument_index).expect("argument index exceeds u32"),
+                u32::try_from(info.argument_count).expect("argument count exceeds u32"),
+                info.arguments_span,
+            ));
+        }
+        None
+    }
+
     // signaturehelp.go:49
     pub fn provide_signature_help(
         &self,
@@ -446,7 +480,7 @@ impl LanguageService {
             call_target_symbol = Some(contextual_invocation.symbol);
         } else {
             call_target_symbol =
-                c.get_symbol_at_location_exported(get_expression_from_invocation(argument_info));
+                c.get_editor_symbol_at_location(get_expression_from_invocation(argument_info));
             if call_target_symbol.is_none()
                 && use_full_prefix
                 && let Some(declaration) = resolved_signature.unwrap().declaration()
@@ -1155,7 +1189,7 @@ fn get_candidate_or_type_info(
             });
         }
 
-        if let Some(symbol) = c.get_symbol_at_location_exported(called) {
+        if let Some(symbol) = c.get_editor_symbol_at_location(called) {
             return Some(CandidateOrTypeInfo { candidate_info: None, type_info: Some(symbol) });
         }
 
@@ -1507,7 +1541,7 @@ struct ContextualSignatureLocationInfo {
 
 // signaturehelp.go:1074
 fn get_spread_element_count(node: P<Node>, c: &mut Checker) -> usize {
-    let spread_type = c.get_type_at_location(node.expression().unwrap());
+    let spread_type = c.get_editor_type_at_location(node.expression().unwrap());
     if checker::is_tuple_type_exported(spread_type) {
         let tuple_type = spread_type.target().unwrap().as_tuple_type();
         let element_flags = tuple_type.element_flags();

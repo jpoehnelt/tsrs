@@ -1242,7 +1242,7 @@ impl Checker {
     }
 
     // checker.go:7245
-    pub(crate) fn is_referenced(&self, symbol: P<Symbol>) -> bool {
+    pub fn is_referenced(&self, symbol: P<Symbol>) -> bool {
         !self.reference_kinds(symbol).is_empty()
     }
 

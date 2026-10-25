@@ -11,6 +11,7 @@ fn a_synthesized_original_node_is_single_line() {
     let file_name = "/a.ts";
     let file = tsrs_parser::parse_source_file(
         SourceFileParseOptions {
+            editor_legacy_jsdoc_function_types: false,
             file_name: file_name.to_string(),
             path: Path::new(file_name.to_string()),
             external_module_indicator_options:

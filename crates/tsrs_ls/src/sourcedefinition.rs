@@ -351,7 +351,7 @@ fn get_source_def_checker_info(
         && is_property_name
         && let Some(left) = node.parent().unwrap().expression()
     {
-        let t = c.get_type_at_location(left);
+        let t = c.get_editor_type_at_location(left);
         if let Some(prop) = c.get_property_of_type_exported(t, node.text()) {
             declarations = prop.declarations().to_vec();
         }
@@ -380,7 +380,7 @@ fn get_source_def_checker_info(
             resolve_node = expr;
         }
     }
-    if let Some(sym) = c.get_symbol_at_location_exported(resolve_node) {
+    if let Some(sym) = c.get_editor_symbol_at_location(resolve_node) {
         for &d in sym.declarations() {
             if !ast::is_import_specifier(d)
                 && !ast::is_import_clause(d)

@@ -32,7 +32,7 @@ CARGO_PROFILE_RELEASE_OPT_LEVEL="$wasm_opt_level" \
   CARGO_PROFILE_RELEASE_DEBUG=false \
   CARGO_PROFILE_RELEASE_STRIP=debuginfo \
   CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="$flags" \
-  cargo build --release -p tsrs_wasm --target wasm32-wasip1 --locked
+  cargo rustc --release -p tsrs_wasm --target wasm32-wasip1 --locked --crate-type cdylib
 RAW="$TARGET_DIR/wasm32-wasip1/release/tsrs_wasm.wasm"
 WORK="$TARGET_DIR/wasm-build"
 mkdir -p "$WORK"

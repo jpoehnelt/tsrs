@@ -66,6 +66,7 @@ pub fn session(cwd: &str, binary: bool) -> Arc<Session> {
 /// Sends a JSON request and returns the parsed JSON result, panicking on error.
 pub fn call(s: &Session, method: &str, params: &str) -> Value {
     match s.handle_request(method, params.as_bytes()) {
+        Ok(Response::Value(_)) => panic!("legacy handler returned a native value"),
         Ok(Response::Json(text)) => {
             json::unmarshal(&text).unwrap_or_else(|e| panic!("{method}: bad JSON {e}: {text}"))
         }

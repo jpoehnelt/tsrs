@@ -1712,6 +1712,10 @@ impl Parser {
     }
 
     pub(crate) fn parse_statement(&mut self) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         let token = self.token;
         match token {
             Kind::SemicolonToken => return self.parse_empty_statement(),
@@ -2449,6 +2453,10 @@ impl Parser {
         &mut self,
         private_identifier_diagnostic_message: Option<&'static Message>,
     ) -> P<Node> {
+        #[cfg(feature = "embedding-limits")]
+        let Some(_depth) = crate::budget::enter() else {
+            return self.abort_recursion();
+        };
         if self.token == Kind::OpenBracketToken {
             return self.parse_array_binding_pattern();
         }
@@ -3804,4 +3812,13 @@ fn lazy_list_blocked(nodes: &[P<Node>]) -> bool {
         hit || n.for_each_child(&mut |c| blocked(c))
     }
     nodes.iter().any(|&n| blocked(n))
+}
+
+impl Parser {
+    #[cfg(feature = "embedding-limits")]
+    pub(crate) fn abort_recursion(&mut self) -> P<Node> {
+        self.scanner.reset_pos(u32::try_from(self.source_text.len()).expect("source length"));
+        self.next_token();
+        self.parse_identifier()
+    }
 }

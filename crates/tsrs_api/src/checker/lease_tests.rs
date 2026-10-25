@@ -140,6 +140,9 @@ impl transport::Handler for H {
                 ))
             }
             _ => match crate::handler::Handler::handle_request(&*self.s.session, method, params) {
+                Ok(crate::handler::Response::Value(_)) => {
+                    panic!("legacy JSON handler returned native value")
+                }
                 Ok(crate::handler::Response::Json(t)) => {
                     Ok(transport::Response::Json(t.into_bytes()))
                 }

@@ -48,6 +48,10 @@ mod pipe_os {
             &self.path
         }
 
+        #[expect(
+            clippy::unused_self,
+            reason = "Matches the platform listener API; bind always rejects this target."
+        )]
         pub(super) fn accept(&self) -> io::Result<super::Stream> {
             unreachable!("PipeListener cannot be bound on this platform")
         }

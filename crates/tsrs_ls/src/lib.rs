@@ -7,10 +7,19 @@ mod autoinsert;
 mod callhierarchy;
 pub mod change;
 mod codeactions;
+mod codeactions_cleanup;
+mod codeactions_config;
+mod codeactions_conversions;
 mod codeactions_fixclassincorrectlyimplementsinterface;
 mod codeactions_fixmissingtypeannotation;
 mod codeactions_importfixes;
+mod codeactions_jsdoc;
 mod codeactions_missingmemberfixer;
+mod codeactions_modules;
+mod codeactions_semantic;
+mod codeactions_spelling;
+mod codeactions_syntax;
+mod codeactions_usage;
 mod codelens;
 mod completions;
 mod completions_2;
@@ -23,6 +32,7 @@ mod definition;
 mod diagnostics;
 mod displaypartswriter;
 mod documenthighlights;
+mod embedded_refactors;
 mod file_rename;
 mod findallreferences;
 #[cfg(test)]
@@ -60,7 +70,11 @@ mod utilities;
 mod visitedchildren;
 
 pub use api::{ERR_NO_SOURCE_FILE, ERR_NO_TOKEN_AT_POSITION};
-pub use codeactions::{CodeAction, CodeFixContext, CodeFixProvider, CombinedCodeActions};
+pub use codeactions::{
+    CodeAction, CodeFixContext, CodeFixProvider, CombinedCodeActions,
+    code_fix_requires_auto_imports, combined_code_fix_requires_auto_imports,
+    supported_code_fix_codes,
+};
 pub use completions::{
     COMPLETION_TRIGGER_CHARACTERS, CompletionItem, CompletionKind, CompletionList,
     ERR_NEEDS_AUTO_IMPORTS, KeywordCompletionFilters, SORT_TEXT_AUTO_IMPORT_SUGGESTIONS,
@@ -77,6 +91,7 @@ pub use completions_3::{
     SOURCE_TYPE_ONLY_ALIAS, compare_completion_entries,
 };
 pub use crossproject::*;
+pub use embedded_refactors::EmbeddedRefactor;
 pub use findallreferences::{
     Definition, DefinitionKind, ReferenceEntry, SignatureUsage, SymbolAndEntries,
     SymbolAndEntriesData,

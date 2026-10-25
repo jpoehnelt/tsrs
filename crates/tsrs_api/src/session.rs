@@ -136,14 +136,32 @@ pub struct Session {
 
 impl Session {
     /// Go `NewStandaloneSession`.
+    /// Prepare the same auto-import view used by the native language-service handlers.
+    pub fn embedded_auto_import_snapshot(&self, base: &Snapshot, file: &str) -> Arc<Snapshot> {
+        self.snapshot_host.clone_snapshot_with_auto_imports(
+            &Context::background(),
+            base,
+            &tsrs_ls::lsconv::file_name_to_document_uri(file),
+            None,
+        )
+    }
+
     pub fn new(options: SessionOptions) -> Arc<Session> {
+        Self::new_with_position_encoding(options, tsrs_lsproto::PositionEncodingKind::UTF8)
+    }
+
+    /// Embedded editor hosts select their cursor and range encoding explicitly.
+    pub fn new_with_position_encoding(
+        options: SessionOptions,
+        position_encoding: tsrs_lsproto::PositionEncodingKind,
+    ) -> Arc<Session> {
         let init = tsrs_project::SessionInit {
             background_ctx: Context::background(),
             options: Arc::new(tsrs_project::SessionOptions {
                 current_directory: options.cwd,
                 default_library_path: options.default_library_path,
                 typings_location: String::new(),
-                position_encoding: tsrs_lsproto::PositionEncodingKind::UTF8,
+                position_encoding,
                 watch_enabled: false,
                 logging_enabled: false,
                 telemetry_enabled: false,
@@ -216,6 +234,18 @@ impl Session {
             source_files: crate::sourcefiles::SourceFileState::default(),
             build_backend: Mutex::new(Some(Arc::new(crate::build::ExecuteBuildBackend))),
         })
+    }
+
+    /// Browser workers drive idle cleanup from host timers instead of OS threads.
+    pub fn collect_idle_checkers(&self) {
+        let snapshots = self.snapshots.read().unwrap();
+        let mut ordered: Vec<_> = snapshots.iter().collect();
+        ordered.sort_unstable_by_key(|(id, _)| **id);
+        for (_, (data, _)) in ordered {
+            for project in data.snapshot.project_collection.projects() {
+                project.cleanup_idle_checkers();
+            }
+        }
     }
 
     pub fn id(&self) -> &str {
@@ -407,6 +437,57 @@ impl Session {
         Ok(())
     }
 
+    /// In-process dispatch validates the same fields without encoding JSON text.
+    pub fn handle_native_request(&self, method: &str, params: &Value) -> ApiResult<Response> {
+        let info = method_info(method)
+            .ok_or_else(|| ApiError::invalid_request(format!("unknown API method {method:?}")))?;
+        let empty = Value::Object(tsrs_core::json::JsonMap::new());
+        let params = if matches!(params, Value::Null) { &empty } else { params };
+        if !matches!(params, Value::Object(_)) {
+            return Err(ApiError::invalid_request("params must be an object"));
+        }
+        let lexemes = match crate::methods::params_type(method) {
+            Some(t) => {
+                crate::predecode::predecode(method, t, params, rustc_hash::FxHashMap::default())?
+            }
+            None => rustc_hash::FxHashMap::default(),
+        };
+        self.dispatch_parsed(method, params, info.owner, &[], lexemes)
+    }
+    pub(crate) fn ensure_open(&self) -> ApiResult<()> {
+        if *self.closed.lock().unwrap() {
+            return Err(ApiError::client("session is closed"));
+        }
+        Ok(())
+    }
+    /// Printing receives an existing binary AST slice without base64 or an object tree of bytes.
+    pub fn handle_native_binary_request(
+        &self,
+        method: &str,
+        params: &Value,
+        data: &[u8],
+    ) -> ApiResult<Response> {
+        let mut validation = params.clone();
+        let Value::Object(fields) = &mut validation else {
+            return Err(ApiError::invalid_request("params must be an object"));
+        };
+        fields.insert("data", Value::String(String::new()));
+        let params_type = crate::methods::params_type(method)
+            .ok_or_else(|| ApiError::invalid_request("unknown binary method"))?;
+        crate::predecode::predecode(
+            method,
+            params_type,
+            &validation,
+            rustc_hash::FxHashMap::default(),
+        )?;
+        let p = Params(&validation);
+        let answer = match method {
+            "printNode" => self.handle_print_node_bytes(p, data)?,
+            "formatNodeForInsertion" => self.handle_format_node_bytes(p, data)?,
+            _ => return Err(ApiError::invalid_request("unsupported binary input method")),
+        };
+        Ok(Response::Value(answer))
+    }
     fn dispatch(&self, method: &str, params: &[u8]) -> ApiResult<Response> {
         match method {
             "echo" => {
@@ -491,9 +572,7 @@ impl Session {
     ) -> ApiResult<Response> {
         // Raw payload and exact number literals of this request, for the objects of this params tree (by address).
         let _request = crate::predecode::enter_request(raw, lexemes, params);
-        if *self.closed.lock().unwrap() {
-            return Err(ApiError::client("session is closed"));
-        }
+        self.ensure_open()?;
         if owner == Owner::Checker {
             return checker::handle(self, method, params)
                 .unwrap_or_else(|| Err(ApiError::unsupported(method)));
@@ -615,7 +694,12 @@ impl Handler for Session {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.dispatch(method, params)
         })) {
-            Ok(result) => result,
+            Ok(result) => match result? {
+                Response::Value(value) => {
+                    json::marshal(&value).map(Response::Json).map_err(ApiError::internal)
+                }
+                other => Ok(other),
+            },
             Err(panic) => {
                 let message = panic
                     .downcast_ref::<String>()
@@ -653,7 +737,19 @@ pub(crate) fn scratch<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// Parses request params (raw JSON bytes; empty means absent, Go `UnmarshalParams` returns nil).
+pub fn parse_params(params: &[u8]) -> ApiResult<Value> {
+    if params.is_empty() {
+        return Ok(Value::Null);
+    }
+    let text = tsrs_core::utf8::compat::from_utf8(params)
+        .map_err(|e| ApiError::invalid_request(format!("params are not UTF-8: {e}")))?;
+    json::unmarshal(text).map_err(ApiError::invalid_request)
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Shared handler response helper keeps the fallible API signature for all transports."
+)]
 pub fn json_response(value: &Value) -> ApiResult<Response> {
-    // Most results are small objects: start with room for one instead of growing to it.
-    json::marshal_with_capacity(value, 256).map(Response::Json).map_err(ApiError::internal)
+    Ok(Response::Value(value.clone()))
 }

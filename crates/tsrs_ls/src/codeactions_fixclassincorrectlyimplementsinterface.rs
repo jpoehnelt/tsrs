@@ -39,6 +39,7 @@ fn fix_class_incorrectly_implements_interface_error_codes() -> &'static [i32] {
 pub static FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_PROVIDER: std::sync::LazyLock<
     CodeFixProvider,
 > = std::sync::LazyLock::new(|| CodeFixProvider {
+    requires_auto_imports: true,
     error_codes: fix_class_incorrectly_implements_interface_error_codes(),
     get_code_actions: get_code_actions_to_fix_class_incorrectly_implements_interface,
     fix_ids: &[FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_FIX_ID],
@@ -89,6 +90,8 @@ fn get_code_actions_to_fix_class_incorrectly_implements_interface(
                 .localize(&[&scanner::get_text_of_node(implemented_type_node)]),
             changes,
             fix_id: FIX_CLASS_INCORRECTLY_IMPLEMENTS_INTERFACE_FIX_ID.to_string(),
+            fix_name: None,
+            changes_by_file: Vec::new(),
             fix_all_description: diagnostics::IMPLEMENT_ALL_UNIMPLEMENTED_INTERFACES.localize(&[]),
         });
     }
@@ -148,6 +151,7 @@ fn get_all_code_actions_to_fix_class_incorrectly_implements_interface(
     }
 
     Ok(Some(CombinedCodeActions {
+        changes_by_file: Vec::new(),
         description: diagnostics::IMPLEMENT_ALL_UNIMPLEMENTED_INTERFACES.localize(&[]),
         changes,
     }))
@@ -168,8 +172,8 @@ fn add_changes(
 ) {
     let locale = locale_from_context(context);
     let constructor = get_constructor(Some(class_declaration));
-    let implemented_type = type_checker.get_type_at_location(implemented_type_node);
-    let class_type = type_checker.get_type_at_location(class_declaration);
+    let implemented_type = type_checker.get_editor_type_at_location(implemented_type_node);
+    let class_type = type_checker.get_editor_type_at_location(class_declaration);
 
     if type_checker.get_number_index_type(class_type).is_none() {
         let number_type = type_checker.get_number_type();
@@ -355,7 +359,7 @@ fn get_inherited_members(
         return FxHashMap::default();
     };
 
-    let base_type = type_checker.get_type_at_location(type_node);
+    let base_type = type_checker.get_editor_type_at_location(type_node);
 
     let mut inherited_members = FxHashMap::default();
     inherited_members.extend(type_checker.get_properties_of_type(base_type).iter().filter_map(

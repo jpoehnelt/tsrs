@@ -59,6 +59,7 @@ const FIX_MISSING_TYPE_ANNOTATION_ON_EXPORTS_FIX_ID: &str = "fixMissingTypeAnnot
 // IsolatedDeclarationsFixProvider is the CodeFixProvider for isolatedDeclarations-related type annotation fixes.
 pub static ISOLATED_DECLARATIONS_FIX_PROVIDER: std::sync::LazyLock<CodeFixProvider> =
     std::sync::LazyLock::new(|| CodeFixProvider {
+        requires_auto_imports: true,
         error_codes: isolated_declarations_fix_error_codes(),
         get_code_actions: get_isolated_declarations_code_actions,
         fix_ids: &[FIX_MISSING_TYPE_ANNOTATION_ON_EXPORTS_FIX_ID],
@@ -180,6 +181,7 @@ fn get_all_isolated_declarations_code_actions(
         type_print_mode: TypePrintMode::Full,
         symbols_to_import: Vec::new(),
         mutated_target: false,
+        legacy_code_fix_edits: fix_context.ls.legacy_code_fix_edits,
     };
 
     for diag in all_diags {
@@ -196,14 +198,16 @@ fn get_all_isolated_declarations_code_actions(
     }
 
     let (mut changes, _) = change_tracker.get_changes();
-    let file_changes = changes
+    let mut file_changes = changes
         .shift_remove(crate::lsconv::Script::original_file_name(&fix_context.source_file))
         .unwrap_or_default();
+    file_changes.dedup();
     if file_changes.is_empty() {
         return Ok(None);
     }
 
     Ok(Some(CombinedCodeActions {
+        changes_by_file: Vec::new(),
         description: diagnostics::ADD_ALL_MISSING_TYPE_ANNOTATIONS.localize(&[]),
         changes: file_changes,
     }))
@@ -235,6 +239,7 @@ fn try_code_action(
         type_print_mode: TypePrintMode::Full,
         symbols_to_import: Vec::new(),
         mutated_target: false,
+        legacy_code_fix_edits: fix_context.ls.legacy_code_fix_edits,
     };
 
     let description = f(&mut fixer);
@@ -249,10 +254,11 @@ fn try_code_action(
     }
 
     let (mut changes, _) = change_tracker.get_changes();
-    let file_changes = changes
+    let mut file_changes = changes
         .shift_remove(crate::lsconv::Script::original_file_name(&fix_context.source_file))
         .unwrap_or_default();
 
+    file_changes.dedup();
     if file_changes.is_empty() {
         return None;
     }
@@ -261,6 +267,8 @@ fn try_code_action(
         description,
         changes: file_changes,
         fix_id: FIX_MISSING_TYPE_ANNOTATION_ON_EXPORTS_FIX_ID.to_string(),
+        fix_name: Some("add-annotation".into()),
+        changes_by_file: Vec::new(),
         fix_all_description: diagnostics::ADD_ALL_MISSING_TYPE_ANNOTATIONS.localize(&[]),
     })
 }
@@ -275,6 +283,7 @@ struct IsolatedDeclarationsFixer<'a> {
     fixed_nodes: FxHashMap<P<Node>, bool>,
     type_print_mode: TypePrintMode,
     symbols_to_import: Vec<P<Symbol>>,
+    legacy_code_fix_edits: bool,
     mutated_target: bool, // set by inferType/relativeType when the target was mutated (e.g., spread decomposition)
 }
 
@@ -309,7 +318,7 @@ impl IsolatedDeclarationsFixer<'_> {
             return String::new();
         };
 
-        let t = self.checker.get_type_at_location(expando_func);
+        let t = self.checker.get_editor_type_at_location(expando_func);
         let elements = self.checker.get_properties_of_type(t);
         if elements.is_empty() {
             return String::new();
@@ -428,7 +437,8 @@ impl IsolatedDeclarationsFixer<'_> {
         }
 
         let variable_declaration = ast::find_ancestor_kind(target_node, Kind::VariableDeclaration);
-        let variable_type = variable_declaration.map(|d| self.checker.get_type_at_location(d));
+        let variable_type =
+            variable_declaration.map(|d| self.checker.get_editor_type_at_location(d));
         // Can't use typeof on unique symbols
         if variable_type.is_some_and(|t| t.flags().intersects(TypeFlags::UniqueESSymbol)) {
             return String::new();
@@ -588,6 +598,12 @@ impl IsolatedDeclarationsFixer<'_> {
     // codeactions_fixmissingtypeannotation.go:568
     fn fix_isolated_declaration_error(&mut self, node: P<Node>) -> String {
         // Avoid creating duplicate fixes for the same node
+        if matches!(
+            node.kind(),
+            Kind::Parameter | Kind::PropertyDeclaration | Kind::VariableDeclaration
+        ) {
+            return self.add_type_to_variable_like(node);
+        }
         let fixed = self.fixed_nodes.entry(node).or_default();
         if *fixed {
             return String::new();
@@ -1061,7 +1077,7 @@ impl IsolatedDeclarationsFixer<'_> {
             }
             Some(self.checker.get_return_type_of_signature_exported(signature))
         } else {
-            Some(self.checker.get_type_at_location(node))
+            Some(self.checker.get_editor_type_at_location(node))
         };
 
         let mut t = t?;
@@ -1438,6 +1454,9 @@ impl IsolatedDeclarationsFixer<'_> {
 
     // codeactions_fixmissingtypeannotation.go:1262
     fn add_type_to_variable_like(&mut self, decl: P<Node>) -> String {
+        if self.fixed_nodes.insert(decl, true) == Some(true) {
+            return String::new();
+        }
         let Some(type_node) = self.infer_type(decl, None) else {
             return String::new();
         };
@@ -1448,7 +1467,8 @@ impl IsolatedDeclarationsFixer<'_> {
             // Parenthesize paren-less arrow function parameters (`x => ...`) so the inserted `: T`
             // produces `(x: T) => ...` instead of the invalid `x: T => ...`. Queued after the type
             // annotation so that the `)` edit at param.End() sorts after the annotation insertion.
-            if ast::is_parameter_declaration(decl)
+            if !self.legacy_code_fix_edits
+                && ast::is_parameter_declaration(decl)
                 && let Some(parent) = decl.parent().filter(|p| ast::is_arrow_function(*p))
             {
                 self.change_tracker.parenthesize_arrow_parameters(self.source_file, parent);
@@ -1487,7 +1507,7 @@ impl IsolatedDeclarationsFixer<'_> {
 
             // Check if this import is from the same module
             let Some(import_module_symbol) =
-                self.checker.get_symbol_at_location_exported(import_decl.module_specifier)
+                self.checker.get_editor_symbol_at_location(import_decl.module_specifier)
             else {
                 continue;
             };
@@ -1595,7 +1615,7 @@ fn find_expando_function(ch: &mut Checker, node: P<Node>) -> Option<P<Node>> {
         return None;
     };
 
-    let target_type = ch.get_type_at_location(expression);
+    let target_type = ch.get_editor_type_at_location(expression);
 
     let properties = ch.get_properties_of_type(target_type);
     let found = properties.iter().any(|&p| {
@@ -1693,7 +1713,7 @@ fn type_param_has_default(tp: P<Type>) -> bool {
 // It reuses the change tracker's EmitContext so that generated identifier names are resolved
 // consistently with the actual code edits, and passes the source file so that the printer's
 // name generator can check for conflicts with existing file-level identifiers.
-fn type_to_string_for_diag(
+pub fn type_to_string_for_diag(
     type_node: P<Node>,
     source_file: P<SourceFile>,
     ct: &change::Tracker,

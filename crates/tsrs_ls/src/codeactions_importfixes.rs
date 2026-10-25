@@ -51,6 +51,7 @@ const IMPORT_FIX_ID: &str = "fixMissingImport";
 // ImportFixProvider is the CodeFixProvider for import-related fixes
 pub static IMPORT_FIX_PROVIDER: std::sync::LazyLock<CodeFixProvider> =
     std::sync::LazyLock::new(|| CodeFixProvider {
+        requires_auto_imports: true,
         error_codes: import_fix_error_codes(),
         get_code_actions: get_import_code_actions,
         fix_ids: &[IMPORT_FIX_ID],
@@ -99,6 +100,8 @@ fn get_import_code_actions(
                 description,
                 changes: edits,
                 fix_id: IMPORT_FIX_ID.to_string(),
+                fix_name: Some("import".to_string()),
+                changes_by_file: Vec::new(),
                 fix_all_description: diagnostics::ADD_ALL_MISSING_IMPORTS.localize(&[]),
             })
         } else {
@@ -156,6 +159,7 @@ fn get_all_import_code_actions(
     }
 
     Ok(Some(CombinedCodeActions {
+        changes_by_file: Vec::new(),
         description: diagnostics::ADD_ALL_MISSING_IMPORTS.localize(&[]),
         changes: import_adder.edits(),
     }))
@@ -176,6 +180,7 @@ fn add_import_from_diagnostic(
         source_file: fix_context.source_file,
         span: diag_loc,
         error_code: diag.code(),
+        fix_id: None,
         program: fix_context.program,
         ls: fix_context.ls,
         diagnostic: None,

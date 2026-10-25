@@ -24,7 +24,7 @@ impl NodeBuilder {
         let mut verbosity_level = None;
         let mut max_truncation_length = 0;
         if let Some(verbosity) = self.verbosity.get() {
-            verbosity_level = Some(verbosity.level.get());
+            verbosity_level = (!verbosity.disable_expansion).then(|| verbosity.level.get());
             max_truncation_length = verbosity.max_truncation_length.get();
         }
         self.ctx_stack.borrow_mut().push(self.impl_.ctx.get());
@@ -34,6 +34,7 @@ impl NodeBuilder {
             flags: Cell::new(flags),
             internal_flags: Cell::new(internal_flags),
             max_expansion_depth: Cell::new(verbosity_level),
+            legacy_quick_info: self.verbosity.get().is_some_and(|v| v.disable_expansion),
             max_truncation_length: Cell::new(max_truncation_length),
             enclosing_declaration: Cell::new(enclosing_declaration),
             enclosing_file: Cell::new(ast::get_source_file_of_node(enclosing_declaration)),

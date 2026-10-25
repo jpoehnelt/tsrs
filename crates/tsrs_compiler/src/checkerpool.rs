@@ -476,7 +476,7 @@ pub fn thread_cpu_seconds() -> f64 {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn thread_cpu_seconds() -> f64 {
+pub fn thread_cpu_seconds() -> f64 {
     0.0
 }
 

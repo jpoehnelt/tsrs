@@ -14,6 +14,7 @@ fn main() {
     let (path, out_dir) = (&args[1], &args[2]);
     let text = tsrs_vfs::internal::decode_bytes(std::fs::read(path).unwrap());
     let opts = SourceFileParseOptions {
+        editor_legacy_jsdoc_function_types: false,
         file_name: path.clone(),
         path: Path::new(path.clone()),
         external_module_indicator_options: ExternalModuleIndicatorOptions {
