@@ -95,7 +95,8 @@ jobs:
           package-json-file: dt/package.json
       - name: Install DefinitelyTyped dependencies
         working-directory: dt
-        run: pnpm install --frozen-lockfile
+        # DefinitelyTyped disables lockfiles in its pnpm-workspace.yaml.
+        run: pnpm install --no-frozen-lockfile
       - name: Compare packages
         env:
           SHARD: ${{ matrix.shard }}
