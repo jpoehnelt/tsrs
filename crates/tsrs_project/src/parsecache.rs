@@ -167,7 +167,13 @@ pub fn new_parse_cache(options: RefCountCacheOptions) -> ParseCache {
 // private monorepo: 7.8x on average). Regions grow by a quarter when this is exceeded, and the region is trimmed to
 // what it used after binding.
 fn file_region_first_chunk(text_len: usize) -> usize {
-    text_len.saturating_mul(10).saturating_add(4 << 10).min(64 << 20)
+    text_len.saturating_mul(10).saturating_add(4 << 10).min(if cfg!(target_family = "wasm") {
+        // Linear memory cannot shrink. Cap the first reservation at one page; let
+        // the region's ordinary growth handle arbitrarily large source files.
+        64 << 10
+    } else {
+        64 << 20
+    })
 }
 
 // Content mappers are not ported (docs/LSP.md): the canonical/supplemental bundle type is reduced to the

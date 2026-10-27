@@ -47,6 +47,18 @@ fn test_embedded_contents_match_source() {
 }
 
 #[test]
+fn test_embedded_borrows_match_every_source() {
+    for &(name, expected) in super::embed_generated::EMBEDDED_CONTENTS {
+        let path = format!("bundled:///{name}");
+        let first = super::embed::embedded_file(&path).unwrap();
+        assert_eq!(first, expected, "{name}");
+        let again = super::embed::embedded_file(&path).unwrap();
+        assert!(std::ptr::eq(first, again), "{name}: embedded borrows must stay stable");
+    }
+    assert!(super::embed::embedded_file("bundled:///libs/absent.d.ts").is_none());
+}
+
+#[test]
 fn test_default_lib_path() {
     assert_eq!(default_lib_path_from(None), lib_path());
     assert_eq!(default_lib_path_from(Some(String::new())), lib_path());
