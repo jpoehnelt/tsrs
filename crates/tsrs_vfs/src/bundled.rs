@@ -5,7 +5,10 @@
 mod bundled;
 // The test runners use this explicitly, including when training noembed release builds.
 // Its library data is unreferenced and removed by the linker in a noembed CLI.
+#[cfg(feature = "compressed-stdlib")]
+mod compressed;
 pub mod embed;
+#[cfg(any(not(feature = "compressed-stdlib"), test))]
 mod embed_generated;
 mod libs_generated;
 #[cfg(feature = "noembed")]

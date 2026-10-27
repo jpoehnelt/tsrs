@@ -12,12 +12,18 @@ workspace = true
 [features]
 # Read standard libraries beside the executable, as in upstream npm builds.
 noembed = []
+# Preserve all embedded files, inflating each lossless entry only when read.
+compressed-stdlib = ["dep:miniz_oxide"]
 
 [dependencies]
 tsrs_core.workspace = true
 rustc-hash.workspace = true
 rayon.workspace = true
 bitflags.workspace = true
+miniz_oxide = { version = "0.9.1", optional = true }
+
+[build-dependencies]
+miniz_oxide = { version = "0.9.1", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1.1.5", features = ["fs"] }
