@@ -35,7 +35,7 @@ use crate::stringutil::{Rune, decode_rune, push_rune};
 //   - any other character matches itself literally.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Glob {
-    pub(crate) elems: Vec<Element>, // pattern elements
+    elems: Vec<Element>, // pattern elements
 }
 
 // Parse builds a Glob for the given pattern, returning an error if the pattern
@@ -45,7 +45,7 @@ pub fn parse(pattern: &str) -> Result<Glob, String> {
     Ok(g)
 }
 
-pub fn parse_nested(mut pattern: &str, nested: bool) -> Result<(Glob, &str), String> {
+fn parse_nested(mut pattern: &str, nested: bool) -> Result<(Glob, &str), String> {
     let mut g = Glob::default();
     while !pattern.is_empty() {
         match pattern.as_bytes()[0] {
@@ -130,7 +130,7 @@ pub fn parse_nested(mut pattern: &str, nested: bool) -> Result<(Glob, &str), Str
 }
 
 // helper for decoding a rune in range elements, e.g. [a-z]
-pub fn read_range_rune(input: &str) -> Result<(Rune, usize), String> {
+fn read_range_rune(input: &str) -> Result<(Rune, usize), String> {
     let (r, sz) = decode_rune(input.as_bytes());
     if r == 0xFFFD {
         // See the documentation for DecodeRuneInString.
@@ -144,10 +144,10 @@ pub fn read_range_rune(input: &str) -> Result<(Rune, usize), String> {
 }
 
 pub const ERR_BAD_RANGE: &str = "'[' patterns must be of the form [x-y]";
-pub const ERR_INVALID_UTF8: &str = "invalid UTF-8 encoding";
+const ERR_INVALID_UTF8: &str = "invalid UTF-8 encoding";
 
 impl Glob {
-    pub(crate) fn parse_literal<'a>(&mut self, pattern: &'a str, nested: bool) -> &'a str {
+    fn parse_literal<'a>(&mut self, pattern: &'a str, nested: bool) -> &'a str {
         let special_chars: &[u8] = if nested { b"*?{[/}," } else { b"*?{[/" };
         let end = pattern.bytes().position(|b| special_chars.contains(&b)).unwrap_or(pattern.len());
         self.elems.push(Element::Literal(pattern[..end].to_string()));
@@ -185,7 +185,7 @@ pub enum Element {
 }
 
 impl Element {
-    pub(crate) fn string(&self) -> String {
+    fn string(&self) -> String {
         match self {
             Element::Slash => "/".to_string(),
             Element::Literal(l) => l.clone(),
@@ -222,7 +222,7 @@ impl Glob {
     }
 }
 
-pub fn match_(mut elems: &[&Element], mut input: &[u8]) -> bool {
+fn match_(mut elems: &[&Element], mut input: &[u8]) -> bool {
     while !elems.is_empty() {
         let elem = elems[0];
         elems = &elems[1..];
@@ -339,7 +339,7 @@ pub fn match_(mut elems: &[&Element], mut input: &[u8]) -> bool {
 // split returns the portion before and after the first slash
 // (or sequence of consecutive slashes). If there is no slash
 // it returns (input, nil).
-pub fn split(input: &[u8]) -> (&[u8], &[u8]) {
+fn split(input: &[u8]) -> (&[u8], &[u8]) {
     let Some(i) = memchr::memchr(b'/', input) else {
         return (input, b"");
     };
@@ -348,58 +348,4 @@ pub fn split(input: &[u8]) -> (&[u8], &[u8]) {
         return (first, &input[j..]);
     }
     (first, b"")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn matches(pattern: &str, input: &str) -> bool {
-        parse(pattern).unwrap().match_(input)
-    }
-
-    #[test]
-    fn test_parse_round_trip() {
-        for pattern in ["**/*.{ts,js}", "a/b/c", "example.[0-9]", "src/**/?.d.ts", "{a,{b,c}}/*"] {
-            assert_eq!(parse(pattern).unwrap().string(), pattern);
-        }
-    }
-
-    #[test]
-    fn test_parse_errors() {
-        assert_eq!(parse("a**").unwrap_err(), "** may only be adjacent to '/'");
-        assert_eq!(parse("**a").unwrap_err(), "** may only be adjacent to '/'");
-        assert_eq!(parse("{a,b").unwrap_err(), "unmatched '{'");
-        assert_eq!(parse("[a]").unwrap_err(), ERR_BAD_RANGE);
-        assert_eq!(parse("[").unwrap_err(), ERR_BAD_RANGE);
-        assert_eq!(parse("[a-").unwrap_err(), ERR_BAD_RANGE);
-        assert!(parse("a,b}").is_ok());
-    }
-
-    #[test]
-    fn test_match() {
-        // `**/*.{ts,js}` matches all TypeScript and JavaScript files
-        assert!(matches("**/*.{ts,js}", "a.ts"));
-        assert!(matches("**/*.{ts,js}", "src/deep/a.js"));
-        assert!(!matches("**/*.{ts,js}", "src/a.tsx"));
-        // `example.[0-9]` to match on `example.0`, `example.1`, …
-        assert!(matches("example.[0-9]", "example.0"));
-        assert!(matches("example.[0-9]", "example.9"));
-        assert!(!matches("example.[0-9]", "example.a"));
-        // '/' matches one or more literal slashes.
-        assert!(matches("a/b", "a//b"));
-        assert!(!matches("a/b", "ab"));
-        // `?` matches one character in a path segment
-        assert!(matches("a?c", "abc"));
-        assert!(!matches("a?c", "a/c"));
-        // `*` matches within a path segment only
-        assert!(matches("src/*.ts", "src/a.ts"));
-        assert!(!matches("src/*.ts", "src/x/a.ts"));
-        assert!(matches("src/*", "src/anything"));
-        // **/a matches "a"; trailing ** matches everything
-        assert!(matches("**/a", "a"));
-        assert!(matches("**/a", "x/y/a"));
-        assert!(matches("src/**", "src/x/y"));
-        assert!(matches("/dir/**/*", "/dir/a/b.ts"));
-    }
 }

@@ -140,7 +140,7 @@ impl<'a> Params<'a> {
     }
 }
 
-pub fn as_u64(v: &Value, key: &str) -> ApiResult<u64> {
+fn as_u64(v: &Value, key: &str) -> ApiResult<u64> {
     match v {
         // Range and syntax were checked by `predecode` against the field's Go type.
         Value::Number(x) if *x >= 0.0 && x.fract() == 0.0 && *x < 18_446_744_073_709_551_616.0 => {
@@ -160,7 +160,7 @@ pub enum DocumentIdentifier {
 }
 
 impl DocumentIdentifier {
-    pub fn parse(v: &Value, key: &str) -> ApiResult<DocumentIdentifier> {
+    pub(crate) fn parse(v: &Value, key: &str) -> ApiResult<DocumentIdentifier> {
         match v {
             Value::String(s) if !s.is_empty() => Ok(DocumentIdentifier::FileName(s.clone())),
             Value::String(_) => {
@@ -185,18 +185,18 @@ impl DocumentIdentifier {
             ))),
         }
     }
-    pub fn parse_list(v: &[Value], key: &str) -> ApiResult<Vec<DocumentIdentifier>> {
+    pub(crate) fn parse_list(v: &[Value], key: &str) -> ApiResult<Vec<DocumentIdentifier>> {
         v.iter().map(|d| DocumentIdentifier::parse(d, key)).collect()
     }
     /// Go `ToFileName`.
-    pub fn to_file_name(&self) -> String {
+    pub(crate) fn to_file_name(&self) -> String {
         match self {
             DocumentIdentifier::FileName(f) => f.clone(),
             DocumentIdentifier::Uri(u) => tsrs_lsproto::DocumentUri(u.clone()).file_name(),
         }
     }
     /// Go `ToAbsoluteFileName`.
-    pub fn to_absolute_file_name(&self, cwd: &str) -> String {
+    pub(crate) fn to_absolute_file_name(&self, cwd: &str) -> String {
         match self {
             DocumentIdentifier::FileName(f) => {
                 tsrs_core::tspath::get_normalized_absolute_path(f, cwd)

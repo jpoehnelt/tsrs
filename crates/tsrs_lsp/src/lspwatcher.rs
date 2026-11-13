@@ -5,8 +5,8 @@
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
+use tsrs_core::collections::{OrderedMap, new_ordered_map_with_size_hint};
 use tsrs_core::tspath;
 use tsrs_fswatch as fswatch;
 use tsrs_ls::lsconv;
@@ -19,7 +19,7 @@ use tsrs_vfs::{FS, walk_dir};
 // first batch a short grace window so adjacent filesystem bursts coalesce.
 const THROTTLE_WINDOW: Duration = Duration::from_millis(75);
 
-pub(crate) trait WatcherBackend: Send + Sync {
+pub trait WatcherBackend: Send + Sync {
     fn watch_directory(
         &self,
         dir: &str,
@@ -70,7 +70,7 @@ struct WatcherState {
     closed: bool,
 
     // Pending batch state, protected by mu.
-    pending: Option<IndexMap<String, lsproto::FileEvent>>,
+    pending: Option<OrderedMap<String, lsproto::FileEvent>>,
     flush_timer: Option<Timer>,
 }
 
@@ -123,7 +123,7 @@ pub fn new(fs: Arc<dyn FS>, on_changes: OnChanges, logger: Arc<dyn Logger>) -> A
 // NewWithFSWatcher constructs a Watcher backed by the provided fswatch.Watcher.
 // Use this to select a specific backend (e.g. fswatch.Kqueue()) instead of the
 // platform default.
-pub fn new_with_fs_watcher(
+fn new_with_fs_watcher(
     fs: Arc<dyn FS>,
     watcher: &'static dyn fswatch::Watcher,
     on_changes: OnChanges,
@@ -133,7 +133,7 @@ pub fn new_with_fs_watcher(
 }
 
 // lspwatcher.go:102
-pub(crate) fn new_with_backend(
+pub fn new_with_backend(
     fs: Arc<dyn FS>,
     backend: Box<dyn WatcherBackend>,
     on_changes: OnChanges,
@@ -274,7 +274,8 @@ impl Watcher {
         if st.closed {
             return;
         }
-        let pending = st.pending.get_or_insert_with(|| IndexMap::with_capacity(events.len()));
+        let pending =
+            st.pending.get_or_insert_with(|| new_ordered_map_with_size_hint(events.len()));
         pending.extend(events.iter().filter_map(|event| {
             let change_type = match event.kind {
                 fswatch::EventKind::UPDATE => {
@@ -341,7 +342,7 @@ impl Watcher {
         if st.closed {
             return;
         }
-        let pending = st.pending.get_or_insert_with(|| IndexMap::with_capacity(paths.len()));
+        let pending = st.pending.get_or_insert_with(|| new_ordered_map_with_size_hint(paths.len()));
         for path in paths {
             let uri = lsconv::file_name_to_document_uri(path);
             if pending.contains_key(&uri.0) {
@@ -657,7 +658,6 @@ fn effective_kind(file_system_watcher: &lsproto::FileSystemWatcher) -> lsproto::
     )
 }
 
-#[cfg(test)]
-pub(crate) fn root_from_glob_for_test(pattern: &str) -> String {
+pub fn root_from_glob_for_test(pattern: &str) -> String {
     root_from_glob(pattern)
 }

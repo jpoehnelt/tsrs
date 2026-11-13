@@ -12,9 +12,9 @@ use crate::server::Server;
 
 // progress.go:13. Go's `args []any` are stringified when the event is created (they cross threads).
 pub struct ProgressEvent {
-    pub(crate) message: &'static Message,
-    pub(crate) args: Vec<String>,
-    pub(crate) finish: bool,
+    pub message: &'static Message,
+    pub args: Vec<String>,
+    pub finish: bool,
 }
 
 // progress.go:22
@@ -100,7 +100,7 @@ pub struct ProgressChannel {
 }
 
 pub struct ProgressChannelState {
-    pub(crate) events: VecDeque<ProgressEvent>,
+    events: VecDeque<ProgressEvent>,
     // Test support (Go's synctest.Wait): the run thread is blocked waiting for an event, the timer or done.
     idle: bool,
     exited: bool,
@@ -120,12 +120,12 @@ pub struct ProgressChannelState {
 // but will bail out if the server's background context is cancelled.
 pub struct ProjectLoadingProgress {
     reporter: Arc<dyn ProgressReporter>,
-    pub(crate) ch: Arc<ProgressChannel>,
+    ch: Arc<ProgressChannel>,
     delay: Duration, // time to wait before showing progress UI
 }
 
 // progress.go:76
-pub fn new_project_loading_progress(
+pub(crate) fn new_project_loading_progress(
     server: Weak<Server>,
     delay: Duration,
 ) -> Arc<ProjectLoadingProgress> {
@@ -184,12 +184,12 @@ impl ProjectLoadingProgress {
     }
 
     // progress.go:90
-    pub(crate) fn start(&self, message: &'static Message, args: Vec<String>) {
+    pub fn start(&self, message: &'static Message, args: Vec<String>) {
         self.send_event(ProgressEvent { message, args, finish: false });
     }
 
     // progress.go:99
-    pub(crate) fn finish(&self, message: &'static Message, args: Vec<String>) {
+    pub fn finish(&self, message: &'static Message, args: Vec<String>) {
         self.send_event(ProgressEvent { message, args, finish: true });
     }
 
@@ -358,8 +358,7 @@ impl ProjectLoadingProgress {
     }
 
     // Test support (Go's synctest.Wait): blocks until no event is queued and the run thread is waiting.
-    #[cfg(test)]
-    pub(crate) fn wait_idle(&self) {
+    pub fn wait_idle(&self) {
         loop {
             {
                 let state = self.ch.state.lock().unwrap();
@@ -372,8 +371,7 @@ impl ProjectLoadingProgress {
     }
 
     // Test support: queue an event without waiting (Go's `p.ch <- ev` while the buffer has room).
-    #[cfg(test)]
-    pub(crate) fn fill(&self, ev: ProgressEvent) -> bool {
+    pub fn fill(&self, ev: ProgressEvent) -> bool {
         let mut state = self.ch.state.lock().unwrap();
         if state.events.len() >= PROGRESS_CHANNEL_CAPACITY {
             return false;
@@ -382,8 +380,7 @@ impl ProjectLoadingProgress {
         true
     }
 
-    #[cfg(test)]
-    pub(crate) fn capacity() -> usize {
+    pub fn capacity() -> usize {
         PROGRESS_CHANNEL_CAPACITY
     }
 }

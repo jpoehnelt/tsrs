@@ -330,7 +330,7 @@ fn mode_from(v: &Value, what: &str) -> ApiResult<Option<ResolutionMode>> {
 }
 
 /// Go `NewPackageId` (nil when the package has no name).
-pub fn package_id_response(p: &tsrs_module::PackageId) -> Option<Value> {
+pub(crate) fn package_id_response(p: &tsrs_module::PackageId) -> Option<Value> {
     (!p.name.is_empty()).then(|| {
         Obj::new()
             .set("name", s(p.name))
@@ -342,7 +342,7 @@ pub fn package_id_response(p: &tsrs_module::PackageId) -> Option<Value> {
 }
 
 /// Go `newResolvedModuleResponse`.
-pub fn resolved_module_response(r: &ResolvedModule) -> Value {
+pub(crate) fn resolved_module_response(r: &ResolvedModule) -> Value {
     if !r.is_resolved() {
         return Value::Null;
     }
@@ -595,19 +595,20 @@ impl Session {
             }));
             Box::new(SharedResolver(r))
         } else {
+            let mut extra_extensions = Vec::new();
             let fs: Arc<dyn FS> = if snapshot != 0 {
                 let sd = self.snapshot_data(snapshot)?;
                 let fs = sd.snapshot.fs();
+                extra_extensions = sd.snapshot.content_mapper_extensions();
                 _sd_pin = sd;
                 fs
             } else {
                 self.fs()
             };
             call_host = FsHost { fs, cwd: cwd.clone() };
-            Box::new(tsrs_module::new_resolver(ResolverOptions::new(
-                &call_host,
-                data.compiler_options,
-            )))
+            let mut options = ResolverOptions::new(&call_host, data.compiler_options);
+            options.extra_extensions = extra_extensions;
+            Box::new(tsrs_module::new_resolver(options))
         };
         if !data.callback.is_empty() {
             let conn = self

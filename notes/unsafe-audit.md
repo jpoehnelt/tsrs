@@ -41,7 +41,7 @@ are where a lifetime fix starts. Each is one safe API, not many unsafe blocks.
 | `new_program`, `Program::reuse_program` (`tsrs_compiler/src/program.rs`) | a safe fn returns `&'static Program` that `free_program` later frees; 152 signatures carry that view | program ownership (milestone 1): an owner type with `Drop` |
 | `assume_static` (`tsrs_project/src/extendedconfigcache.rs`) and its three call sites in `configfileregistrybuilder.rs` | removed: `tsrs_module::DefaultResolver<'h>` borrows its host and config parsing takes `&dyn ParseConfigHost`, so the project system passes its builder directly; the same change removed the per-call host leaks in `tsrs_compiler/src/host.rs`, `tsrs_api/src/session.rs` and the leak / `from_raw` pair in `tsrs_api/src/module_resolution.rs` | done |
 | `assume_static` (`tsrs_ls/src/autoimport/registry.rs`) and `clone_registry_in_scratch` | a lifetime transmute of the clone host; sound while every derived value dies in the update's scratch region | blocked on program/checker ownership: the alias resolver built from the host is handed to `new_checker(&'static dyn Program)`, and `wrapvfs::wrap` / `get_package_realpath_funcs` take `&'static dyn FS` |
-| `FrozenCell::borrow` / `borrow_mut` and its `Send` / `Sync` (`tsrs_core/src/frozen.rs`) | a `RefCell` API without a borrow flag in release builds; the owner rule is checked only with `checked-cells` | thread-sharing invariants (after milestone 1); Miri cannot see this, the checked build can |
+| `FrozenCell::borrow` / `borrow_mut` and its `Send` / `Sync` (`tsrs_core/src/frozen.rs`) | a `RefCell` API without a borrow flag in release builds; the owner rule is checked only with `checked-cells`. Two of its three users moved to std locks (the `SourceFile` JSDoc caches: a `OnceLock` and an `RwLock`ed map; `TsConfigSourceFile`: two `Mutex`es) and `borrow_mut_locked` is gone; `SymbolTable` is the one user left | thread-sharing invariants (after milestone 1). The honest fix for `SymbolTable` is a borrow flag, and the flag is not free: `checked-cells` (the atomic counter always on) costs +5.3% single-threaded instructions on webpack (5/5 pairs), +2.5% on typeorm (3/5, noisy), +3.9% / +3.6% across all threads at default checkers, +0.5% peak RSS. Readers pay, so it wants an owner-based design (the binder holds the table until the file is bound, checkers write only tables they created), not a counter. Miri cannot see this, the checked build can |
 | `Send` / `Sync` for `P<T>`, `SP<T>`, `ThinSlice<T>`, `StaticSlicePtr<T>`, `SlicePair<A, B>` (`tsrs_core/src/ptr.rs`) | by decree: safe code can hand a checker-owned object to another thread | same |
 
 ## The safe-api-possible sites
@@ -59,10 +59,25 @@ are where a lifetime fix starts. Each is one safe API, not many unsafe blocks.
 - **Allocations #638 already owns** (`format/rule.rs`, `rulecontext.rs`, `lsproto::intern`, the background
   worker pool and timer, `includeProcessor::get_reference_location`): the rows change to `keep` or disappear when it
   merges.
-- **`new_ad_hoc_message`** leaks one `Message` per call. Bounded in `tsc`; unbounded if a long-lived server calls it
-  per request. Worth a count in the repeated-lifecycle leak run.
-- **Enum-from-integer transmutes** (`Kind`, `NodeDataTag`, the codec's `kind_from_u32`): a checked table costs a
-  bounds check per decode, unmeasured.
+- **`new_ad_hoc_message`**: removed. It leaked one `Message` and its text per call; now `Message::ad_hoc` builds the
+  value and `tsrs_ast::new_ad_hoc_message` allocates it and its text in the arena with the diagnostics that use it.
+  Only tests and the test runner call it.
+- **Enum-from-integer decodes** (`Kind`, `NodeDataTag`, the codec's `kind_from_u32`), measured 2026-10-24. The safe
+  form is a `match` that maps every discriminant to its variant: LLVM folds the identity map into one range check
+  (`cmp #353; b.hs <panic>` for `Kind`, `cmp #194` for `NodeDataTag`), so a decode costs two instructions more than
+  the transmute, one of them a never-taken branch. The cold sites converted: `Kind::from_i16` (generated, called by
+  the language server, the API and the pool statistics) is that `match`, and the codec's `kind_from_u32` is a range
+  check over it; the two `Kind` transmutes there and the codec's inventory rows are gone. The hot sites stayed:
+  `NodeHeaderWord::kind` and `::data_tag` decode the node header word on every `node.kind()` and every generated
+  accessor. With both checked, single-threaded instructions on webpack rose 4.7% (median of 7 interleaved pairs,
+  0 of 7 lower; the 7 checked runs 11.49-11.61 G never overlapped the 7 base runs 10.89-11.29 G), typeorm 4.1%
+  (2 of 7 lower), mui-docs 1.1% (2 of 7 lower). With only `data_tag` checked: webpack 0.9% (0 of 7 lower, run floors
+  2.2%), typeorm 1.4%, mui-docs 0.3%, so about 3% of webpack's instructions are `kind` decodes and 2% `data_tag`
+  decodes. Default-checker peak RSS unchanged, output byte-identical. Both rows are now `keep`; the precondition is a
+  `debug_assert!` at each site instead of prose. The counts came from `/usr/bin/time -l` on a machine at load ~100
+  with swap full, which counts kernel work too (base run spread 2-11%), so the medians are coarse; the
+  non-overlapping webpack runs carry the verdict. The only free safe form left for `data_tag` would pad
+  `NodeDataTag` to 256 variants so the identity `match` is total; not done.
 
 ## Kept as they are
 

@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use tsrs_api_transport::strictjson::DecodeError;
-use tsrs_compiler::{CheckerHandle, Program};
-use tsrs_core::context::{CheckerLifetime, Context, with_checker_lifetime};
+use tsrs_compiler::Program;
+use tsrs_core::context::Context;
 use tsrs_core::json::{self, JsonMap, Value};
 use tsrs_project::{ID as ProjectID, Snapshot, SnapshotHost};
 use tsrs_vfs::FS;
@@ -39,9 +39,10 @@ pub struct SessionOptions {
     pub fs: Arc<dyn FS>,
     /// Go `UseBinaryResponses`: true for the sync `MessagePack` protocol, false for JSON-RPC.
     pub binary_responses: bool,
-    /// Go `RunExternalCode` (false by default). Forwarded to the project session, but API projects get no content
-    /// mapper project yet (see `Session::new`), so content-mapped files are not transformed.
+    /// Go `RunExternalCode` (false by default): allows configured content mappers to execute.
     pub run_external_code: bool,
+    /// Go `ContentMapperSpawner`: launches content mapper processes (None when the host cannot spawn them).
+    pub content_mapper_spawner: Option<Arc<dyn tsrs_contentmapper::Spawner>>,
 }
 
 impl SessionOptions {
@@ -51,20 +52,26 @@ impl SessionOptions {
         fs: Arc<dyn FS>,
         binary_responses: bool,
     ) -> SessionOptions {
-        SessionOptions { cwd, default_library_path, fs, binary_responses, run_external_code: false }
+        SessionOptions {
+            cwd,
+            default_library_path,
+            fs,
+            binary_responses,
+            run_external_code: false,
+            content_mapper_spawner: None,
+        }
     }
 }
 
 /// Go `snapshotOpenState`: projects/files this client opened in a snapshot lineage.
 #[derive(Clone, Default)]
-pub(crate) struct OpenState {
+pub struct OpenState {
     pub open_projects: tsrs_core::collections::Set<tsrs_core::tspath::Path>,
     pub open_files: tsrs_core::collections::Set<tsrs_core::tspath::Path>,
 }
 
 /// Go `snapshotData`: one registered snapshot plus its per-snapshot registries.
 pub struct SnapshotData {
-    pub handle: SnapshotID,
     pub snapshot: Arc<Snapshot>,
     /// Request filesystem the snapshot was created with (inherited by updates), if any.
     pub(crate) file_system: Option<Arc<crate::requestfs::RequestFileSystem>>,
@@ -92,23 +99,12 @@ impl SnapshotData {
     }
 }
 
-/// Go `checkerSetup`. Holds the snapshot alive and the checker exclusively until dropped. Checker
-/// handles are not reentrant: never call `Session::setup_checker` again while one is held on the
-/// same program.
-pub struct CheckerSetup {
-    pub sd: Arc<SnapshotData>,
-    pub snapshot: SnapshotID,
-    pub project: ProjectID,
-    pub program: &'static Program,
-    pub checker: CheckerHandle,
-}
-
 /// Go `Session.openProjects` / `openFiles` / `createdPrograms`, guarded by `languageServerUpdateMu`: the canonical
 /// LSP-state resources owned by this API client.
 #[derive(Default)]
-pub(crate) struct LanguageServerState {
+pub struct LanguageServerState {
     pub open_state: OpenState,
-    pub created_programs: tsrs_core::collections::Set<tsrs_project::SyntheticProjectID>,
+    pub(crate) created_programs: tsrs_core::collections::Set<tsrs_project::SyntheticProjectID>,
 }
 
 pub struct Session {
@@ -116,7 +112,7 @@ pub struct Session {
     pub(crate) snapshot_host: Arc<SnapshotHost>,
     /// Go `projectSession`: the language server's project session, for sessions created by `new_lsp_session`.
     pub(crate) project_session: Option<Arc<tsrs_project::Session>>,
-    pub(crate) language_server: Mutex<LanguageServerState>,
+    pub language_server: Mutex<LanguageServerState>,
     pub(crate) parse_config_host: crate::config::ApiParseConfigHost,
     binary_responses: bool,
     /// Registered snapshots with their API reference count (Go `snapshotData.refCount`).
@@ -174,11 +170,10 @@ impl Session {
             client: None,
             logger: None,
             npm_executor: None,
+            spawner: options.content_mapper_spawner,
+            content_mapper_logger: None,
             parse_cache: None,
             content_mapped_parse_cache: None,
-            // Go also passes the server's ContentMapperSpawner here (api/server.go:99). The project system does not
-            // transform content-mapped files yet (phase 2, notes/contentmappers.md): `--runExternalCode` is accepted
-            // and recorded in the session options, and its projects get no content mapper project.
         };
         let base_fs = Arc::clone(&init.fs);
         Self::new_session(
@@ -261,7 +256,7 @@ impl Session {
         self.build_backend.lock().unwrap().clone()
     }
 
-    pub fn default_library_path(&self) -> &str {
+    pub(crate) fn default_library_path(&self) -> &str {
         if let Some(project_session) = &self.project_session {
             return project_session.default_library_path();
         }
@@ -295,20 +290,20 @@ impl Session {
         self.conn.lock().unwrap().clone()
     }
 
-    pub fn binary_responses(&self) -> bool {
+    pub(crate) fn binary_responses(&self) -> bool {
         self.binary_responses
     }
 
-    pub fn current_directory(&self) -> &str {
+    pub(crate) fn current_directory(&self) -> &str {
         self.snapshot_host.get_current_directory()
     }
 
     /// Go `Session.FS()` for a standalone session: the host filesystem (possibly callback-backed).
-    pub fn base_fs(&self) -> &dyn FS {
+    pub(crate) fn base_fs(&self) -> &dyn FS {
         self.snapshot_host.fs()
     }
 
-    pub fn to_path(&self, file_name: &str) -> tsrs_core::tspath::Path {
+    pub(crate) fn to_path(&self, file_name: &str) -> tsrs_core::tspath::Path {
         tsrs_core::tspath::to_path(
             file_name,
             self.current_directory(),
@@ -316,7 +311,7 @@ impl Session {
         )
     }
 
-    pub fn use_case_sensitive_file_names(&self) -> bool {
+    pub(crate) fn use_case_sensitive_file_names(&self) -> bool {
         self.snapshot_host.fs().use_case_sensitive_file_names()
     }
 
@@ -331,6 +326,11 @@ impl Session {
         self.source_files.release_all_leases();
         let all: Vec<_> = self.snapshots.write().unwrap().drain().collect();
         drop(all);
+
+        // Go `ownsSnapshotHost`: only a standalone session (no project session) owns its snapshot host.
+        if self.project_session.is_none() {
+            self.snapshot_host.close();
+        }
         self.batch_pages.lock().unwrap().clear();
     }
 
@@ -383,19 +383,6 @@ impl Session {
             .ok_or_else(|| ApiError::client(format!("snapshot {handle} not found")))
     }
 
-    /// Go `setupChecker`: resolves snapshot -> project -> program and acquires the API-lifetime checker.
-    pub fn setup_checker(
-        &self,
-        snapshot: SnapshotID,
-        project: &ProjectID,
-    ) -> ApiResult<CheckerSetup> {
-        let sd = self.snapshot_data(snapshot)?;
-        let program = sd.get_program(project)?;
-        let ctx = with_checker_lifetime(&Context::background(), CheckerLifetime::API);
-        let checker = program.get_type_checker(&ctx);
-        Ok(CheckerSetup { sd, snapshot, project: project.clone(), program, checker })
-    }
-
     /// Go `registerSnapshot`: the same snapshot id returned twice (no changes) bumps the API ref count so
     /// each client-side snapshot can be disposed independently.
     pub(crate) fn register_snapshot(
@@ -412,7 +399,6 @@ impl Session {
             entry.1 += 1;
         } else {
             let sd = Arc::new(SnapshotData {
-                handle,
                 snapshot,
                 file_system,
                 open_state,
@@ -696,7 +682,10 @@ impl Handler for Session {
         })) {
             Ok(result) => match result? {
                 Response::Value(value) => {
-                    json::marshal(&value).map(Response::Json).map_err(ApiError::internal)
+                    // Most results are small objects: start with room for one instead of growing to it.
+                    json::marshal_with_capacity(&value, 256)
+                        .map(Response::Json)
+                        .map_err(ApiError::internal)
                 }
                 other => Ok(other),
             },
@@ -726,7 +715,7 @@ impl Handler for Session {
 
 /// Runs `f` with a fresh arena region as the allocation target and frees the region afterwards. Only for
 /// work whose result is owned data (JSON values) and that stores nothing arena-allocated in longer-lived state.
-pub(crate) fn scratch<T>(f: impl FnOnce() -> T) -> T {
+fn scratch<T>(f: impl FnOnce() -> T) -> T {
     let region = tsrs_core::arena::Region::new(64 << 10);
     let result = {
         let _scope = region.enter();
@@ -736,20 +725,10 @@ pub(crate) fn scratch<T>(f: impl FnOnce() -> T) -> T {
     result
 }
 
-/// Parses request params (raw JSON bytes; empty means absent, Go `UnmarshalParams` returns nil).
-pub fn parse_params(params: &[u8]) -> ApiResult<Value> {
-    if params.is_empty() {
-        return Ok(Value::Null);
-    }
-    let text = tsrs_core::utf8::compat::from_utf8(params)
-        .map_err(|e| ApiError::invalid_request(format!("params are not UTF-8: {e}")))?;
-    json::unmarshal(text).map_err(ApiError::invalid_request)
-}
-
 #[expect(
     clippy::unnecessary_wraps,
     reason = "Shared handler response helper keeps the fallible API signature for all transports."
 )]
-pub fn json_response(value: &Value) -> ApiResult<Response> {
+pub(crate) fn json_response(value: &Value) -> ApiResult<Response> {
     Ok(Response::Value(value.clone()))
 }

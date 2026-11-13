@@ -1,10 +1,17 @@
 [package]
 name = "tsrs_api"
-version.workspace = true
+version = "7.1.0-beta.tsrs1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+categories.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+readme.workspace = true
+include = ["/src", "/build.rs", "/LICENSE", "/NOTICE"]
+description = "Programmatic API for the tsrs TypeScript compiler"
 
 [lints]
 workspace = true
@@ -17,13 +24,14 @@ tsrs_vfs.workspace = true
 tsrs_module.workspace = true
 tsrs_tsoptions.workspace = true
 tsrs_compiler.workspace = true
-tsrs_execute = { path = "../tsrs_execute" }
+tsrs_execute.workspace = true
 tsrs_checker.workspace = true
 # checker lane: GetTouchingPropertyName, JSDoc tags / documentation comments
 tsrs_astnav.workspace = true
 tsrs_ls.workspace = true
 tsrs_lsproto.workspace = true
 tsrs_project.workspace = true
+tsrs_contentmapper.workspace = true
 rustc-hash.workspace = true
 tsrs_scanner.workspace = true
 tsrs_printer.workspace = true
@@ -32,7 +40,8 @@ tsrs_api_codec.workspace = true
 tsrs_api_transport.workspace = true
 
 [dev-dependencies]
-serde_json = "1"
+serde_json.workspace = true
 
 [lib]
+test = false
 doctest = false

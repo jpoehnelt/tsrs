@@ -35,8 +35,8 @@ struct NestedEmitState {
 }
 
 pub struct Program {
-    pub(crate) snapshot: P<Snapshot>,
-    pub(crate) program: Option<&'static CompilerProgram>,
+    pub snapshot: P<Snapshot>,
+    pub program: Option<&'static CompilerProgram>,
     pub(crate) host: Option<Box<dyn Host + Send + Sync>>,
 
     // Testing data
@@ -79,7 +79,7 @@ pub fn new_program(
 // old snapshot and answers the questions the harness asks (Program::testing_semantic_diagnostics_state).
 pub struct TestingData {
     old_snapshot: Option<P<Snapshot>>,
-    pub updated_signature_kinds: FxHashMap<Path, SignatureUpdateKind>,
+    pub(crate) updated_signature_kinds: FxHashMap<Path, SignatureUpdateKind>,
 }
 
 // The tsctests "SemanticDiagnostics::" line of a file.
@@ -100,10 +100,6 @@ impl Program {
             nested_emit_now: None,
             nested_emit: Mutex::new(NestedEmitState::default()),
         })
-    }
-
-    pub fn get_testing_data(&self) -> Option<&Mutex<TestingData>> {
-        self.testing_data.as_ref()
     }
 
     // sys.go OnProgram: `*refresh*` when the cached entry is not the one the old program had (by pointer).

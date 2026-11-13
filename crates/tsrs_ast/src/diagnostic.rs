@@ -8,7 +8,7 @@ use tsrs_core::tspath::Path;
 use tsrs_core::{OwnedCell, P, ResolutionMode, TextRange, alloc_slice, alloc_str};
 use tsrs_diagnostics::{self as diagnostics, Category, Key, Message};
 
-use crate::SourceFile;
+use crate::{Kind, NodeFactory, SourceFile};
 
 // RepopulateDiagnosticKind indicates the kind of repopulation for a diagnostic chain entry.
 #[repr(i32)]
@@ -245,6 +245,75 @@ impl DiagnosticExt for P<Diagnostic> {
     }
 }
 
+/// tsrs-only: a lightweight `SourceFile` copy that keeps only what the diagnostic writer and error summary
+/// need (file name, text, and the lazily-computed line map).  It does not keep the original AST, binder
+/// data, or checker state, so a project whose diagnostics are converted with this can have its loader
+/// regions freed.
+fn detached_source_file_for_diagnostic(
+    file: P<SourceFile>,
+    factory: &NodeFactory,
+    cache: &mut FxHashMap<P<SourceFile>, P<SourceFile>>,
+) -> P<SourceFile> {
+    if let Some(copy) = cache.get(&file) {
+        return *copy;
+    }
+    let text = alloc_str(file.original_text());
+    let opts = file.parse_options().clone();
+    let statements = factory.new_node_list(vec![]);
+    let end_of_file_token = factory.new_token(Kind::EndOfFile);
+    let copy =
+        factory.new_source_file(opts, text, statements, end_of_file_token).as_source_file_p();
+    cache.insert(file, copy);
+    copy
+}
+
+/// tsrs-only: detach a diagnostic from its original source files.
+///
+/// Replace every `SourceFile` reference in `diagnostic` (and its message chain / related information)
+/// with a minimal copy allocated in the current region.  After this the diagnostic no longer depends
+/// on the program region that originally parsed the file, so that region can be dropped.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "FxHashMap is the project-wide hash map; callers always use it, and generalizing would add noise for this tsrs-only helper."
+)]
+pub fn detach_diagnostic_source_files(
+    diagnostic: P<Diagnostic>,
+    factory: &NodeFactory,
+    cache: &mut FxHashMap<P<SourceFile>, P<SourceFile>>,
+) -> P<Diagnostic> {
+    let file =
+        diagnostic.file().map(|file| detached_source_file_for_diagnostic(file, factory, cache));
+    let message_chain: Vec<P<Diagnostic>> = diagnostic
+        .message_chain()
+        .iter()
+        .map(|&d| detach_diagnostic_source_files(d, factory, cache))
+        .collect();
+    let related_information: Vec<P<Diagnostic>> = diagnostic
+        .related_information()
+        .iter()
+        .map(|&d| detach_diagnostic_source_files(d, factory, cache))
+        .collect();
+    P::new(Diagnostic {
+        file: OwnedCell::new(file),
+        loc: OwnedCell::new(diagnostic.loc()),
+        code: diagnostic.code(),
+        category: OwnedCell::new(diagnostic.category()),
+        source: OwnedCell::new(alloc_str(diagnostic.source())),
+        message: diagnostic.message(),
+        message_text: OwnedCell::new(alloc_str(diagnostic.message_text())),
+        message_key: diagnostic.message_key(),
+        message_args: diagnostic.message_args().to_vec(),
+        message_chain: OwnedCell::new(alloc_slice(&message_chain)),
+        related_information: OwnedCell::new(alloc_slice(&related_information)),
+        reports_unnecessary: diagnostic.reports_unnecessary(),
+        reports_deprecated: diagnostic.reports_deprecated(),
+        skipped_on_no_emit: OwnedCell::new(diagnostic.skipped_on_no_emit()),
+        repopulate_info: OwnedCell::new(
+            diagnostic.repopulate_info().map(|info| tsrs_core::alloc(info.clone())),
+        ),
+    })
+}
+
 impl Diagnostic {
     // Go `Localize(locale)`; only English messages are ported.
     pub fn localize(&self) -> String {
@@ -387,6 +456,12 @@ pub fn new_diagnostic_chain(
     new_diagnostic(None, None, message, args)
 }
 
+/// A `Message` outside the catalog (code -1) with run-time text, allocated where the diagnostics that use it
+/// live, like their message text (`alloc_str`).
+pub fn new_ad_hoc_message(message: &str) -> &'static Message {
+    tsrs_core::alloc(Message::ad_hoc(alloc_str(message)))
+}
+
 pub fn new_compiler_diagnostic(
     message: &'static Message,
     args: &[&dyn fmt::Display],
@@ -484,19 +559,6 @@ impl DiagnosticsCollection {
             self.non_file_diagnostics_sorted = false;
         }
         diagnostic
-    }
-
-    pub fn lookup(&mut self, diagnostic: P<Diagnostic>) -> Option<P<Diagnostic>> {
-        let diagnostics = if let Some(file) = diagnostic.file() {
-            self.get_diagnostics_for_file_locked(file)
-        } else {
-            self.get_global_diagnostics_locked()
-        };
-        let (i, ok) = crate::binary_search_func(&diagnostics, diagnostic, compare_diagnostics);
-        if ok {
-            return Some(diagnostics[i]);
-        }
-        None
     }
 
     pub fn get_global_diagnostics(&mut self) -> Vec<P<Diagnostic>> {
@@ -784,122 +846,4 @@ pub fn new_diagnostic_from_text(
         skipped_on_no_emit: OwnedCell::new(false),
         repopulate_info: OwnedCell::new(None),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn diagnostics_collection_deduplicates_exact_diagnostics_on_add() {
-        let mut collection = DiagnosticsCollection::default();
-        let first =
-            new_compiler_diagnostic(&diagnostics::CANNOT_FIND_NAME_0, &[&"x"]).add_related_info(
-                Some(new_compiler_diagnostic(&diagnostics::X_0_IS_DECLARED_HERE, &[&"first"])),
-            );
-        let second =
-            new_compiler_diagnostic(&diagnostics::CANNOT_FIND_NAME_0, &[&"x"]).add_related_info(
-                Some(new_compiler_diagnostic(&diagnostics::X_0_IS_DECLARED_HERE, &[&"first"])),
-            );
-        let different =
-            new_compiler_diagnostic(&diagnostics::CANNOT_FIND_NAME_0, &[&"x"]).add_related_info(
-                Some(new_compiler_diagnostic(&diagnostics::X_0_IS_DECLARED_HERE, &[&"second"])),
-            );
-
-        assert_eq!(collection.add(first), first);
-        let canonical = collection.add(second);
-        assert_eq!(canonical, first);
-        assert_eq!(collection.add(different), different);
-
-        canonical.add_related_info(Some(new_compiler_diagnostic(
-            &diagnostics::X_0_IS_DECLARED_HERE,
-            &[&"third"],
-        )));
-        let collected = collection.get_global_diagnostics();
-        assert_eq!(collected.len(), 2);
-        assert_eq!(first.related_information().len(), 2);
-    }
-
-    #[test]
-    fn diagnostics_collection_preserves_distinct_ad_hoc_messages() {
-        let mut collection = DiagnosticsCollection::default();
-        let first = new_compiler_diagnostic(diagnostics::new_ad_hoc_message("first"), &[]);
-        let second = new_compiler_diagnostic(diagnostics::new_ad_hoc_message("second"), &[]);
-        collection.add(first);
-        collection.add(second);
-        assert_eq!(collection.get_global_diagnostics().len(), 2);
-    }
-
-    #[test]
-    fn external_diagnostic_identity() {
-        let loc = TextRange::new(1, 2);
-        let first = new_external_diagnostic(None, loc, "mapper-a", Category::Error, 0, "first");
-        let all = [
-            first,
-            new_external_diagnostic(None, loc, "mapper-a", Category::Error, 0, "second"),
-            new_external_diagnostic(None, loc, "mapper-b", Category::Error, 0, "first"),
-            new_external_diagnostic(None, loc, "mapper-a", Category::Warning, 0, "first"),
-        ];
-        let mut collection = DiagnosticsCollection::default();
-        for &diagnostic in &all {
-            assert!(!equal_diagnostics_no_related_info(first, diagnostic) || diagnostic == first);
-            assert!(
-                compare_diagnostics(first, diagnostic) != Ordering::Equal || diagnostic == first
-            );
-            collection.add(diagnostic);
-        }
-        assert_eq!(collection.get_diagnostics().len(), all.len());
-    }
-
-    // displayMessageArgs (diagnostic.go:134): a diagnostic on exactly a virtual alias shows the original name instead of
-    // the virtual one; a partial span or an external source shows the stored arguments, which never change.
-    #[test]
-    fn display_message_args_substitutes_complete_alias() {
-        let f = crate::NodeFactory::default();
-        let statements = f.new_node_list(vec![]);
-        let eof = f.new_token(crate::Kind::EndOfFile);
-        let opts =
-            crate::SourceFileParseOptions { file_name: "/a.vue".to_string(), ..Default::default() };
-        let file =
-            f.new_source_file(opts.clone(), "let __alias = 1;", statements, eof).as_source_file_p();
-        let span_map = tsrs_spanmap::new(&[tsrs_spanmap::Segment {
-            virtual_start: 4,
-            virtual_end: 11,
-            original_start: 5,
-            original_end: 6,
-            kind: tsrs_spanmap::Kind::ALIAS,
-            features: tsrs_spanmap::Feature::All,
-        }]);
-        file.set_content_mapper_info(crate::ContentMapperSourceFileInfo {
-            content_mapper: "mapper@1.0.0",
-            parse_options: opts,
-            original_text: "<a b=x>",
-            span_map: Some(span_map),
-            ..Default::default()
-        });
-
-        let alias = new_diagnostic(
-            Some(file),
-            TextRange::new(4, 11),
-            &diagnostics::CANNOT_FIND_NAME_0,
-            &[&"__alias"],
-        );
-        assert_eq!(alias.localize(), "Cannot find name 'x'.");
-        assert_eq!(alias.message_args(), ["__alias"]);
-        let partial = new_diagnostic(
-            Some(file),
-            TextRange::new(5, 11),
-            &diagnostics::CANNOT_FIND_NAME_0,
-            &[&"__alias"],
-        );
-        assert_eq!(partial.localize(), "Cannot find name '__alias'.");
-        let external = new_diagnostic(
-            Some(file),
-            TextRange::new(4, 11),
-            &diagnostics::CANNOT_FIND_NAME_0,
-            &[&"__alias"],
-        )
-        .set_external_data("mapper", "");
-        assert_eq!(external.localize(), "Cannot find name '__alias'.");
-    }
 }

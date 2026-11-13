@@ -45,7 +45,7 @@ impl LanguageService {
     // It is an implementation detail of sourceFileRangeToLSPLocation; LS features should not call it directly,
     // because it does not preserve a content-mapper projection or apply span-map feature filtering.
     // source_map.go:38
-    pub(crate) fn get_mapped_location(
+    fn get_mapped_location(
         &self,
         file_name: &str,
         file_range: TextRange,
@@ -93,7 +93,7 @@ impl LanguageService {
 // source_map.go:65
 pub struct SourceMapScript {
     file_name: String,
-    text: String,
+    text: crate::host::FileText,
 }
 
 impl Script for SourceMapScript {
@@ -126,7 +126,7 @@ impl Script for SourceMapScript {
 impl LanguageService {
     // source_map.go:85
     pub(crate) fn get_script(&self, file_name: &str) -> Option<SourceMapScript> {
-        let text = self.read_file(file_name)?;
+        let text = self.read_file_text(file_name)?;
         Some(SourceMapScript { file_name: file_name.to_string(), text })
     }
 
@@ -138,13 +138,13 @@ impl LanguageService {
     ) -> Option<DocumentPosition> {
         let new_pos = self.try_get_source_position_worker(file_name, position);
         if let Some(new_pos) = &new_pos {
-            self.read_file(&new_pos.file_name)?;
+            self.read_file_text(&new_pos.file_name)?;
         }
         new_pos
     }
 
     // source_map.go:106
-    pub(crate) fn try_get_source_position_worker(
+    fn try_get_source_position_worker(
         &self,
         file_name: &str,
         position: TextPos,
@@ -175,13 +175,13 @@ impl LanguageService {
     ) -> Option<DocumentPosition> {
         let new_pos = self.try_get_generated_position_worker(file_name, position);
         if let Some(new_pos) = &new_pos {
-            self.read_file(&new_pos.file_name)?;
+            self.read_file_text(&new_pos.file_name)?;
         }
         new_pos
     }
 
     // source_map.go:137
-    pub(crate) fn try_get_generated_position_worker(
+    fn try_get_generated_position_worker(
         &self,
         file_name: &str,
         position: TextPos,

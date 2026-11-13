@@ -15,7 +15,7 @@ pub trait Named {
 // word starting with that letter.
 #[derive(Clone)]
 pub struct Index<T: Named + Clone> {
-    pub(crate) entries: Vec<T>,
+    pub entries: Vec<T>,
     index: FxHashMap<Rune, Vec<usize>>,
 }
 
@@ -119,14 +119,13 @@ impl<T: Named + Clone> Index<T> {
         results
     }
 
-    #[cfg(test)]
-    pub(crate) fn index_len(&self) -> usize {
+    pub fn index_len(&self) -> usize {
         self.index.len()
     }
 
     // index.go:122
     // insertAsWords adds a value to the index keyed by the first letter of each word in its name.
-    pub(crate) fn insert_as_words(&mut self, value: T) {
+    pub fn insert_as_words(&mut self, value: T) {
         let name = value.name().to_string();
         assert!(!name.is_empty(), "Cannot index entry with empty name");
         let entry_index = self.entries.len();

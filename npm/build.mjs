@@ -15,7 +15,7 @@
 // build-only compiler in npm/package.json (`pnpm install --frozen-lockfile` first; `--tsc <path>` to use another TypeScript 7 tsc).
 //
 // The package name comes from npm/tsrs/package.json; Linux platform packages have a `-gnu` or `-musl` suffix. The version is
-// `<workspace version>-ts<[workspace.metadata.typescript] version>` from the workspace Cargo.toml, for every package
+// the TypeScript-aligned `tsrs_cli` version from the workspace Cargo.toml, for every package
 // including `@tsrs/wasm` (npm/tsrs-wasm). The main package lists exactly the platforms given here, so a
 // release never points at a platform package that was not published.
 
@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { distTag, readVersions } from "../tools/release/version.mjs";
 
 const npmDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(npmDir, "..");
@@ -37,6 +38,7 @@ const TARGETS = {
     "x86_64-unknown-linux-musl": { os: "linux", cpu: "x64", libc: "musl" },
     "aarch64-unknown-linux-musl": { os: "linux", cpu: "arm64", libc: "musl" },
     "x86_64-pc-windows-msvc": { os: "win32", cpu: "x64" },
+    "aarch64-pc-windows-msvc": { os: "win32", cpu: "arm64" },
 };
 
 function usage(message) {
@@ -113,35 +115,6 @@ function parseArgs(argv) {
     return opts;
 }
 
-// Minimal reader for the two tables we need from the workspace Cargo.toml.
-function readCargoVersions() {
-    const text = fs.readFileSync(path.join(repoRoot, "Cargo.toml"), "utf8");
-    const tables = {};
-    let table = "";
-    for (const raw of text.split("\n")) {
-        const line = raw.replace(/#.*$/, "").trim();
-        const header = line.match(/^\[([^\]]+)\]$/);
-        if (header) {
-            table = header[1];
-            continue;
-        }
-        const kv = line.match(/^([\w-]+)\s*=\s*"([^"]*)"$/);
-        if (kv) (tables[table] ??= {})[kv[1]] = kv[2];
-    }
-    const crateVersion = tables["workspace.package"]?.version;
-    const ts = tables["workspace.metadata.typescript"];
-    if (!crateVersion || !ts?.version || !ts?.commit || !ts?.nightly) {
-        throw new Error("Cargo.toml needs [workspace.package] version and [workspace.metadata.typescript] version/commit/nightly");
-    }
-    return {
-        crateVersion,
-        version: `${crateVersion}-ts${ts.version}`,
-        typescriptVersion: ts.version,
-        typescriptCommit: ts.commit,
-        typescriptNightly: ts.nightly,
-    };
-}
-
 function writeJson(file, value) {
     fs.writeFileSync(file, JSON.stringify(value, undefined, 4) + "\n");
 }
@@ -167,7 +140,7 @@ function buildSdk(tscPath) {
     }
     fs.rmSync(path.join(pkgDir, "dist"), { recursive: true, force: true });
     fs.rmSync(path.join(pkgDir, "tsconfig.tsbuildinfo"), { force: true });
-    const isJs = /\.[cm]?js$/.test(tsc);
+    const isJs = tscPath === undefined || /\.[cm]?js$/.test(tsc);
     execFileSync(isJs ? process.execPath : tsc, [...(isJs ? [tsc] : []), "-b", path.join(pkgDir, "tsconfig.json")], { stdio: "inherit" });
     // Type-check the declarations consumers receive after stripInternal removes private API surfaces.
     execFileSync(isJs ? process.execPath : tsc, [...(isJs ? [tsc] : []), "-p", path.join(pkgDir, "tsconfig.dist.json")], { stdio: "inherit" });
@@ -229,30 +202,37 @@ function stageWasm(module, out, versions, license, notice) {
     writeJson(path.join(dir, "package.json"), {
         ...template,
         version: versions.version,
+        publishConfig: { ...template.publishConfig, tag: distTag(versions.version) },
         tsrs: { typescriptVersion: versions.typescriptVersion, typescriptCommit: versions.typescriptCommit },
     });
     return dir;
 }
 
 function pnpmPack(dir, out) {
-    const stdout = execFileSync("pnpm", ["pack", "--json", "--pack-destination", out], {
-        cwd: dir,
-        encoding: "utf8",
-        shell: process.platform === "win32",
-    });
+    let stdout;
+    try {
+        stdout = execFileSync("pnpm", ["pack", "--json", "--pack-destination", out], {
+            cwd: dir,
+            encoding: "utf8",
+            shell: process.platform === "win32",
+        });
+    } catch (error) {
+        if (error.stdout) process.stderr.write(error.stdout);
+        throw error;
+    }
     const info = JSON.parse(stdout);
     return path.resolve(out, info.filename);
 }
 
 function main() {
     const opts = parseArgs(process.argv.slice(2));
-    const versions = readCargoVersions();
+    const versions = readVersions(repoRoot);
     const { version } = versions;
 
     if (opts.checkTag !== undefined) {
         const tag = opts.checkTag.replace(/^refs\/tags\//, "");
-        if (tag !== `v${version}` && tag !== `v${versions.crateVersion}`) {
-            throw new Error(`git tag ${tag} does not match the package version: expected v${versions.crateVersion} or v${version}`);
+        if (tag !== `v${version}`) {
+            throw new Error(`git tag ${tag} does not match the package version: expected v${version}`);
         }
     }
     if (opts.print) {
@@ -281,7 +261,8 @@ function main() {
         license: template.license,
         repository: template.repository,
         engines: template.engines,
-        publishConfig: template.publishConfig,
+        publishConfig: { ...template.publishConfig, tag: distTag(version) },
+        tsrs: { typescriptVersion: versions.typescriptVersion, typescriptCommit: versions.typescriptCommit },
     };
 
     const packageDirs = [];
@@ -297,6 +278,10 @@ function main() {
         const exeName = os === "win32" ? "tsrs.exe" : "tsrs";
         fs.copyFileSync(binary, path.join(dir, exeName));
         fs.chmodSync(path.join(dir, exeName), 0o755);
+        if (os === "win32") {
+            // VS Code's native SDK discovery only accepts tsc.exe or tsgo.exe.
+            fs.copyFileSync(path.join(dir, exeName), path.join(dir, "tsgo.exe"));
+        }
         // The binary reads the default libraries from its own directory when they are there (bundled::default_lib_path),
         // so listings, diagnostics and tsbuildinfo name the same real paths as the npm tsgo.
         const libNames = fs.readdirSync(libsDir).filter(name => name.endsWith(".d.ts")).sort();
@@ -315,7 +300,7 @@ function main() {
             ...common,
             description: `The ${platform} binary for ${name}`,
             preferUnplugged: true,
-            files: [exeName, "NOTICE.txt", ...libNames],
+            files: [exeName, ...(os === "win32" ? ["tsgo.exe"] : []), "NOTICE.txt", ...libNames],
             exports: { "./package.json": "./package.json" },
             os: [os],
             cpu: [cpu],
@@ -336,13 +321,14 @@ function main() {
             if (fs.statSync(from).isDirectory()) copyDir(from, path.join(mainDir, entry));
             else fs.copyFileSync(from, path.join(mainDir, entry));
         }
-        fs.chmodSync(path.join(mainDir, "bin", "tsrs"), 0o755);
+        for (const bin of Object.values(template.bin ?? {})) fs.chmodSync(path.join(mainDir, bin), 0o755);
         fs.chmodSync(path.join(mainDir, "tsdk", "tsgo"), 0o755);
         fs.writeFileSync(path.join(mainDir, "LICENSE"), license);
         fs.writeFileSync(path.join(mainDir, "NOTICE.txt"), notice);
         writeJson(path.join(mainDir, "package.json"), {
             ...stripSourceConditions(template),
             version,
+            publishConfig: common.publishConfig,
             tsrs: { typescriptVersion: versions.typescriptVersion, typescriptCommit: versions.typescriptCommit },
             optionalDependencies,
         });

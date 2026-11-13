@@ -1,61 +1,53 @@
 // Go internal/ls (+ lsconv, lsutil, change), astnav, format, sourcemap (docs/LSP.md).
 
-mod api;
 pub mod astnav;
 pub mod autoimport;
 mod autoinsert;
 mod callhierarchy;
 pub mod change;
-mod codeactions;
-mod codeactions_cleanup;
+pub mod codeactions;
+pub mod codeactions_cleanup;
 mod codeactions_config;
 mod codeactions_conversions;
 mod codeactions_fixclassincorrectlyimplementsinterface;
-mod codeactions_fixmissingtypeannotation;
+pub mod codeactions_fixmissingtypeannotation;
 mod codeactions_importfixes;
 mod codeactions_jsdoc;
 mod codeactions_missingmemberfixer;
 mod codeactions_modules;
 mod codeactions_semantic;
 mod codeactions_spelling;
-mod codeactions_syntax;
-mod codeactions_usage;
+pub mod codeactions_syntax;
+pub mod codeactions_usage;
 mod codelens;
-mod completions;
-mod completions_2;
-mod completions_3;
-mod completions_4;
-#[cfg(test)]
-mod completions_smoke_test;
-mod crossproject;
+pub mod completions;
+pub mod completions_2;
+pub mod completions_3;
+pub mod completions_4;
+pub mod concurrent;
+pub mod crossproject;
 mod definition;
-mod diagnostics;
+pub mod diagnostics;
 mod displaypartswriter;
 mod documenthighlights;
 mod embedded_refactors;
 mod file_rename;
 mod findallreferences;
-#[cfg(test)]
-mod findallreferences_test;
 mod folding;
 pub mod format;
-mod host;
+pub mod host;
 mod hover;
 mod hovericon;
 mod import_tracker;
 mod inlay_hints;
 mod jsdoc;
 mod jsdoc_snippet;
-mod languageservice;
+pub mod languageservice;
 mod linkedediting;
-#[cfg(test)]
-mod ls_smoke_test;
 pub mod lsconv;
 mod lsformat;
 pub mod lsutil;
 mod organizeimports;
-#[cfg(test)]
-mod refs_smoke_test;
 mod rename;
 pub use tsrs_sourcemap as sourcemap;
 mod selectionranges;
@@ -64,32 +56,19 @@ mod signaturehelp;
 mod source_map;
 mod sourcedefinition;
 pub mod spanmap;
-mod string_completions;
+pub mod string_completions;
 mod symbols;
 mod utilities;
 mod visitedchildren;
-
-pub use api::{ERR_NO_SOURCE_FILE, ERR_NO_TOKEN_AT_POSITION};
 pub use codeactions::{
     CodeAction, CodeFixContext, CodeFixProvider, CombinedCodeActions,
     code_fix_requires_auto_imports, combined_code_fix_requires_auto_imports,
     supported_code_fix_codes,
 };
 pub use completions::{
-    COMPLETION_TRIGGER_CHARACTERS, CompletionItem, CompletionKind, CompletionList,
-    ERR_NEEDS_AUTO_IMPORTS, KeywordCompletionFilters, SORT_TEXT_AUTO_IMPORT_SUGGESTIONS,
-    SORT_TEXT_CLASS_MEMBER_SNIPPETS, SORT_TEXT_GLOBALS_OR_KEYWORDS,
-    SORT_TEXT_JAVASCRIPT_IDENTIFIERS, SORT_TEXT_LOCAL_DECLARATION_PRIORITY,
-    SORT_TEXT_LOCATION_PRIORITY, SORT_TEXT_MEMBER_DECLARED_BY_SPREAD_ASSIGNMENT,
-    SORT_TEXT_OPTIONAL_MEMBER, SORT_TEXT_SUGGESTED_CLASS_MEMBERS, SortText, deprecate_sort_text,
-    err_needs_auto_imports, is_err_needs_auto_imports, object_literal_property_sort_text,
-    sort_below,
+    COMPLETION_TRIGGER_CHARACTERS, CompletionItem, CompletionList, is_err_needs_auto_imports,
 };
-pub use completions_3::{
-    SOURCE_CLASS_MEMBER_SNIPPET, SOURCE_OBJECT_LITERAL_MEMBER_WITH_COMMA,
-    SOURCE_OBJECT_LITERAL_METHOD_SNIPPET, SOURCE_SWITCH_CASES, SOURCE_THIS_PROPERTY,
-    SOURCE_TYPE_ONLY_ALIAS, compare_completion_entries,
-};
+pub use completions_3::compare_completion_entries;
 pub use crossproject::*;
 pub use embedded_refactors::EmbeddedRefactor;
 pub use findallreferences::{
@@ -99,11 +78,7 @@ pub use findallreferences::{
 pub use host::*;
 pub use jsdoc::{JSDocTagInfo, get_symbol_documentation_comment, get_symbol_jsdoc_tags};
 pub use languageservice::*;
-pub use rename::{
-    RenameInfo, client_supports_document_changes, client_supports_rename_resource_operations,
-    client_supports_will_rename_files,
-};
+pub use rename::{RenameInfo, client_supports_document_changes, client_supports_will_rename_files};
 pub use semantictokens::semantic_tokens_legend;
 pub use signaturehelp::{SIGNATURE_HELP_RETRIGGER_CHARACTERS, SIGNATURE_HELP_TRIGGER_CHARACTERS};
 pub use symbols::provide_workspace_symbols;
-pub use utilities::{is_in_string, range_contains_range};

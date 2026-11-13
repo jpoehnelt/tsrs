@@ -34,15 +34,15 @@ use crate::watcher::{
 
 // ----- FSEvents flag bits (from FSEvents.h) ------------------------------
 
-const FLAG_MUST_SCAN_SUB_DIRS: u32 = 0x0000_0001;
-const FLAG_USER_DROPPED: u32 = 0x0000_0002;
-const FLAG_KERNEL_DROPPED: u32 = 0x0000_0004;
+pub const FLAG_MUST_SCAN_SUB_DIRS: u32 = 0x0000_0001;
+pub const FLAG_USER_DROPPED: u32 = 0x0000_0002;
+pub const FLAG_KERNEL_DROPPED: u32 = 0x0000_0004;
 const FLAG_HISTORY_DONE: u32 = 0x0000_0010;
 
-const FLAG_ITEM_CREATED: u32 = 0x0000_0100;
+pub const FLAG_ITEM_CREATED: u32 = 0x0000_0100;
 const FLAG_ITEM_REMOVED: u32 = 0x0000_0200;
 const FLAG_ITEM_RENAMED: u32 = 0x0000_0800;
-const FLAG_ITEM_IS_FILE: u32 = 0x0001_0000;
+pub const FLAG_ITEM_IS_FILE: u32 = 0x0001_0000;
 const FLAG_ITEM_IS_DIR: u32 = 0x0002_0000;
 const FLAG_ITEM_IS_SYMLINK: u32 = 0x0004_0000;
 const FLAG_ITEM_IS_HARDLINK: u32 = 0x0010_0000;
@@ -62,36 +62,36 @@ pub struct FseventsState {
 }
 
 pub struct FseventsStream {
-    stream: Mutex<Option<FsEventStream>>,
-    cb: Mutex<Option<Box<StreamCallback>>>,
+    pub stream: Mutex<Option<FsEventStream>>,
+    pub cb: Mutex<Option<Box<StreamCallback>>>,
 }
 
 // ----- the watcherImpl -------------------------------------------------------
 
 pub struct FsEventsBackend {
     base: WatcherBase,
-    mu: Mutex<FsEventsState>,
+    pub mu: Mutex<FsEventsState>,
 }
 
 #[derive(Default)]
-struct FsEventsState {
+pub struct FsEventsState {
     watches: FxHashMap<DwKey, Arc<FseventsState>>,
     // tsrs-only (Go has one `streams` list for every root; see `fseventsMaxRootStreams`): the stream of each root
     // (physical directory) that has its own, and the roots past the limit with the streams they share.
-    root_streams: FxHashMap<String, Arc<FseventsStream>>,
-    shared_roots: FxHashSet<String>,
-    shared_streams: Vec<Arc<FseventsStream>>,
+    pub root_streams: FxHashMap<String, Arc<FseventsStream>>,
+    pub shared_roots: FxHashSet<String>,
+    pub shared_streams: Vec<Arc<FseventsStream>>,
 }
 
 // fsevents_darwin.go:161 (init)
-pub fn init(mut w: PlatformWatcher) -> PlatformWatcher {
+pub(crate) fn init(mut w: PlatformWatcher) -> PlatformWatcher {
     w.factory = Some(|| Arc::new(new_fs_events_backend()) as Arc<dyn WatcherImpl>);
     w.sequence = Some(fs_events_get_current_event_id);
     w
 }
 
 // fsevents_darwin.go:166
-fn new_fs_events_backend() -> FsEventsBackend {
+pub fn new_fs_events_backend() -> FsEventsBackend {
     FsEventsBackend { base: WatcherBase::default(), mu: Mutex::new(FsEventsState::default()) }
 }
 
@@ -143,12 +143,12 @@ const FSEVENTS_PATHS_PER_STREAM: usize = 512;
 // streams, under a burst that dropped events on one, saw nothing on the other). A process can start 512 streams (the
 // 513th fails to start), so this leaves room for the shared streams and anything else in the process using FSEvents.
 // Adding or removing a watch also restarts only its root's stream instead of every root's.
-const FSEVENTS_MAX_ROOT_STREAMS: usize = 256;
+pub const FSEVENTS_MAX_ROOT_STREAMS: usize = 256;
 
 #[derive(Clone)]
 pub struct FseventsWatchSnapshot {
-    pub(crate) w: Arc<DirWatch>,
-    state: Arc<FseventsState>,
+    pub w: Arc<DirWatch>,
+    pub state: Arc<FseventsState>,
 }
 
 impl FsEventsState {
@@ -434,7 +434,7 @@ impl WatcherImpl for FsEventsBackend {
 
 // fsevents_darwin.go:467
 // fsEventsCallback processes a batch of FSEvents (on the stream's serial dispatch queue thread).
-pub fn fs_events_callback(cb: &StreamCallback, payload: &FsEventsCallbackPayload) {
+pub(crate) fn fs_events_callback(cb: &StreamCallback, payload: &FsEventsCallbackPayload) {
     if payload.is_empty() {
         return;
     }
@@ -684,7 +684,3 @@ fn fsevents_overflow_matches_prepared(w: &DirWatch, raw_path: &mut ComparisonPat
     }
     false
 }
-
-#[cfg(test)]
-#[path = "fsevents_darwin_test.rs"]
-mod tests;

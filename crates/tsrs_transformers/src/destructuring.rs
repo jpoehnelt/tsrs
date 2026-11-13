@@ -10,13 +10,14 @@ pub enum FlattenLevel {
 // CreateAssignmentCallback is a callback used to create custom assignment expressions during destructuring flattening.
 // When provided, the target will always be an Identifier, and the callback can wrap the assignment with additional logic
 // (e.g., export expressions in CJS modules or namespace member assignments).
-pub type CreateAssignmentCallback<'a> = &'a dyn Fn(P<Node>, P<Node>, Option<&TextRange>) -> P<Node>;
+pub(crate) type CreateAssignmentCallback<'a> =
+    &'a dyn Fn(P<Node>, P<Node>, Option<&TextRange>) -> P<Node>;
 
 // FlattenDestructuringAssignment flattens a destructuring assignment expression into a sequence of
 // individual property/element access assignments. Supports custom assignment callbacks for module
 // export or namespace member expressions.
 // destructuring.go:27
-pub fn flatten_destructuring_assignment(
+pub(crate) fn flatten_destructuring_assignment(
     tx: &Transformer,
     node: P<Node>, // VariableDeclaration | DestructuringAssignment
     needs_value: bool,
@@ -48,7 +49,7 @@ struct PendingDecl {
 // into individual variable declarations. Returns a single VariableDeclaration, a SyntaxList of
 // declarations, or nil.
 // destructuring.go:56
-pub fn flatten_destructuring_binding(
+pub(crate) fn flatten_destructuring_binding(
     tx: &Transformer,
     node: P<Node>, // VariableDeclaration | ParameterDeclaration | BindingElement
     rval: Option<P<Node>>,
@@ -660,7 +661,7 @@ impl Flattener<'_> {
 
 // BindingOrAssignmentElementAssignsToName checks if any target in a binding/assignment pattern assigns to the given name.
 // destructuring.go:428
-pub fn binding_or_assignment_element_assigns_to_name(element: P<Node>, name: &str) -> bool {
+fn binding_or_assignment_element_assigns_to_name(element: P<Node>, name: &str) -> bool {
     let Some(target) = ast::get_target_of_binding_or_assignment_element(element) else {
         return false;
     };
@@ -680,7 +681,7 @@ fn binding_or_assignment_pattern_assigns_to_name(pattern: P<Node>, name: &str) -
 
 // BindingOrAssignmentElementContainsNonLiteralComputedName checks if any element has a non-literal computed property name.
 // destructuring.go:452
-pub fn binding_or_assignment_element_contains_non_literal_computed_name(element: P<Node>) -> bool {
+fn binding_or_assignment_element_contains_non_literal_computed_name(element: P<Node>) -> bool {
     let property_name = try_get_property_name_of_binding_or_assignment_element(element);
     if let Some(property_name) = property_name
         && ast::is_computed_property_name(property_name)
@@ -706,7 +707,7 @@ fn binding_or_assignment_pattern_contains_non_literal_computed_name(pattern: P<N
 
 // GetInitializerOfBindingOrAssignmentElement returns the initializer/default value of a binding or assignment element.
 // destructuring.go:467
-pub fn get_initializer_of_binding_or_assignment_element(
+fn get_initializer_of_binding_or_assignment_element(
     binding_element: Option<P<Node>>,
 ) -> Option<P<Node>> {
     let binding_element = binding_element?;

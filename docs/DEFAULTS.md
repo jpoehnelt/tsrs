@@ -18,22 +18,32 @@ JavaScript checking, class fields and declaration emit. CLI builds default to fo
 `--singleThreaded`. Library selection follows the target. Ordinary language-server formatting defaults remain
 four spaces and `"\n"`; the limits below apply to explicit client settings.
 
+TypeScript's checker caches make some diagnostics depend on checker count and file order. Default mode
+preserves this upstream behavior. The [recorded cases](../notes/open-history-dependence.md) compare different
+counts, assignments and visit orders; such differences alone do not establish varying diagnostics across
+repeated default-mode runs with identical inputs and settings.
+
 ## Command line
+
+Compilation defaults to the pinned TypeScript checker settings. Its opt-in fast preset is enabled
+by `--fast` or `TSRS_FAST=1`, which refer to the same settings in this table.
+The linter (`tsrs --lint` and `tsrs-lint`) enables the preset by default; `TSRS_FAST=0` disables it. See
+[side effects and precedence](USAGE.md#side-effects) before enabling it.
 
 | setting | tsgo | tsrs |
 | --- | --- | --- |
-| Checker count without `--checkers` | 4 | Every available core up to 16; above that, the greater of 16 and half the cores (rounded down), capped at 32. Small programs reduce this to at most one checker per 32 checked files, with a floor of 4. `--build` uses 4 per project. Both compilers finally clamp the count to 1–256 and no more than the file count |
-| How files are split across checkers | FENNEL association | Directory-subtree groups with work stealing, and file splitting and module affinity when eligible. `--checkerAssignment go` or `TSRS_CHECKER_ASSIGNMENT=go` restores tsgo's assignment algorithm; match `--checkers` too when comparing output |
-| Checker history | tsgo's: which file reports some diagnostics depends on check order | Canonical. Also turns on tsrs-only checker caches (inference, union, indexed access and flow memos). `go` assignment restores tsgo's history ([details](../notes/fix-history-dependent-diagnostics.md)) |
-| Lazy checker members | Eager member instantiation | On. `--noLazyMembers` or `TSRS_LAZY_MEMBERS=0` disables it. Reduced instantiation can change diagnostics near a depth limit ([known exceptions](../notes/open-history-dependence.md)) |
-| Additional memory-saving modes | No corresponding tsrs switches | Lazy parsing of `.d.ts` members on eligible non-incremental checks with `skipLibCheck` or `noCheck`, and freeing finished leaf files on eligible `--noEmit` runs. `--maxMemory` is off by default |
+| Checker count without `--checkers` | 4 | 4. `--fast` uses every core up to 16, then the greater of 16 and half the cores, capped at 32 and one checker per 32 checked files (floor 4). `--build` keeps 4 per project in either mode. Both compilers finally clamp to 1–256 and the file count |
+| How files are split across checkers | FENNEL association | The same by default. `--fast` uses directory-subtree groups with work stealing, file splitting and module affinity when eligible. Explicit `--checkerAssignment` / `TSRS_CHECKER_ASSIGNMENT` overrides the preset and disables stealing |
+| Checker history | tsgo's: which file reports some diagnostics depends on check order | The same by default. `--fast` enables canonical history and tsrs-only checker caches (inference-walk, union-front and indexed-access). `go` assignment restores tsgo's history ([details](../notes/fix-history-dependent-diagnostics.md)) |
+| Lazy checker members | Eager member instantiation | Eager by default. `--fast` or `--lazyMembers` enables lazy members; `--noLazyMembers` / `TSRS_LAZY_MEMBERS=0` overrides the preset. Reduced instantiation can change diagnostics near a depth limit ([known exceptions](../notes/open-history-dependence.md)) |
+| Additional memory-saving modes | No corresponding tsrs switches | With `--fast`: lazy `.d.ts` members on eligible batch/incremental checks and non-watch builds with `skipLibCheck` or `noCheck`, plus freeing finished leaf files on eligible `--noEmit` runs. `--maxMemory` remains an explicit target |
 | Types, Symbols and Instantiations counters | Counts the work of its checkers | Counts tsrs's work; checker count, assignment, caches and lazy members can all change the values. Matching `--checkers` alone does not make these counters identical |
 | Parallel parsing | Goroutines scheduled by the Go runtime | A thread pool of `min(available parallelism, 32)`, overridden by a positive `RAYON_NUM_THREADS`; `--singleThreaded` disables parallel parsing |
 | Incremental startup | Reads tsbuildinfo, then builds the program | Both at once on two threads, unless `--singleThreaded` |
-| tsbuildinfo contents | tsgo's fields | Adds `tsrsCanonicalCheckSignature`. In `go` history mode or API mode, tsrs won't reuse a tsbuildinfo that has this field |
+| tsbuildinfo contents | tsgo's fields | The same by default. Opt-in modes add `tsrsPerformance`; canonical history also adds `tsrsCanonicalCheckSignature` and `tsrsInterfaceFiles`. Changing history or lazy members invalidates incompatible cached diagnostics |
 | `--version` | `Version <TypeScript version>` | Appends `(tsrs <release>, microsoft/TypeScript@<commit>)`. Unstamped source builds use `7.1.0-beta`; npm builds use the pinned package version on both sides |
-| `--init` | Writes a tsconfig.json | `error: --init is not supported by tsrs.`, exit status 5, no file written |
-| `--showConfig` | Prints the resolved config as JSON | Not supported, exit status 5 |
+| `--init` | Writes a tsconfig.json | `error: --init is not supported by tsrs.` on stderr, exit status 5, no file written |
+| `--showConfig` | Prints the resolved config as JSON | `error: --showConfig is not supported by tsrs.` on stderr, exit status 5 |
 | `--help`, `--all`, `-b --help` | Full option help | A version line and short usage, exit status 0 |
 | No tsconfig.json and no files | Version and full help, exit status 1 | Version and one usage line, exit status 1 |
 | `--locale` | Translates messages | Accepted; messages stay in English |
@@ -42,6 +52,7 @@ four spaces and `"\n"`; the limits below apply to explicit client settings.
 | `--pprofDir` | Writes CPU and memory profiles | Parsed and ignored. `--lsp -pprofDir` prints the "will be written" line but writes nothing |
 | `Memory used` in `--diagnostics` | Live heap after two garbage collections | Process resident set size |
 | `Memory allocs` in `--diagnostics` | Number of allocations | Always 0 |
+| `Bind time` in `--diagnostics` | The bind pass | Near 0: the parallel loader binds each file right after parsing it, so `Parse time` includes binding. `--singleThreaded` binds in a separate pass and reports it |
 | `--diagnostics`, `--extendedDiagnostics` output | Compiler statistics | Adds subphase timings, program-load counts and lazy-member counters. Filesystem-call and lazy-list counters have been removed |
 | Uncaught panic during CLI compilation | Exit status 2 with a Go stack trace | The compilation thread's panic maps to exit status 5; unflushed output can be lost. Panics before that thread starts, in LSP or in API mode have different handling |
 | Stdout | Unbuffered | Buffered, flushed at exit and on watch status lines, so stdout and stderr can interleave differently |
@@ -52,8 +63,16 @@ four spaces and `"\n"`; the limits below apply to explicit client settings.
 | Case sensitivity detection | At startup | On first use (same test) |
 | Realpath on Linux | `O_PATH` and `/proc/self/fd`, falling back to walking symlinks | Rust's `std::fs::canonicalize` |
 | Memory management | Go garbage collection; honors Go runtime environment settings | Arenas and mimalloc. On Linux, huge pages are enabled for eligible arena allocations, not mimalloc's heap by default. Go runtime variables have no effect |
-| Arguments that aren't UTF-8 (Unix) | Accepted as byte strings | Panic while collecting arguments, before the compilation thread starts (normally exit status 101) |
+| Arguments that aren't UTF-8 (Unix) | Kept as bytes for file lookups; diagnostics print each run of invalid bytes as U+FFFD | Each run of invalid bytes becomes U+FFFD before parsing, so diagnostics match but lookups use the replaced name: a file whose name isn't UTF-8 (possible on Linux) is not found |
 | tsrs-only flags with `-b` | — | The tsrs-only flags (`--checkerAssignment`, `--checkerCostCache`, `--maxMemory`, `--lazyMembers`, `--noLazyMembers`) are rejected with TS5072 |
+
+The preset is supported by ordinary compilation, watch and build mode. `--fast` works in response files and is
+not a `tsconfig.json` compiler option. An explicit `--fast` value overrides `TSRS_FAST`; per-feature flags and
+environment overrides take precedence over the preset. `--fast false` leaves those individual settings in effect.
+Compiler checking options stay as configured. Internal optimizations that preserve compiler behavior, including
+control-flow memoization, stay enabled in both modes. Memory targets, persistent cost caches and experimental
+features still require their own settings; see [preset boundaries and eligibility](USAGE.md#performance-options).
+Runtime/platform differences and unsupported features below are unchanged.
 
 The tsrs-only flags are described in [Performance options](USAGE.md#performance-options). Sources:
 [`checkerpool.rs`](../crates/tsrs_compiler/src/checkerpool.rs),
@@ -97,7 +116,6 @@ rules are shared, so other watcher differences can also affect the language serv
 | Background queue | Unbounded goroutines | 6 workers |
 | After the idle cache clean | `runtime.GC()` | No additional collection step |
 | Profiling commands, `runGC` | Supported | `MethodNotFound` |
-| Content mappers | Supported | Not ported; `runExternalCode` does nothing |
 | Parent process watchdog on Windows | Supported | Not ported |
 
 [Language server](LSP.md) has the threading model and other known gaps. Sources:
@@ -111,7 +129,6 @@ rules are shared, so other watcher differences can also affect the language serv
 | setting | tsgo | tsrs |
 | --- | --- | --- |
 | API build orchestrator concurrency | Requested builder/checker settings | Forces `singleThreaded`, so building, parsing and checking run serially |
-| Content mappers | A spawner is passed to the session | None; `--runExternalCode` does nothing |
 | Callback re-entry that waits for a resource held by its caller | Can deadlock | Rejected immediately in sync mode; after a 10 s grace period in async mode. A slow async callback can also cause an unrelated waiter to be rejected |
 | `-cwd=""` | Panics | Uses the current directory |
 | `-useCaseSensitiveFileNames` after a non-flag argument | Ignored; the OS default remains | The parser stops, but a separate argument scan notices the flag and can replace the OS default with `false` |
@@ -158,10 +175,13 @@ tsrs-only variables that change behavior:
 
 | variable | default | effect |
 | --- | --- | --- |
-| `TSRS_CHECKER_ASSIGNMENT` | `locality` | `go` uses tsgo's file split and checker history |
+| `TSRS_FAST` | on for linting; off elsewhere | Linting enables the fast preset unless set to `0`; elsewhere, only `1` enables it. An explicit `--fast` value takes precedence. `--lsp` and `--api` processes that inherit `TSRS_FAST=1` use lazy members and canonical history |
+| `TSRS_CHECKER_ASSIGNMENT` | `go`; `locality` in fast mode | Explicit assignments override the preset and disable stealing; `go` uses tsgo's file split and checker history |
 | `TSRS_MAX_MEMORY` | off | Same as `--maxMemory` |
-| `TSRS_LAZY_MEMBERS` | on | Same as `--lazyMembers` / `--noLazyMembers` |
+| `TSRS_LAZY_MEMBERS` | off; on in fast mode | Same as `--lazyMembers` / `--noLazyMembers`; explicit CLI flags win |
+| `TSRS_LAZY_DTS` | off; on in eligible fast-mode compilations | `1` enables lazy declaration member parsing; `0` / `off` disables it even in fast mode. Requires skipped declaration checking; unavailable in watch, LSP and API modes |
 | `TSRS_LIB_PATH` | unset | Directory to load the default libs from |
+| `TSRS_LINT_RUN_EXTERNAL_CODE` | off | Only `1` gives `tsrs --lint` / `tsrs-lint` `--runExternalCode`, so tsconfig `contentMappers` run under oxlint |
 | `TSRS_WATCH_BACKEND` | unset | `kqueue` uses the macOS fallback watcher |
 | `TSRS_BINARY` | unset | Path of the binary the npm launcher runs |
 | `RAYON_NUM_THREADS` | `min(available parallelism, 32)` | Parse thread count |
@@ -189,7 +209,7 @@ and watch declarations were regenerated into scratch files and compared; all 174
 library files matched. Probes with source-built binaries on macOS covered help, version, unsupported commands,
 locale handling, statistics, incremental metadata, tracing, profiling, non-UTF-8 arguments and API startup errors. Direct Go/Rust
 probes confirmed the unknown `moduleDetection` and tsbuildinfo enum conversions. Platform-specific watcher
-behavior, runtime scheduling and the remaining server/API details were checked in source. The current 0.19.0
+behavior, runtime scheduling and the remaining server/API details were checked in source. The current 0.25.0
 source pin is `3e9236361fa9`; its broader conformance evidence is in the
 [recorded suite results](COMPATIBILITY.md#conformance), [source-upgrade log](../notes/typescript-623-ports.md),
 and [beta follow-up log](../notes/typescript-7.1-beta-ports.md).

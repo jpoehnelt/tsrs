@@ -79,10 +79,6 @@ impl SyncConn {
         Arc::new(SyncCaller(Arc::downgrade(self)))
     }
 
-    pub fn cancellation(&self) -> CancellationToken {
-        self.cancel.clone()
-    }
-
     fn lock(&self) -> MutexGuard<'_, SyncIo> {
         self.io.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -260,7 +256,7 @@ impl SyncConn {
         })()
     }
 
-    pub fn notify(&self, method: &str, params: Option<&[u8]>) -> Result<(), TransportError> {
+    fn notify(&self, method: &str, params: Option<&[u8]>) -> Result<(), TransportError> {
         let mut io = self.lock();
         io.writer.write_notification(method, params)
     }

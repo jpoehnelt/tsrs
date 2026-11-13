@@ -33,7 +33,7 @@ impl Error {
         Error { message: message.into(), wraps: Vec::new(), errno: None }
     }
 
-    pub fn from_errno(errno: i32) -> Error {
+    pub(crate) fn from_errno(errno: i32) -> Error {
         Error {
             message: std::io::Error::from_raw_os_error(errno).to_string(),
             wraps: Vec::new(),
@@ -41,11 +41,12 @@ impl Error {
         }
     }
 
+    #[cfg(unix)]
     #[expect(
         clippy::needless_pass_by_value,
         reason = "a conversion: callers pass it to `map_err`, which hands over the error by value"
     )]
-    pub fn from_io(err: std::io::Error) -> Error {
+    pub(crate) fn from_io(err: std::io::Error) -> Error {
         Error { message: err.to_string(), wraps: Vec::new(), errno: err.raw_os_error() }
     }
 
@@ -65,11 +66,6 @@ impl Error {
     }
 
     // `fmt.Errorf("%w: %w", a, b)` and similar: both chains.
-    pub fn wrap2(message: impl Into<String>, a: &Error, b: &Error) -> Error {
-        let mut wraps = a.wraps.clone();
-        wraps.extend(b.wraps.iter().copied());
-        Error { message: message.into(), wraps, errno: a.errno.or(b.errno) }
-    }
 
     pub fn is(&self, s: Sentinel) -> bool {
         self.wraps.contains(&s)
@@ -77,10 +73,6 @@ impl Error {
 
     pub fn is_errno(&self, errno: i32) -> bool {
         self.errno == Some(errno)
-    }
-
-    pub fn errno(&self) -> Option<i32> {
-        self.errno
     }
 
     pub fn message(&self) -> &str {
@@ -102,15 +94,15 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-pub static ERR_NIL_CALLBACK: Sentinel = Sentinel("fswatch: callback must not be nil");
+static ERR_NIL_CALLBACK: Sentinel = Sentinel("fswatch: callback must not be nil");
 
 // errRootPath is returned by WatchFile when the supplied path is a
 // filesystem root with no parent directory to watch.
-pub static ERR_ROOT_PATH: Sentinel = Sentinel("fswatch: cannot watch a root path");
+static ERR_ROOT_PATH: Sentinel = Sentinel("fswatch: cannot watch a root path");
 
 // errNotAbsolute is returned by [Watcher.WatchDirectory] and
 // [Watcher.WatchFile] when the supplied path is not absolute.
-pub static ERR_NOT_ABSOLUTE: Sentinel = Sentinel("fswatch: path must be absolute");
+static ERR_NOT_ABSOLUTE: Sentinel = Sentinel("fswatch: path must be absolute");
 
 // Returned when a requested watch may resolve to a network location.
 pub static ERR_NETWORK_PATH: Sentinel = Sentinel("fswatch: network paths are not supported");
@@ -134,12 +126,12 @@ pub static ERR_UNAVAILABLE: Sentinel = Sentinel("fswatch: watcher not available 
 // ErrFilesystemUnsupported indicates that the active watcher backend cannot
 // operate on the target filesystem, even though the backend is available on
 // the current platform.
-pub static ERR_FILESYSTEM_UNSUPPORTED: Sentinel =
+static ERR_FILESYSTEM_UNSUPPORTED: Sentinel =
     Sentinel("fswatch: watcher backend unsupported on this filesystem");
 
 // `fmt.Errorf("%w: watched directory removed", ErrWatchTerminated)`.
 #[cfg(unix)]
-pub fn err_watched_directory_removed() -> Error {
+pub(crate) fn err_watched_directory_removed() -> Error {
     Error::wrap(
         format!("{}: watched directory removed", ERR_WATCH_TERMINATED.0),
         &ERR_WATCH_TERMINATED.into(),
@@ -274,19 +266,19 @@ pub trait Watch: Send + Sync {
 }
 
 // Package-level watcher instances. Platform init() functions set the factory.
-pub static INOTIFY_WATCHER: LazyLock<PlatformWatcher> = LazyLock::new(|| {
+static INOTIFY_WATCHER: LazyLock<PlatformWatcher> = LazyLock::new(|| {
     let w = PlatformWatcher::new("inotify");
     #[cfg(target_os = "linux")]
     let w = crate::inotify_linux::init(w);
     w
 });
-pub static FSEVENTS_WATCHER: LazyLock<PlatformWatcher> = LazyLock::new(|| {
+static FSEVENTS_WATCHER: LazyLock<PlatformWatcher> = LazyLock::new(|| {
     let w = PlatformWatcher::new("fsevents");
     #[cfg(target_os = "macos")]
     let w = crate::fsevents_darwin::init(w);
     w
 });
-pub static KQUEUE_WATCHER: LazyLock<PlatformWatcher> = LazyLock::new(|| {
+static KQUEUE_WATCHER: LazyLock<PlatformWatcher> = LazyLock::new(|| {
     let w = PlatformWatcher::new("kqueue");
     #[cfg(any(
         target_os = "macos",
@@ -299,13 +291,13 @@ pub static KQUEUE_WATCHER: LazyLock<PlatformWatcher> = LazyLock::new(|| {
     w
 });
 // windows.go (ReadDirectoryChangesW) is not ported: Windows builds get an unavailable watcher.
-pub static WINDOWS_WATCHER: LazyLock<PlatformWatcher> =
+static WINDOWS_WATCHER: LazyLock<PlatformWatcher> =
     LazyLock::new(|| PlatformWatcher::new("windows"));
 // fanotify_linux.go is not ported: fanotify().Available() is false, so Linux uses inotify (Go's Default() falls
 // back to inotify the same way on kernels without fanotify).
-pub static FANOTIFY_WATCHER: LazyLock<PlatformWatcher> =
+static FANOTIFY_WATCHER: LazyLock<PlatformWatcher> =
     LazyLock::new(|| PlatformWatcher::new("fanotify"));
-pub static FANOTIFY_FALLBACK_WATCHER: LazyLock<FallbackWatcher> =
+static FANOTIFY_FALLBACK_WATCHER: LazyLock<FallbackWatcher> =
     LazyLock::new(|| FallbackWatcher { primary: &*FANOTIFY_WATCHER, secondary: &*INOTIFY_WATCHER });
 static UNSUPPORTED_WATCHER: LazyLock<PlatformWatcher> =
     LazyLock::new(|| PlatformWatcher::new("unsupported"));
@@ -344,14 +336,14 @@ pub fn kqueue() -> &'static dyn Watcher {
 
 // watcher.go:223
 // Windows returns the ReadDirectoryChangesW watcher (Windows).
-pub fn windows() -> &'static dyn Watcher {
+fn windows() -> &'static dyn Watcher {
     &*WINDOWS_WATCHER
 }
 
 // watcher.go:227
 // Fanotify returns the fanotify watcher (Linux, kernel ≥ 5.13). Directories on
 // filesystems that don't support fanotify watches automatically use inotify instead.
-pub fn fanotify() -> &'static dyn Watcher {
+fn fanotify() -> &'static dyn Watcher {
     &*FANOTIFY_FALLBACK_WATCHER
 }
 
@@ -370,7 +362,7 @@ pub fn set_write_settling(on: bool) {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn write_settling() -> bool {
+pub(crate) fn write_settling() -> bool {
     // Relaxed: set before the first watch is made; the backend threads that read it took the locks that publish
     // that watch, which order the store before this load.
     WRITE_SETTLING.load(std::sync::atomic::Ordering::Relaxed)
@@ -521,7 +513,7 @@ struct WatcherState {
 const RECURSIVE_CONSOLIDATE_THRESHOLD: usize = 10;
 
 impl PlatformWatcher {
-    fn new(name: &'static str) -> PlatformWatcher {
+    pub fn new(name: &'static str) -> PlatformWatcher {
         PlatformWatcher {
             name,
             mu: Mutex::new(WatcherState::default()),
@@ -654,7 +646,7 @@ impl PlatformWatcher {
     }
 
     // watcher.go:429
-    fn get_or_create_dir_watch(
+    pub fn get_or_create_dir_watch(
         &self,
         dir: &str,
         physical_dir: &str,
@@ -1025,10 +1017,7 @@ fn run(impl_: &Arc<dyn WatcherImpl>) -> Result<(), Error> {
 }
 
 // watcher.go:717
-pub fn watch_add_many(
-    impl_: &Arc<dyn WatcherImpl>,
-    watches: &[Arc<DirWatch>],
-) -> Result<(), Error> {
+fn watch_add_many(impl_: &Arc<dyn WatcherImpl>, watches: &[Arc<DirWatch>]) -> Result<(), Error> {
     let mut st = impl_.base().mu.lock().unwrap();
     let to_add: Vec<Arc<DirWatch>> = watches
         .iter()
@@ -1061,27 +1050,12 @@ pub fn watch_add_many(
 }
 
 // watcher.go:764
-pub fn watch_remove(impl_: &Arc<dyn WatcherImpl>, w: &Arc<DirWatch>) {
+fn watch_remove(impl_: &Arc<dyn WatcherImpl>, w: &Arc<DirWatch>) {
     let mut st = impl_.base().mu.lock().unwrap();
     if !st.subscriptions.remove(&DwKey(Arc::clone(w))) {
         return;
     }
     let _ = impl_.close_watch(w);
-}
-
-// watcher.go:775
-#[expect(
-    dead_code,
-    reason = "its only Go caller, windows.go (windowsSubscription.fatal), is not ported"
-)]
-pub fn handle_watcher_error(impl_: &Arc<dyn WatcherImpl>, werr: &DirWatchError) {
-    watch_remove(impl_, &werr.dir_watch);
-    let err = Error::wrap2(
-        format!("{}: {}", ERR_WATCH_TERMINATED.0, werr.err),
-        &ERR_WATCH_TERMINATED.into(),
-        &werr.err,
-    );
-    werr.dir_watch.notify_error(&err);
 }
 
 // ----- dirWatch: per-directory watch state -------------------------
@@ -1106,32 +1080,16 @@ pub struct Callback {
     file_comparison: ComparisonPath<'static>,
 }
 
-// dirWatchError associates an error with a specific directory watch.
-pub struct DirWatchError {
-    pub(crate) err: Error,
-    #[expect(
-        dead_code,
-        reason = "read only by handle_watcher_error, whose Go caller (windows.go) is not ported"
-    )]
-    pub(crate) dir_watch: Arc<DirWatch>,
-}
-
-impl From<DirWatchError> for Error {
-    fn from(e: DirWatchError) -> Error {
-        e.err
-    }
-}
-
 // dirWatch holds per-directory state: pending events, registered callbacks,
 // and a reference to the shared debouncer. Each watched directory has one.
 pub struct DirWatch {
     // dir is the caller-visible watch root used in delivered event paths.
-    pub(crate) dir: String,
+    pub dir: String,
     // physicalDir is the path passed to OS watcher APIs. It differs from dir
     // when dir or an ancestor is a symlink or reparse point to a directory.
     pub(crate) physical_dir: String,
     pub(crate) recursive: bool,
-    pub(crate) events: EventList,
+    pub events: EventList,
     pub(crate) comparer: BytePathComparer,
     #[cfg(target_os = "macos")] // read only by the FSEvents backend
     pub(crate) dir_fold: String,
@@ -1158,7 +1116,7 @@ static NEXT_DIR_WATCH_KEY: AtomicU64 = AtomicU64::new(1);
 
 impl DirWatch {
     // watcher.go:834 (newDirWatch + setComparer + the fields getOrCreateDirWatch assigns before publishing it)
-    pub(crate) fn new(
+    pub fn new(
         dir: String,
         physical_dir: String,
         db: &Arc<Debounce>,
@@ -1210,7 +1168,7 @@ impl DirWatch {
     // watcher.go:871
     // physicalPath maps a caller-visible path to the physical watched root.
     #[expect(dead_code, reason = "its only Go callers, in fanotify_linux.go, are not ported")]
-    pub(crate) fn physical_path(&self, display_path: &str) -> String {
+    fn physical_path(&self, display_path: &str) -> String {
         rebase_path(display_path, &self.dir, &self.physical_dir)
     }
 
@@ -1268,7 +1226,7 @@ impl DirWatch {
     }
 
     // watcher.go:944
-    pub(crate) fn notify_error(&self, err: &Error) {
+    fn notify_error(&self, err: &Error) {
         let cbs = std::mem::take(&mut self.mu.lock().unwrap().callbacks);
         for cb in cbs {
             (cb.f)(Vec::new(), Some(err.clone()));
@@ -1426,7 +1384,7 @@ impl DirWatch {
         dead_code,
         reason = "only Go tests call it (watcher_test.go, fsevents_darwin_shared_test.go), and those are not ported"
     )]
-    pub(crate) fn watch(
+    fn watch(
         &self,
         dir: &str,
         physical_dir: &str,
@@ -1438,7 +1396,7 @@ impl DirWatch {
     }
 
     // watcher.go:1128
-    pub(crate) fn add_callback(
+    pub fn add_callback(
         &self,
         dir: &str,
         physical_dir: &str,
@@ -1476,7 +1434,7 @@ impl DirWatch {
     }
 
     // watcher.go:1146
-    pub(crate) fn unwatch(&self, id: u64) -> bool {
+    fn unwatch(&self, id: u64) -> bool {
         let mut st = self.mu.lock().unwrap();
         if let Some(i) = st.callbacks.iter().position(|cb| cb.id == id) {
             st.callbacks.remove(i);
@@ -1493,13 +1451,11 @@ impl DirWatch {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn trigger_callbacks_for_test(&self) {
+    pub fn trigger_callbacks_for_test(&self) {
         self.trigger_callbacks();
     }
 
-    #[cfg(test)]
-    pub(crate) fn destroy_debounce_for_test(&self) {
+    pub fn destroy_debounce_for_test(&self) {
         self.destroy_debounce();
     }
 }
@@ -1510,7 +1466,7 @@ impl Callback {
         dead_code,
         reason = "only a Go test calls it (TestConsolidatedSymlinkChildMapsSharedLogicalPath), and it is not ported"
     )]
-    pub(crate) fn map_event(&self, e: Event) -> Event {
+    fn map_event(&self, e: Event) -> Event {
         self.map_event_cached(e, None)
     }
 
@@ -1713,7 +1669,7 @@ fn child_on_path<'p>(dir: &str, path: &'p str) -> &'p str {
 // watcher.go:1108
 // isDirectChild reports whether path is an immediate child of dir.
 // Both paths must be absolute. Returns false for path == dir.
-pub fn is_direct_child(dir: &str, path: &str) -> bool {
+fn is_direct_child(dir: &str, path: &str) -> bool {
     if !path.starts_with(dir) {
         return false;
     }
@@ -1729,7 +1685,7 @@ pub fn is_direct_child(dir: &str, path: &str) -> bool {
 }
 
 // Go `filepath.Clean` (Unix).
-pub fn filepath_clean(path: &str) -> String {
+fn filepath_clean(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
     }
@@ -1759,11 +1715,7 @@ pub fn filepath_clean(path: &str) -> String {
 }
 
 // Go `filepath.Dir` (Unix).
-pub fn filepath_dir(path: &str) -> String {
+fn filepath_dir(path: &str) -> String {
     let i = path.rfind('/').map_or(0, |i| i + 1);
     filepath_clean(&path[..i])
 }
-
-#[cfg(all(test, target_os = "macos"))]
-#[path = "watcher_consolidation_test.rs"]
-mod consolidation_tests;

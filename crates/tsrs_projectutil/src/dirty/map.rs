@@ -106,11 +106,11 @@ impl<K: Hash + Eq + Clone, T: Cloneable + Clone> MapEntry<K, T> {
         self.st.lock().unwrap().value()
     }
 
-    pub fn original(&self) -> Option<Shared<T>> {
+    fn original(&self) -> Option<Shared<T>> {
         self.st.lock().unwrap().original()
     }
 
-    pub fn dirty(&self) -> bool {
+    fn dirty(&self) -> bool {
         self.st.lock().unwrap().dirty()
     }
 }
@@ -202,18 +202,6 @@ impl<K: Hash + Eq + Clone, T: Cloneable + Clone> Map<K, T> {
             }),
         });
         self.inner.dirty.lock().unwrap().insert(key, entry);
-    }
-
-    // map.go:98
-    pub fn change(&self, key: &K, apply: impl FnOnce(&mut T)) {
-        match self.get(key) {
-            Some(entry) => {
-                entry.change(apply);
-            }
-            _ => {
-                panic!("tried to change a non-existent entry");
-            }
-        }
     }
 
     // map.go:106

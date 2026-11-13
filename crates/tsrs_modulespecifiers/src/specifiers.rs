@@ -38,7 +38,7 @@ pub fn get_module_specifiers(
 }
 
 // specifiers.go:41
-pub fn get_module_specifiers_with_info(
+fn get_module_specifiers_with_info(
     module_symbol: P<Symbol>,
     checker: &mut dyn CheckerShape,
     compiler_options: &CompilerOptions,
@@ -58,13 +58,11 @@ pub fn get_module_specifiers_with_info(
         {
             return ModuleSpecifiersResult {
                 specifiers: Vec::new(),
-                kind: ResultKind::Ambient,
                 ambient_module_symbol: ambient.symbol,
             };
         }
         return ModuleSpecifiersResult {
             specifiers: vec![ambient.name],
-            kind: ResultKind::Ambient,
             ambient_module_symbol: ambient.symbol,
         };
     }
@@ -77,7 +75,7 @@ pub fn get_module_specifiers_with_info(
     let module_file_name =
         host.get_source_of_project_reference_if_output_included(module_source_file);
 
-    let (specifiers, kind) = get_module_specifiers_for_file_with_info(
+    let (specifiers, _kind) = get_module_specifiers_for_file_with_info(
         importing_source_file,
         &module_file_name,
         compiler_options,
@@ -86,7 +84,7 @@ pub fn get_module_specifiers_with_info(
         options,
         for_auto_imports,
     );
-    ModuleSpecifiersResult { specifiers, kind, ambient_module_symbol: None }
+    ModuleSpecifiersResult { specifiers, ambient_module_symbol: None }
 }
 
 // specifiers.go:79
@@ -122,7 +120,7 @@ pub fn get_module_specifiers_for_file_with_info(
 }
 
 // specifiers.go:112
-pub fn try_get_module_name_from_ambient_module(
+fn try_get_module_name_from_ambient_module(
     module_symbol: P<Symbol>,
     checker: &mut dyn CheckerShape,
 ) -> AmbientModuleInfo {
@@ -200,10 +198,7 @@ pub fn try_get_module_name_from_ambient_module(
 }
 
 // specifiers.go:168
-pub fn get_info(
-    importing_source_file_name: &str,
-    host: &dyn ModuleSpecifierGenerationHost,
-) -> Info {
+fn get_info(importing_source_file_name: &str, host: &dyn ModuleSpecifierGenerationHost) -> Info {
     let source_directory = tspath::get_directory_path(importing_source_file_name);
     Info {
         importing_source_file_name: importing_source_file_name.to_string(),
@@ -213,7 +208,7 @@ pub fn get_info(
 }
 
 // specifiers.go:180
-pub fn get_all_module_paths(
+fn get_all_module_paths(
     info: &Info,
     imported_file_name: &str,
     host: &dyn ModuleSpecifierGenerationHost,
@@ -236,7 +231,7 @@ pub fn get_all_module_paths(
 }
 
 // specifiers.go:203
-pub fn get_all_module_paths_worker(
+fn get_all_module_paths_worker(
     info: &Info,
     imported_file_name: &str,
     host: &dyn ModuleSpecifierGenerationHost,
@@ -419,7 +414,7 @@ pub fn get_each_file_name_of_module(
 }
 
 // specifiers.go:364
-pub fn compute_module_specifiers(
+fn compute_module_specifiers(
     module_paths: &[ModulePath],
     compiler_options: &CompilerOptions,
     importing_source_file: P<SourceFile>,
@@ -585,7 +580,7 @@ pub fn compute_module_specifiers(
 }
 
 // specifiers.go:490
-pub fn get_local_module_specifier(
+fn get_local_module_specifier(
     module_file_name: &str,
     info: &Info,
     compiler_options: &CompilerOptions,
@@ -785,7 +780,7 @@ pub fn get_local_module_specifier(
 }
 
 // specifiers.go:641
-pub fn process_ending(
+fn process_ending(
     file_name: &str,
     allowed_endings: &[ModuleSpecifierEnding],
     options: &CompilerOptions,
@@ -873,7 +868,7 @@ pub fn process_ending(
 }
 
 // specifiers.go:712
-pub fn try_get_module_name_from_root_dirs(
+fn try_get_module_name_from_root_dirs(
     root_dirs: &[String],
     module_file_name: &str,
     source_directory: &str,
@@ -923,7 +918,7 @@ pub fn try_get_module_name_from_root_dirs(
 }
 
 // specifiers.go:748
-pub fn try_get_module_name_as_node_module(
+fn try_get_module_name_as_node_module(
     path_obj: &ModulePath,
     info: &Info,
     importing_source_file: P<SourceFile>,
@@ -1026,7 +1021,7 @@ pub fn try_get_module_name_as_node_module(
 }
 
 // specifiers.go:837
-pub fn try_directory_with_package_json(
+fn try_directory_with_package_json(
     parts: NodeModulePathParts,
     package_base_root_index: Option<usize>,
     path_obj: &ModulePath,
@@ -1241,7 +1236,7 @@ pub fn try_directory_with_package_json(
 }
 
 // specifiers.go:981
-pub fn try_get_module_name_from_exports(
+fn try_get_module_name_from_exports(
     options: &CompilerOptions,
     host: &dyn ModuleSpecifierGenerationHost,
     target_file_path: &str,
@@ -1299,7 +1294,7 @@ pub fn try_get_module_name_from_exports(
 }
 
 // specifiers.go:1024
-pub fn try_get_module_name_from_package_json_imports(
+fn try_get_module_name_from_package_json_imports(
     module_file_name: &str,
     source_directory: &str,
     options: &CompilerOptions,
@@ -1380,7 +1375,7 @@ fn cut<'a>(s: &'a str, sep: &str) -> (&'a str, &'a str, bool) {
 }
 
 // specifiers.go:1094
-pub fn try_get_module_name_from_paths(
+fn try_get_module_name_from_paths(
     relative_to_base_url: &str,
     paths: &OrderedMap<String, impl PathSubstitutions>,
     allowed_endings: &[ModuleSpecifierEnding],
@@ -1484,7 +1479,7 @@ pub fn try_get_module_name_from_paths(
 }
 
 // specifiers.go:1193
-pub fn validate_ending(
+fn validate_ending(
     c: &SpecPair,
     relative_to_base_url: &str,
     compiler_options: &CompilerOptions,
@@ -1792,27 +1787,6 @@ pub fn try_get_module_name_from_exports_or_imports(
 // just to get its `impliedNodeFormat` and to detect certain preferences from existing import module
 // specifiers.
 // `importing_source_file`: !!! | FutureSourceFile. `old_import_specifier`: used only in updatingModuleSpecifier.
-// specifiers.go:1333
-pub fn get_module_specifier(
-    compiler_options: &CompilerOptions,
-    host: &dyn ModuleSpecifierGenerationHost,
-    importing_source_file: P<SourceFile>,
-    importing_source_file_name: &str,
-    old_import_specifier: &str,
-    to_file_name: &str,
-    options: ModuleSpecifierOptions,
-) -> String {
-    get_module_specifier_with_preferences(
-        compiler_options,
-        host,
-        importing_source_file,
-        importing_source_file_name,
-        old_import_specifier,
-        to_file_name,
-        &UserPreferences::default(),
-        options,
-    )
-}
 
 // specifiers.go:1354
 pub fn update_module_specifier(
@@ -1839,7 +1813,7 @@ pub fn update_module_specifier(
 
 // `importing_source_file`: !!! | FutureSourceFile. `old_import_specifier`: used only in updatingModuleSpecifier.
 // specifiers.go:1376
-pub fn get_module_specifier_with_preferences(
+fn get_module_specifier_with_preferences(
     compiler_options: &CompilerOptions,
     host: &dyn ModuleSpecifierGenerationHost,
     importing_source_file: P<SourceFile>,
@@ -1901,7 +1875,3 @@ pub fn get_module_specifier_with_preferences(
         false,
     )
 }
-
-#[cfg(test)]
-#[path = "specifiers_test.rs"]
-mod specifiers_test;

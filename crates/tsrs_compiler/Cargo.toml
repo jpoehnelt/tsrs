@@ -1,10 +1,17 @@
 [package]
 name = "tsrs_compiler"
-version.workspace = true
+version = "7.1.0-beta.tsrs1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+categories.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+readme.workspace = true
+include = ["/src", "/build.rs", "/LICENSE", "/NOTICE"]
+description = "TypeScript compiler programs and emit for tsrs"
 
 [lints]
 workspace = true
@@ -31,4 +38,5 @@ rustc-hash.workspace = true
 rayon.workspace = true
 
 [lib]
+test = false
 doctest = false

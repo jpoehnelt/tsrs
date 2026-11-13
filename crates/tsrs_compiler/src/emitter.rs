@@ -141,7 +141,6 @@ pub fn get_declaration_diagnostics(
         tsrs_transformers::EmitHost::get_emit_resolver(host),
         options,
         "",
-        "",
     );
     transform.base.transform_source_file(file);
     transform.get_diagnostics()
@@ -312,7 +311,6 @@ mod emit {
             &self,
             source_file: P<SourceFile>,
             declaration_file_path: &str,
-            declaration_map_path: &str,
         ) -> (P<SourceFile>, Vec<P<Diagnostic>>) {
             let force_dts_emit = self.emit_only == EmitOnly::EmitOnlyBuilderSignature
                 || self.force_emit && self.emit_only == EmitOnly::EmitOnlyDts;
@@ -323,7 +321,6 @@ mod emit {
                 self.host.get_emit_resolver(),
                 self.host.options(),
                 declaration_file_path,
-                declaration_map_path,
             );
             let supplemental = tsrs_declarations::new_supplemental_references_transformer(
                 self.host,
@@ -435,11 +432,8 @@ mod emit {
             let content_mapped_source = source_file;
 
             let emit_context = self.emit_context;
-            let (source_file, diags) = self.run_declaration_transformers(
-                source_file,
-                declaration_file_path,
-                declaration_map_path,
-            );
+            let (source_file, diags) =
+                self.run_declaration_transformers(source_file, declaration_file_path);
 
             // added to the emit diagnostics in `print`, after the JS file is written
             let decl_blocked = !diags.is_empty()
@@ -616,7 +610,7 @@ mod emit {
             }
 
             // Write the output file
-            let mut text = writer.string();
+            let mut text = writer.take_string();
             if options.emit_bom.is_true() {
                 text = stringutil::add_utf8_byte_order_mark(&text);
             }
@@ -640,9 +634,6 @@ mod emit {
                 }
                 Ok(()) => {}
             }
-
-            // Reset state
-            writer.clear();
         }
 
         // emitter.go:436
@@ -698,7 +689,7 @@ mod emit {
         }
 
         // emitter.go:443
-        pub(crate) fn get_source_mapping_url(
+        fn get_source_mapping_url(
             &self,
             map_options: &CompilerOptions,
             source_map_generator: &mut SourceMapGenerator,
@@ -757,9 +748,9 @@ mod emit {
     // emitter.go:295
     // Go `declarationMapSource`: the original (content-mapped) source a declaration map points at.
     pub struct DeclarationMapSource {
-        pub(crate) file_name: String,
-        pub(crate) text: &'static str,
-        pub(crate) line_map: Vec<u32>,
+        file_name: String,
+        text: &'static str,
+        line_map: Vec<u32>,
     }
 
     // emitter.go:301

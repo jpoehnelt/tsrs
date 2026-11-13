@@ -41,7 +41,8 @@ Details:
   through `tools/go-fourslash` without generating Rust fixtures.
 - Also check `--all-features` when changing lint policy. It enables `plain-ptrs`, so check optional features with
   compressed pointers separately. These scopes include profiling tools and both pointer representations.
-- Workspace crates declare `publish = false`; missing crates.io metadata does not need a global exception.
+- Published crates inherit crates.io metadata from the workspace and declare a description. Benchmarks, test support,
+  task crates and WebAssembly stay `publish = false`. See [crate releases](RELEASING_CRATES.md).
 - Generated Rust is linted; fix its generator when Clippy finds something. When generated code intentionally needs
   an exception, emit the smallest reasoned `#[expect]` from the generator.
 - `dead_code`, `unused_imports`, `unused_variables`, `unused_mut` and `unsafe_op_in_unsafe_fn` are ordinary compiler
@@ -58,13 +59,13 @@ An upgrade is a pull request of its own:
 2. Fix what the new compiler rejects (CI sets Cargo's `build.warnings=deny`).
 3. Run the full Clippy command above on macOS and Linux and fix every new finding.
 4. Measure the instruction and peak-memory change per project before and after the upgrade and put it in the pull
-   request. The published benchmark workflow is disabled (`bench/README.md`, "CI"); use the local tools or restore the saved
-   workflow to collect the measurements (`node bench/bench.mjs regressions` sees the rustc change and flags nothing).
+   request. Use the [benchmark workflow or local tools](../bench/README.md#ci-and-retained-data) to collect the
+   measurements (`node bench/bench.mjs regressions` sees the rustc change and flags nothing).
 5. Release builds use the same version; run the `Release` workflow by hand (`dry_run` on) to check them.
 
 ## Source checks
 
-`tools/lint/source.mjs` (CI: the `lint` job; after Bun's `test/internal/source-lints/`) checks four things
+`tools/lint/source.mjs` (CI: the `lint` job; after Bun's `test/internal/source-lints/`) checks five things
 clippy cannot express:
 
 - **`unsafe impl Send` / `Sync`.** `tools/lint/send_sync.tsv` lists all of them (31 on 2026-10-10). Adding or removing
@@ -88,8 +89,13 @@ clippy cannot express:
   `safe-api-possible`, `defect-risk`, `unknown`) and a note that `--update` preserves. A site that appears or
   disappears fails until `--update` records it; a new row starts with the verdict `unknown` and the check names it
   until someone classifies it. The classification and its findings are in `notes/unsafe-audit.md` (issue #646).
+- **Test layout.** Each crate has one test binary, `tests/integration/main.rs`, so `cargo test` compiles no unit-test
+  harness per crate. A `[lib]` or `[[bin]]` without `test = false`, a `.rs` file directly under `tests/` (unless the
+  crate's test target has `harness = false`), and `#[test]`, `#[cfg(test)]` or `cfg!(test)` in `src` fail: with
+  `test = false` a unit test would never run. tsrs_wasm is exempt; it is cdylib only, so no integration test can
+  link it.
 
-Source checks cover `crates/*/src` and `tasks/*/src`. Test files and generated files are not scanned.
+The other source checks cover `crates/*/src` and `tasks/*/src`. Test files and generated files are not scanned.
 
 ## What the lints check
 
@@ -150,6 +156,11 @@ stays on oxc's allowlist: changing eager `unwrap_or(f())` evaluation can change 
 
 ## Techniques
 
+The [fast preset](USAGE.md#performance-options) (`--fast` or `TSRS_FAST=1`) opts into adaptive scheduling, lazy
+checker members, additional checker caches and eligible memory-saving modes. The table below records techniques
+and their historical measurements; it does not mean every technique runs with the reference-default settings.
+Build-level optimizations, arena layouts and behavior-preserving optimizations remain enabled in both modes.
+
 In place:
 
 | Technique | Evidence here | Also in |
@@ -162,11 +173,16 @@ In place:
 | 32-bit handles with a niche (`Option<P<T>>` is 4 bytes) | `notes/mem-pointer-compression.md`: -14 to -15% peak memory, +6.5% instructions | oxc and Ruff (`NonMax`/`NonZero` u32 ids), Bun (`StoreRef`) |
 | Packed layouts with size assertions | `notes/mem-layout3.md`, `mem-round2.md`, `mem-round3.md`, `mem-small.md` | oxc, ty, rust-analyzer, Bun |
 | Fx hashing everywhere | `notes/perf-checker-cpu2.md` | oxc, Rolldown, Ruff, rust-analyzer |
+| Inline small vectors for the checker's temporary union filters, applicable index signatures and union-merge metadata | `notes/data-structure-review.md`: four buffers with four inline handles; `notes/data-structure-followups.md`: three merge buffers with four inline indexes, allocation census and paired catalog measurements. Wall time and RSS are mixed | smallvec in oxc, Rolldown, Ruff, Bun |
+| Inline bit vector for temporary inference-match flags | `notes/data-structure-followups.md`: `smallbitvec` keeps up to 62 flags inline on 64-bit targets and spills larger lists; two catalog batches confirm instruction reductions, with mixed wall time and RSS | servo/smallbitvec |
+| Lazy groups of eight concurrent-cache shards, retaining 64 logical shards and std RwLock poisoning; 64-value generic link-store chunks | `notes/data-structure-redesigns.md`: native empty SyncMap storage changes from a 16-byte header plus 3,072 eager heap bytes to a 128-byte header with no heap allocation. Combined catalog comparison: paired single-checker instruction reductions repeat on 16/18 fast and 15/18 reference projects; pooled default-checker RSS medians fall 1.16% / 0.51%, with mixed wall time. Stable arena addresses and shard distribution are preserved | std OnceLock, hashbrown |
+| Fx-hashed ordered watcher event batches | `notes/data-structure-redesigns.md`: two reversed-order five-pair batches on public vscode paths reduce watcher instructions by 1.7–1.8%, preserving callback order; wall time and RSS are mixed | existing core OrderedMap/indexmap |
 | Lazy members, line maps and rare-field tails | `notes/lazy-members.md`, `notes/mem-lazy.md` | |
 | `#[cold]` slow-path splits | `notes/perf-parse.md` changes 6 to 8: parse instructions 16.66 G -> 15.07 G | oxc, Bun |
 | Instruction counts and peak memory, with advisory CodSpeed reports | `bench/README.md` "Regression flag": single-threaded tsrs repeats to about 0.001% (instructions) and under 0.4% (peak RSS); local tools remain available, while `.github/workflows/benchmark.yml` gates measurements through Clef, builds release artifacts once, and shards CodSpeed CPU simulation and default-checker peak memory alongside PR comparisons. Cross-compiler reports require manual dispatch and remain in workflow artifacts without opening update PRs. Its Graviton walltime jobs are disabled by default after exhausting the included monthly Macro Runner minutes; set the repository variable `CODSPEED_WALLTIME_ENABLED=true` to re-enable them. The saved `.yml.bak` regression workflows remain disabled | CodSpeed in oxc, Rolldown, Ruff, Biome, swc (simulated counts); Ruff's PR memory report |
 | Generated-code freshness check | `tools/gen-check.sh` (run locally) re-runs the eight generators and fails on a diff; it found two hand edits the generators no longer reproduced | oxc, Ruff, rust-analyzer |
 | Unused-dependency checks in CI | `.github/workflows/autofix.yml` runs cargo-shear, updates the lock file after fixes, and rejects pending fixes in merge groups | oxc, Rolldown, Ruff, rust-analyzer |
+| Debug assertions and overflow checks in CI's optimized `ci` profile | Workspace tests, conformance, regressions, determinism and ThreadSanitizer run with them. On an arm64 macOS host, the conformance gate took 77.1 s against 60.2 s without them and regressions 6.9 s against 5.2 s, with identical result lists | oxc (`[profile.coverage]`) |
 | Differential parser fuzzing | `tools/fuzz/parser.mjs` mutates conformance files and compares the AST hashes of the Go and Rust oracles (`tools/oracle/ast`); the nightly 200,000-mutant workflow is disabled as [fuzz.yml.bak](../.github/workflows/fuzz.yml.bak), while the local tool remains available. First 320,000 mutants: no divergence, no crash (inputs kept valid UTF-8; invalid UTF-8 is read lossily on purpose) | Ruff (`cargo fuzz` on its parser) |
 | Frame pointers for profiling | `docs/DEBUGGING.md` "Profiling": a `dist` build with `-C force-frame-pointers=yes` for samply / `perf` on Linux (Apple arm64 always keeps them) | Bun |
 | Transparent huge pages for the arena on Linux: large thread-arena chunks 2 MiB-aligned and advised with `MADV_HUGEPAGE`. The mimalloc heap is not advised (mimalloc binaries share `no_thp` and `tsrs_core::allocator::init_mimalloc`): with the advice every partly filled thread-local mimalloc page was resident as a whole 2 MiB page | `notes/linux-x86-round.md`: 2-6% less wall time, 21-48x fewer page faults; `notes/linux-perf.md`: THP off costs 11-12%; `notes/mem-no-thp.md`: no advice on the heap, -25 to -33% peak RSS at 4-64 checkers on 64 vCPUs for +4-9% wall time against `bun check` on the same runner (parse +30%, check +1-5%) | mimalloc (advises its own OS memory unless built with `no_thp`) |
@@ -200,10 +216,9 @@ Not tried. Each needs a measurement before it is adopted; none is applied yet:
 | --- | --- | --- | --- |
 | Allocation-count snapshot gate | oxc `tasks/track_memory_allocations` (`cargo allocs`, then `git diff --exit-code` in CI), Rolldown | A stray heap allocation on a hot path becomes a diff in a checked-in snapshot. Counts are exact on one thread. | A fixed corpus, one checker, and a new allocation-counting tool. |
 | Miri on all of `tsrs_core` | oxc (strict provenance, allocator and AST crates), rust-analyzer (`intern`), Bun (tree borrows, 17 crates) | Soundness of the handle and region code, where a third of the `unsafe` is. The focused arena free-list checks run in `.github/workflows/miri.yml` (`notes/fix-arena-recycle-uaf.md`). | Nightly and `--features plain-ptrs` (Miri does not support the compressed handles' `PROT_NONE` reservation). |
-| Conformance with `debug-assertions` and `overflow-checks` in an optimized profile | oxc `[profile.coverage]` | Overflow and failed debug assertions that release builds skip. | A profile and a second conformance run. |
 | A symbol order file at link time | Bun (order file from a function-entry trace) | Part of BOLT's gain without a post-link step, on every platform. | A function-entry trace and `-Wl,--symbol-ordering-file` / `-order_file`. |
 | Arena-backed temporaries | oxc (arena `Vec` and `HashMap`), Bun (hashbrown on its arenas through `allocator-api2`, the stable stand-in for the nightly `Allocator` API) | Scratch vectors and maps skip malloc and free. | A scratch allocator whose reset point is provable; scope regions were rejected (above), so per-call scratch is the experiment. |
-| Inline small vectors | `smallvec` in oxc, Rolldown, Ruff, Bun | No heap allocation for short temporaries. | An allocation profile showing which temporaries are short. |
+| Inline small vectors beyond the measured checker buffers | `smallvec` in oxc, Rolldown, Ruff, Bun | No heap allocation for short temporaries. | A size/allocation profile and whole-project measurements for each additional site; `notes/data-structure-review.md` and `notes/data-structure-followups.md` cover the seven adopted buffers and rejected trials. |
 | Call-graph lints | mordant, used by Bun with a per-file baseline, advisory there | `forbidden_reach` ("nothing reachable from this function may allocate"), `generic_body_not_generic` (code compiled again per type for no reason). | A nightly with `rustc-dev` that compiles the workspace. |
 | Dependency policy checks in CI | cargo-deny (oxc, Ruff, Biome, swc) | `deny.toml` exists but no job runs it. | A CI step. |
 

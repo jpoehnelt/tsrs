@@ -132,12 +132,12 @@ impl PackageJson {
 // is done up front here.
 #[derive(Clone, Debug, Default)]
 pub struct VersionPaths {
-    pub version: String,
+    pub(crate) version: String,
     paths: Option<OrderedMap<String, Vec<String>>>,
 }
 
 impl VersionPaths {
-    pub fn exists(&self) -> bool {
+    pub(crate) fn exists(&self) -> bool {
         !self.version.is_empty() && self.paths.is_some()
     }
 
@@ -188,10 +188,6 @@ impl InfoCacheEntry {
     pub fn get_contents(&self) -> Option<P<PackageJson>> {
         self.contents
     }
-
-    pub fn get_directory(&self) -> &'static str {
-        self.package_directory
-    }
 }
 
 // WithPackageDirectory returns an entry whose PackageDirectory matches the
@@ -205,7 +201,10 @@ impl InfoCacheEntry {
 // candidate against PackageDirectory, so we must return a corrected
 // shallow copy when they diverge.
 // See https://github.com/microsoft/TypeScript/pull/50740.
-pub fn with_package_directory(p: P<InfoCacheEntry>, package_directory: &str) -> P<InfoCacheEntry> {
+pub(crate) fn with_package_directory(
+    p: P<InfoCacheEntry>,
+    package_directory: &str,
+) -> P<InfoCacheEntry> {
     if p.package_directory == package_directory {
         return p;
     }
@@ -226,7 +225,10 @@ pub struct InfoCache {
     entries_region: Arc<OnceLock<tsrs_core::arena::Region>>,
 }
 
-pub fn new_info_cache(current_directory: &str, use_case_sensitive_file_names: bool) -> InfoCache {
+pub(crate) fn new_info_cache(
+    current_directory: &str,
+    use_case_sensitive_file_names: bool,
+) -> InfoCache {
     InfoCache {
         cache: SyncMap::default(),
         current_directory: current_directory.to_string(),
@@ -252,7 +254,7 @@ impl InfoCache {
     }
 
     #[must_use]
-    pub fn clone_cache(&self) -> InfoCache {
+    pub(crate) fn clone_cache(&self) -> InfoCache {
         let mut clone = new_info_cache(&self.current_directory, self.use_case_sensitive_file_names);
         clone.entries_region = Arc::clone(&self.entries_region);
         self.cache.range(|key, value| {
@@ -262,16 +264,18 @@ impl InfoCache {
         clone
     }
 
-    pub fn get(&self, package_json_path: &str) -> Option<P<InfoCacheEntry>> {
-        let key = tspath::to_path(
+    pub(crate) fn get(&self, package_json_path: &str) -> Option<P<InfoCacheEntry>> {
+        // The key's text without the `Path` (an `Arc` per lookup; most lookups hit): borrowed from the argument
+        // on a case-sensitive host, the lowercase copy elsewhere.
+        let key = tspath::to_path_cow(
             package_json_path,
             &self.current_directory,
             self.use_case_sensitive_file_names,
         );
-        self.cache.load(&key)
+        self.cache.load::<str>(&key)
     }
 
-    pub fn set(&self, package_json_path: &str, info: P<InfoCacheEntry>) -> P<InfoCacheEntry> {
+    fn set(&self, package_json_path: &str, info: P<InfoCacheEntry>) -> P<InfoCacheEntry> {
         let key = tspath::to_path(
             package_json_path,
             &self.current_directory,
@@ -281,7 +285,7 @@ impl InfoCache {
         actual
     }
 
-    pub fn range(&self, f: impl FnMut(&Path, &P<InfoCacheEntry>) -> bool) {
+    pub(crate) fn range(&self, f: impl FnMut(&Path, &P<InfoCacheEntry>) -> bool) {
         self.cache.range(f);
     }
 }

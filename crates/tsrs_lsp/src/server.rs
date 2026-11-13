@@ -47,12 +47,26 @@ pub struct ServerOptions {
     pub typings_location: String,
     pub parse_cache: Option<Arc<project::ParseCache>>,
     pub npm_install: Option<NpmInstallFunc>,
-    // Spawn (content mappers) is not ported: content mappers are out of scope (docs/LSP.md).
+    // Spawn launches a child process, returning its stdio as an io.ReadWriteCloser (Read is its stdout,
+    // Write is its stdin). It is nil when the host cannot spawn processes. Currently used for content mappers.
+    pub spawn: Option<SpawnFunc>,
     pub progress_delay: Duration, // delay before showing progress UI; 0 means no delay
     pub set_parent_process_id: Option<Box<dyn Fn(i32) + Send + Sync>>,
 }
 
 pub type NpmInstallFunc = Arc<dyn Fn(&str, &[String]) -> Result<Vec<u8>, String> + Send + Sync>;
+
+// Go's `func(command []string, dir string, stderr io.Writer) (io.ReadWriteCloser, error)` (a None stderr is
+// io.Discard, as for `contentmapper::Spawner`).
+pub type SpawnFunc = Arc<
+    dyn Fn(
+            &[String],
+            &str,
+            Option<Box<dyn Write + Send>>,
+        ) -> Result<tsrs_ipc::ReadWriteCloser, String>
+        + Send
+        + Sync,
+>;
 
 // server.go:60
 pub fn new_server(opts: ServerOptions) -> Arc<Server> {
@@ -91,6 +105,7 @@ pub fn new_server(opts: ServerOptions) -> Arc<Server> {
         compiler_options_for_inferred_projects: Mutex::new(None),
         parse_cache: opts.parse_cache,
         npm_install: opts.npm_install,
+        spawn: opts.spawn,
         progress_delay: opts.progress_delay,
         project_progress: OnceLock::new(),
         start_watchdog: opts.set_parent_process_id,
@@ -217,12 +232,12 @@ pub fn to_writer(w: impl Write + Send + 'static) -> Box<dyn Writer> {
 pub struct Server {
     r: Mutex<Option<Box<dyn Reader>>>,
     w: Mutex<Box<dyn Writer>>,
-    pub(crate) background_ctx: OnceLock<Context>,
+    pub background_ctx: OnceLock<Context>,
 
     stderr: Mutex<Box<dyn Write + Send>>,
 
-    pub(crate) logger: Arc<LoggerImpl>,
-    pub(crate) init_started: AtomicBool,
+    logger: Arc<LoggerImpl>,
+    pub init_started: AtomicBool,
     client_seq: AtomicU64,
     request_queue: DynamicQueue<Arc<RequestMessage>>,
     pub(crate) outgoing_queue: DynamicQueue<Message>,
@@ -275,6 +290,7 @@ pub struct Server {
     parse_cache: Option<Arc<project::ParseCache>>,
 
     npm_install: Option<NpmInstallFunc>,
+    spawn: Option<SpawnFunc>,
 
     progress_delay: Duration,
     project_progress: OnceLock<Arc<ProjectLoadingProgress>>,
@@ -284,7 +300,7 @@ pub struct Server {
     flake_logging: OnceLock<lsproto::DiagnosticFlakeLogLevel>,
 
     // apiSessions holds active API sessions keyed by their ID
-    pub(crate) api_sessions: Mutex<FxHashMap<String, Arc<ApiSessionState>>>,
+    pub api_sessions: Mutex<FxHashMap<String, Arc<ApiSessionState>>>,
 }
 
 // server.go:256
@@ -398,7 +414,7 @@ impl ResponseChan {
 static DEFAULT_CLIENT_CAPABILITIES: LazyLock<Arc<lsproto::ResolvedClientCapabilities>> =
     LazyLock::new(|| Arc::new(lsproto::ResolvedClientCapabilities::default()));
 
-pub type AsyncWorkImpl = Box<dyn FnOnce() -> Result<(), Error> + Send>;
+type AsyncWorkImpl = Box<dyn FnOnce() -> Result<(), Error> + Send>;
 
 impl Server {
     // The server's lifecycle context (Go `s.backgroundCtx`, set by Run).
@@ -413,7 +429,7 @@ impl Server {
     }
 
     // Go `s.clientCapabilities` (zero until initialize).
-    pub(crate) fn client_capabilities(&self) -> &lsproto::ResolvedClientCapabilities {
+    fn client_capabilities(&self) -> &lsproto::ResolvedClientCapabilities {
         match self.client_capabilities.get() {
             Some(capabilities) => capabilities,
             None => &DEFAULT_CLIENT_CAPABILITIES,
@@ -445,12 +461,11 @@ impl Server {
         self.session.get().expect("the session is created by the initialized notification")
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_session_for_test(&self, session: Arc<project::Session>) {
+    pub fn set_session_for_test(&self, session: Arc<project::Session>) {
         let _ = self.session.set(session);
     }
 
-    pub(crate) fn logger_arc(&self) -> Arc<LoggerImpl> {
+    pub fn logger_arc(&self) -> Arc<LoggerImpl> {
         Arc::clone(&self.logger)
     }
 
@@ -464,7 +479,7 @@ impl Server {
 
     // server.go:263
     // WatchFiles implements project.Client.
-    pub fn watch_files(
+    fn watch_files(
         &self,
         ctx: &Context,
         id: &str,
@@ -502,7 +517,7 @@ impl Server {
 
     // server.go:292
     // UnwatchFiles implements project.Client.
-    pub fn unwatch_files(&self, ctx: &Context, id: &str) -> Result<(), Error> {
+    fn unwatch_files(&self, ctx: &Context, id: &str) -> Result<(), Error> {
         if let Some(builtin_watcher) = self.builtin_watcher.get() {
             if !self.watchers.lock().unwrap().contains(id) {
                 return Err(Error::new(format!("no file watcher exists with ID {id}")));
@@ -620,7 +635,7 @@ impl Server {
     // synchronization and pull diagnostics for the given otherwise unsupported file extensions so the editor forwards their
     // open/change/close notifications to the server and requests diagnostics for them. It is called with the
     // full desired set each time it changes; an empty slice removes any prior registration.
-    pub fn register_content_mapper_extensions(
+    fn register_content_mapper_extensions(
         &self,
         ctx: &Context,
         extensions: &[String],
@@ -1117,7 +1132,7 @@ impl Server {
 
     // server.go:705
     // RefreshDiagnostics implements project.Client.
-    pub fn refresh_diagnostics(&self, ctx: &Context) -> Result<(), Error> {
+    fn refresh_diagnostics(&self, ctx: &Context) -> Result<(), Error> {
         if !self.client_capabilities().workspace.diagnostics.refresh_support {
             return Ok(());
         }
@@ -1141,7 +1156,7 @@ impl Server {
 
     // server.go:725
     // PublishDiagnostics implements project.Client.
-    pub fn publish_diagnostics(
+    fn publish_diagnostics(
         &self,
         _ctx: &Context,
         params: lsproto::PublishDiagnosticsParams,
@@ -1151,7 +1166,7 @@ impl Server {
 
     // server.go:730
     // SendTelemetry implements project.Client.
-    pub fn send_telemetry(
+    fn send_telemetry(
         &self,
         _ctx: &Context,
         telemetry: lsproto::TelemetryEvent,
@@ -1165,13 +1180,13 @@ impl Server {
 
     // server.go:738
     // IsActive implements project.Client.
-    pub fn is_active(&self) -> bool {
+    fn is_active(&self) -> bool {
         let last = self.last_request_time_ms.load(Ordering::SeqCst);
         last == 0 || unix_millis_now().saturating_sub(last) <= 60_000
     }
 
     // server.go:743
-    pub fn refresh_inlay_hints(&self, _ctx: &Context) -> Result<(), Error> {
+    fn refresh_inlay_hints(&self, _ctx: &Context) -> Result<(), Error> {
         if !self.client_capabilities().workspace.inlay_hint.refresh_support {
             return Ok(());
         }
@@ -1186,7 +1201,7 @@ impl Server {
     }
 
     // server.go:754
-    pub fn refresh_code_lens(&self, _ctx: &Context) -> Result<(), Error> {
+    fn refresh_code_lens(&self, _ctx: &Context) -> Result<(), Error> {
         if !self.client_capabilities().workspace.code_lens.refresh_support {
             return Ok(());
         }
@@ -1202,7 +1217,7 @@ impl Server {
 
     // server.go:766
     // ProgressStart implements project.Client.
-    pub fn progress_start(
+    fn progress_start(
         &self,
         message: &'static tsrs_diagnostics::Message,
         args: &[&dyn std::fmt::Display],
@@ -1214,7 +1229,7 @@ impl Server {
 
     // server.go:773
     // ProgressFinish implements project.Client.
-    pub fn progress_finish(
+    fn progress_finish(
         &self,
         message: &'static tsrs_diagnostics::Message,
         args: &[&dyn std::fmt::Display],
@@ -1226,13 +1241,13 @@ impl Server {
 
     // server.go:780
     // GetLocale implements project.Client.
-    pub fn get_locale(&self) -> Locale {
+    fn get_locale(&self) -> Locale {
         self.locale.read().unwrap().clone()
     }
 
     // server.go:787
     // SetLocale implements project.Client.
-    pub fn set_locale(&self, locale_string: &str) {
+    fn set_locale(&self, locale_string: &str) {
         let mut new_locale = self.init_locale.lock().unwrap().clone();
         if locale_string != "auto" {
             let Some(parsed) = locale_parse(locale_string) else {
@@ -1244,7 +1259,7 @@ impl Server {
     }
 
     // server.go:801
-    pub fn request_configuration(&self, ctx: &Context) -> Result<lsutil::UserPreferences, Error> {
+    fn request_configuration(&self, ctx: &Context) -> Result<lsutil::UserPreferences, Error> {
         let caps = lsproto::get_client_capabilities(ctx);
         if !caps.workspace.configuration {
             let opts = self.initialization_options();
@@ -1501,7 +1516,7 @@ impl Server {
     }
 
     // server.go:1029
-    pub(crate) fn write_loop(&self, ctx: &Context) -> Result<(), Error> {
+    pub fn write_loop(&self, ctx: &Context) -> Result<(), Error> {
         loop {
             let msg = self.outgoing_queue.get(ctx)?;
             let result = self.w.lock().unwrap().write(&msg);
@@ -1526,7 +1541,7 @@ impl Server {
     // server.go:1053
     // WARNING: this should only be called in the async portion of a request handler,
     // otherwise a deadlock can occur.
-    pub(crate) fn send_client_request<Req: Json, Resp: Json>(
+    fn send_client_request<Req: Json, Resp: Json>(
         &self,
         ctx: &Context,
         info: lsproto::RequestInfo<Req, Resp>,
@@ -1584,7 +1599,7 @@ impl Server {
     }
 
     // server.go:1096
-    pub(crate) fn send_result(&self, id: Option<&ID>, result: &impl Json) -> Result<(), Error> {
+    fn send_result(&self, id: Option<&ID>, result: &impl Json) -> Result<(), Error> {
         self.send_response(ResponseMessage {
             id: id.cloned(),
             result: Some(result.to_json()),
@@ -1593,7 +1608,7 @@ impl Server {
     }
 
     // server.go:1108
-    pub(crate) fn send_error(&self, id: Option<&ID>, err: Error) -> Result<(), Error> {
+    fn send_error(&self, id: Option<&ID>, err: Error) -> Result<(), Error> {
         // Do not send error response for notifications,
         // except for parse errors which may occur before determining if the message is a request or notification.
         if id.is_none() && !err.is_code(ErrorCode::INVALID_REQUEST) {
@@ -1625,7 +1640,7 @@ impl Server {
 
     // server.go:1138
     // send writes a message to the outgoing queue, respecting context cancellation.
-    pub(crate) fn send(&self, msg: Message) -> Result<(), Error> {
+    pub fn send(&self, msg: Message) -> Result<(), Error> {
         self.outgoing_queue.put(&self.background_ctx(), msg).map_err(Error::from)
     }
 
@@ -1739,13 +1754,14 @@ impl Server {
                 server: Arc::clone(self),
                 default_project: Arc::<project::Project>::clone(default_project.arc()),
                 all_projects,
+                project_lookup_cache: Mutex::new(project::session::ProjectLookupCache::default()),
             });
         Ok((default_ls, orchestrator))
     }
 
     // server.go:1477: `defer s.recover(req)` around `f`. A panic in `f` is logged and answered with an internal
     // error; the work then returns nil like Go's function after a recovered panic.
-    pub(crate) fn with_recover(
+    fn with_recover(
         &self,
         req: &RequestMessage,
         f: impl FnOnce() -> Result<(), Error>,
@@ -2055,9 +2071,11 @@ impl Server {
 
         self.telemetry_enabled.store(enable_telemetry, Ordering::SeqCst);
 
-        let client: Arc<dyn project::Client> = Arc::<Server>::clone(self);
+        // tsrs-only: the session refers to the server weakly (`SessionClient`), as the logger does.
+        let client: Arc<dyn project::Client> = Arc::new(SessionClient(Arc::downgrade(self)));
         let logger: Arc<dyn logging::Logger> = self.logger_arc();
-        let npm_executor: Arc<dyn project::NpmExecutor> = Arc::<Server>::clone(self);
+        let npm_executor: Arc<dyn project::NpmExecutor> =
+            Arc::new(SessionClient(Arc::downgrade(self)));
         let session = project::new_session(&project::SessionInit {
             background_ctx: lsproto::with_client_capabilities(
                 &self.background_ctx(),
@@ -2080,6 +2098,8 @@ impl Server {
             logger: Some(logger),
             client: Some(client),
             npm_executor: Some(npm_executor),
+            spawner: self.content_mapper_spawner(),
+            content_mapper_logger: Some(self.content_mapper_logger()),
             parse_cache: self.parse_cache.clone(),
             content_mapped_parse_cache: None,
         });
@@ -3224,7 +3244,7 @@ impl Server {
     }
 
     // server.go:2421
-    pub(crate) fn close_api_sessions(&self) {
+    pub fn close_api_sessions(&self) {
         let api_sessions: Vec<Arc<ApiSessionState>> =
             self.api_sessions.lock().unwrap().drain().map(|(_, state)| state).collect();
         for state in api_sessions {
@@ -3540,10 +3560,10 @@ fn supported_code_action_kinds() -> Vec<lsproto::CodeActionKind> {
 }
 
 // server.go:1103: `userFacingRequestFailedError` (a string error type that unwraps to ErrorCodeRequestFailed).
-pub const USER_FACING_REQUEST_FAILED_ERROR: ErrorTag =
+const USER_FACING_REQUEST_FAILED_ERROR: ErrorTag =
     ErrorTag::Sentinel("userFacingRequestFailedError");
 
-pub fn user_facing_request_failed_error(message: impl Into<String>) -> Error {
+fn user_facing_request_failed_error(message: impl Into<String>) -> Error {
     Error {
         message: message.into(),
         tags: vec![USER_FACING_REQUEST_FAILED_ERROR, ErrorTag::Code(ErrorCode::REQUEST_FAILED)],
@@ -3589,13 +3609,13 @@ fn content_mapper_fallback_response(method: Method, err: &Error) -> Option<lspro
 // handlerMap maps LSP method to a handler function. The handler function executes any work that must be done synchronously
 // before other requests/notifications can be processed, and returns any additional work as a function to be executed
 // asynchronously after the synchronous work is complete.
-pub type HandlerFunc = Box<
+type HandlerFunc = Box<
     dyn Fn(&Arc<Server>, &Context, &Arc<RequestMessage>) -> Result<Option<AsyncWorkImpl>, Error>
         + Send
         + Sync,
 >;
 
-pub struct HandlerMap(FxHashMap<Method, HandlerFunc>);
+struct HandlerMap(FxHashMap<Method, HandlerFunc>);
 
 // server.go:1229
 fn handlers() -> &'static HandlerMap {
@@ -4038,6 +4058,7 @@ struct CrossProjectOrchestratorImpl {
     server: Arc<Server>,
     default_project: Arc<dyn tsrs_ls::Project>,
     all_projects: Vec<Arc<dyn tsrs_ls::Project>>,
+    project_lookup_cache: Mutex<project::session::ProjectLookupCache>,
 }
 
 impl tsrs_ls::CrossProjectOrchestrator for CrossProjectOrchestratorImpl {
@@ -4071,7 +4092,11 @@ impl tsrs_ls::CrossProjectOrchestrator for CrossProjectOrchestratorImpl {
         ctx: &Context,
         uri: &lsproto::DocumentUri,
     ) -> Result<Vec<Arc<dyn tsrs_ls::Project>>, Error> {
-        Ok(self.server.session().get_projects_for_file(ctx, uri))
+        Ok(self.server.session().get_projects_for_file_cached(
+            ctx,
+            uri,
+            &mut self.project_lookup_cache.lock().unwrap(),
+        ))
     }
 
     // server.go:1456. Go returns an iterator that loads the snapshot while it is consumed; the projects are
@@ -4097,11 +4122,15 @@ impl tsrs_ls::CrossProjectOrchestrator for CrossProjectOrchestratorImpl {
         );
         Box::new(projects.into_iter())
     }
+
+    fn enter_search_thread(&self, ctx: &Context) -> Box<dyn std::any::Any> {
+        Box::new(project::enter_checker_data_lease(ctx))
+    }
 }
 
 // The handlers of out-of-scope features (content mappers, API sessions attached to the server, runGC and the profiling
 // commands) answer with this error.
-pub fn not_yet_ported(method: Method) -> Error {
+fn not_yet_ported(method: Method) -> Error {
     Error::wrap_code(ErrorCode::METHOD_NOT_FOUND, Error::new(format!("{method} is not ported yet")))
 }
 
@@ -4206,6 +4235,116 @@ impl project::NpmExecutor for Server {
             Some(npm_install) => npm_install(cwd, args),
             None => panic!("NpmInstall called without an npm executor"),
         }
+    }
+}
+
+impl Server {
+    // server.go:2448
+    // contentMapperSpawner adapts the server's spawn callback to a content mapper spawner, or returns nil when
+    // the server cannot spawn processes.
+    fn content_mapper_spawner(&self) -> Option<Arc<dyn tsrs_contentmapper::Spawner>> {
+        let spawn = Arc::clone(self.spawn.as_ref()?);
+        Some(Arc::new(tsrs_contentmapper::SpawnerFunc(
+            move |command: &[String], dir: &str, stderr: Option<Box<dyn Write + Send>>| {
+                spawn(command, dir, stderr)
+            },
+        )))
+    }
+
+    // server.go:2457
+    fn content_mapper_logger(&self) -> tsrs_contentmapper::Logger {
+        let logger = Arc::clone(&self.logger);
+        Arc::new(move |message: &str| {
+            if logger.is_tracing() {
+                logger.info(message);
+            }
+        })
+    }
+}
+
+// tsrs-only: the session's `project::Client` and `project::NpmExecutor`. Go's session holds the `*Server` and the GC
+// collects the cycle; here the server owns the session, so the session refers to the server weakly and dropping the
+// last `Arc<Server>` frees the session with its snapshots and programs. Once the server is gone, calls do nothing.
+struct SessionClient(Weak<Server>);
+
+impl SessionClient {
+    fn with<R>(&self, gone: R, f: impl FnOnce(&Server) -> R) -> R {
+        self.0.upgrade().map_or(gone, |s| f(&s))
+    }
+}
+
+impl project::Client for SessionClient {
+    fn watch_files(
+        &self,
+        ctx: &Context,
+        id: project::WatcherID,
+        watchers: Vec<lsproto::FileSystemWatcher>,
+    ) -> Result<(), Error> {
+        self.with(Ok(()), |s| project::Client::watch_files(s, ctx, id, watchers))
+    }
+    fn unwatch_files(&self, ctx: &Context, id: project::WatcherID) -> Result<(), Error> {
+        self.with(Ok(()), |s| project::Client::unwatch_files(s, ctx, id))
+    }
+    fn register_content_mapper_extensions(
+        &self,
+        ctx: &Context,
+        extensions: Vec<String>,
+    ) -> Result<(), Error> {
+        self.with(Ok(()), |s| s.register_content_mapper_extensions(ctx, &extensions))
+    }
+    fn refresh_diagnostics(&self, ctx: &Context) -> Result<(), Error> {
+        self.with(Ok(()), |s| s.refresh_diagnostics(ctx))
+    }
+    fn publish_diagnostics(
+        &self,
+        ctx: &Context,
+        params: lsproto::PublishDiagnosticsParams,
+    ) -> Result<(), Error> {
+        self.with(Ok(()), |s| s.publish_diagnostics(ctx, params))
+    }
+    fn refresh_inlay_hints(&self, ctx: &Context) -> Result<(), Error> {
+        self.with(Ok(()), |s| s.refresh_inlay_hints(ctx))
+    }
+    fn refresh_code_lens(&self, ctx: &Context) -> Result<(), Error> {
+        self.with(Ok(()), |s| s.refresh_code_lens(ctx))
+    }
+    fn progress_start(
+        &self,
+        message: &'static tsrs_diagnostics::Message,
+        args: &[&dyn std::fmt::Display],
+    ) {
+        self.with((), |s| s.progress_start(message, args));
+    }
+    fn progress_finish(
+        &self,
+        message: &'static tsrs_diagnostics::Message,
+        args: &[&dyn std::fmt::Display],
+    ) {
+        self.with((), |s| s.progress_finish(message, args));
+    }
+    fn send_telemetry(
+        &self,
+        ctx: &Context,
+        telemetry: lsproto::TelemetryEvent,
+    ) -> Result<(), Error> {
+        self.with(Ok(()), |s| s.send_telemetry(ctx, telemetry))
+    }
+    fn is_active(&self) -> bool {
+        self.with(false, Server::is_active)
+    }
+    fn set_locale(&self, locale: &str) {
+        self.with((), |s| s.set_locale(locale));
+    }
+    fn get_locale(&self) -> Locale {
+        self.with(Locale::DEFAULT, Server::get_locale)
+    }
+}
+
+impl project::NpmExecutor for SessionClient {
+    fn npm_install(&self, cwd: &str, args: &[String]) -> Result<Vec<u8>, String> {
+        self.with(Err("the language server is closed".to_string()), |s| {
+            project::NpmExecutor::npm_install(s, cwd, args)
+        })
     }
 }
 
@@ -4402,7 +4541,7 @@ fn go_type_name(v: &lsproto::Value) -> &'static str {
 }
 
 // Go `time.Duration.String()`.
-pub fn go_duration_string(d: Duration) -> String {
+fn go_duration_string(d: Duration) -> String {
     fn frac(v: u64, prec: u32) -> String {
         let pow = 10u64.pow(prec);
         let int = v / pow;

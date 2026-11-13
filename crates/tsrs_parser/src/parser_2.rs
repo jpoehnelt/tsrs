@@ -41,7 +41,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_import_specifier(&mut self) -> P<Node> {
+    fn parse_import_specifier(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let (is_type_only, property_name, name) =
             self.parse_import_or_export_specifier(Kind::ImportSpecifier);
@@ -62,10 +62,7 @@ impl Parser {
         self.check_js_syntax(node)
     }
 
-    pub(crate) fn parse_import_or_export_specifier(
-        &mut self,
-        kind: Kind,
-    ) -> (bool, Option<P<Node>>, P<Node>) {
+    fn parse_import_or_export_specifier(&mut self, kind: Kind) -> (bool, Option<P<Node>>, P<Node>) {
         // ImportSpecifier:
         //   BindingIdentifier
         //   ModuleExportName as BindingIdentifier
@@ -139,11 +136,11 @@ impl Parser {
         (is_type_only, property_name, name)
     }
 
-    pub(crate) fn can_parse_module_export_name(&self) -> bool {
+    fn can_parse_module_export_name(&self) -> bool {
         token_is_identifier_or_keyword(self.token) || self.token == Kind::StringLiteral
     }
 
-    pub(crate) fn parse_module_export_name(&mut self, disallow_keywords: bool) -> (P<Node>, bool) {
+    fn parse_module_export_name(&mut self, disallow_keywords: bool) -> (P<Node>, bool) {
         let mut name_ok = true;
 
         if self.token == Kind::StringLiteral {
@@ -280,13 +277,13 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_namespace_export(&mut self, pos: u32) -> P<Node> {
+    fn parse_namespace_export(&mut self, pos: u32) -> P<Node> {
         let (export_name, _) = self.parse_module_export_name(false /*disallowKeywords*/);
         let node = self.factory.new_namespace_export(export_name);
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_named_exports(&mut self) -> P<Node> {
+    fn parse_named_exports(&mut self) -> P<Node> {
         let pos = self.node_pos();
         // NamedImports:
         //  { }
@@ -304,7 +301,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_export_specifier(&mut self) -> P<Node> {
+    fn parse_export_specifier(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         let (is_type_only, property_name, name) =
@@ -367,14 +364,14 @@ impl Parser {
         type_node
     }
 
-    pub(crate) fn parse_union_type_or_higher(&mut self) -> P<Node> {
+    fn parse_union_type_or_higher(&mut self) -> P<Node> {
         self.parse_union_or_intersection_type(
             Kind::BarToken,
             Parser::parse_intersection_type_or_higher,
         )
     }
 
-    pub(crate) fn parse_intersection_type_or_higher(&mut self) -> P<Node> {
+    fn parse_intersection_type_or_higher(&mut self) -> P<Node> {
         self.parse_union_or_intersection_type(
             Kind::AmpersandToken,
             Parser::parse_type_operator_or_higher,
@@ -382,7 +379,7 @@ impl Parser {
     }
 
     // Specialize the two constituent parsers so type parsing does not dispatch through a function pointer.
-    pub(crate) fn parse_union_or_intersection_type(
+    fn parse_union_or_intersection_type(
         &mut self,
         operator: Kind,
         parse_constituent_type: impl Fn(&mut Parser) -> P<Node> + Copy,
@@ -415,7 +412,7 @@ impl Parser {
         type_node
     }
 
-    pub(crate) fn create_union_or_intersection_type_node(
+    fn create_union_or_intersection_type_node(
         &self,
         operator: Kind,
         types: P<NodeList>,
@@ -427,7 +424,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_type_operator_or_higher(&mut self) -> P<Node> {
+    fn parse_type_operator_or_higher(&mut self) -> P<Node> {
         let operator = self.token;
         match operator {
             Kind::KeyOfKeyword | Kind::UniqueKeyword | Kind::ReadonlyKeyword => {
@@ -445,7 +442,7 @@ impl Parser {
         )
     }
 
-    pub(crate) fn parse_type_operator(&mut self, operator: Kind) -> P<Node> {
+    fn parse_type_operator(&mut self, operator: Kind) -> P<Node> {
         let pos = self.node_pos();
         self.parse_expected(operator);
         let type_ = self.parse_type_operator_or_higher();
@@ -453,7 +450,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_infer_type(&mut self) -> P<Node> {
+    fn parse_infer_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.parse_expected(Kind::InferKeyword);
         let type_parameter = self.parse_type_parameter_of_infer_type();
@@ -461,7 +458,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_type_parameter_of_infer_type(&mut self) -> P<Node> {
+    fn parse_type_parameter_of_infer_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let name = self.parse_identifier();
         let constraint = self.try_parse_constraint_of_infer_type();
@@ -473,7 +470,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn try_parse_constraint_of_infer_type(&mut self) -> Option<P<Node>> {
+    fn try_parse_constraint_of_infer_type(&mut self) -> Option<P<Node>> {
         let state = self.mark();
         if self.parse_optional(Kind::ExtendsKeyword) {
             let constraint = self.do_in_context(
@@ -489,7 +486,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn parse_postfix_type_or_higher(&mut self) -> P<Node> {
+    fn parse_postfix_type_or_higher(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let mut type_node = self.parse_non_array_type();
         while !self.has_preceding_line_break() {
@@ -527,12 +524,12 @@ impl Parser {
         type_node
     }
 
-    pub(crate) fn next_is_start_of_type(&mut self) -> bool {
+    fn next_is_start_of_type(&mut self) -> bool {
         self.next_token();
         self.is_start_of_type(false /*inStartOfParameter*/)
     }
 
-    pub(crate) fn parse_non_array_type(&mut self) -> P<Node> {
+    fn parse_non_array_type(&mut self) -> P<Node> {
         match self.token {
             Kind::FunctionKeyword
                 if self.opts.editor_legacy_jsdoc_function_types
@@ -715,14 +712,14 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn parse_this_type_node(&mut self) -> P<Node> {
+    fn parse_this_type_node(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.next_token();
         let node = self.factory.new_this_type_node();
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_this_type_predicate(&mut self, lhs: P<Node>) -> P<Node> {
+    fn parse_this_type_predicate(&mut self, lhs: P<Node>) -> P<Node> {
         self.next_token();
         let type_ = self.parse_type();
         let node =
@@ -730,14 +727,14 @@ impl Parser {
         self.finish_node(node, lhs.pos().expect_source("parsed nodes have source positions"))
     }
 
-    pub(crate) fn parse_jsdoc_all_type(&mut self) -> P<Node> {
+    fn parse_jsdoc_all_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.next_token();
         let node = self.factory.new_jsdoc_all_type();
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_jsdoc_non_nullable_type(&mut self) -> P<Node> {
+    fn parse_jsdoc_non_nullable_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.next_token();
         let type_ = self.parse_type_operator_or_higher();
@@ -745,7 +742,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_jsdoc_nullable_type(&mut self) -> P<Node> {
+    fn parse_jsdoc_nullable_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         // skip the ?
         self.next_token();
@@ -777,7 +774,7 @@ impl Parser {
         t
     }
 
-    pub(crate) fn parse_literal_type_node(&mut self, negative: bool) -> P<Node> {
+    fn parse_literal_type_node(&mut self, negative: bool) -> P<Node> {
         let pos = self.node_pos();
         if negative {
             self.next_token();
@@ -799,7 +796,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_type_reference(&mut self) -> P<Node> {
+    fn parse_type_reference(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let type_name = self.parse_entity_name_of_type_reference();
         let type_arguments = self.parse_type_arguments_of_type_reference();
@@ -807,7 +804,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_entity_name_of_type_reference(&mut self) -> P<Node> {
+    fn parse_entity_name_of_type_reference(&mut self) -> P<Node> {
         self.parse_entity_name(
             true,  /*allowReservedWords*/
             false, /*allowPrivateName*/
@@ -960,7 +957,7 @@ impl Parser {
         self.token
     }
 
-    pub(crate) fn parse_type_arguments_of_type_reference(&mut self) -> Option<P<NodeList>> {
+    fn parse_type_arguments_of_type_reference(&mut self) -> Option<P<NodeList>> {
         if !self.has_preceding_line_break() && self.re_scan_less_than_token() == Kind::LessThanToken
         {
             return self.parse_type_arguments();
@@ -980,12 +977,12 @@ impl Parser {
         None
     }
 
-    pub(crate) fn next_is_start_of_type_of_import_type(&mut self) -> bool {
+    fn next_is_start_of_type_of_import_type(&mut self) -> bool {
         self.next_token();
         self.token == Kind::ImportKeyword
     }
 
-    pub(crate) fn parse_import_type(&mut self) -> P<Node> {
+    fn parse_import_type(&mut self) -> P<Node> {
         self.source_flags |= NodeFlags::PossiblyContainsDynamicImport;
         let pos = self.node_pos();
         let is_type_of = self.parse_optional(Kind::TypeOfKeyword);
@@ -1043,7 +1040,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_import_attribute(&mut self) -> P<Node> {
+    fn parse_import_attribute(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let mut name: Option<P<Node>> = None;
         if token_is_identifier_or_keyword(self.token) {
@@ -1064,7 +1061,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_import_attributes(&mut self, token: Kind, skip_keyword: bool) -> P<Node> {
+    fn parse_import_attributes(&mut self, token: Kind, skip_keyword: bool) -> P<Node> {
         let pos = self.node_pos();
         if !skip_keyword {
             self.parse_expected(token);
@@ -1097,7 +1094,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_type_query(&mut self) -> P<Node> {
+    fn parse_type_query(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.parse_expected(Kind::TypeOfKeyword);
         let entity_name = self.parse_entity_name(
@@ -1114,7 +1111,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn next_is_start_of_mapped_type(&mut self) -> bool {
+    fn next_is_start_of_mapped_type(&mut self) -> bool {
         self.next_token();
         if self.token == Kind::PlusToken || self.token == Kind::MinusToken {
             return self.next_token() == Kind::ReadonlyKeyword;
@@ -1127,7 +1124,7 @@ impl Parser {
             && self.next_token() == Kind::InKeyword
     }
 
-    pub(crate) fn parse_mapped_type(&mut self) -> P<Node> {
+    fn parse_mapped_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.parse_expected(Kind::OpenBraceToken);
         let mut readonly_token: Option<P<Node>> = None; // ReadonlyKeyword | PlusToken | MinusToken
@@ -1174,7 +1171,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_mapped_type_parameter(&mut self) -> P<Node> {
+    fn parse_mapped_type_parameter(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let name = self.parse_identifier_name();
         self.parse_expected(Kind::InKeyword);
@@ -1230,7 +1227,7 @@ impl Parser {
         self.token == Kind::OpenParenToken || self.token == Kind::LessThanToken
     }
 
-    pub(crate) fn parse_signature_member(&mut self, kind: Kind) -> P<Node> {
+    fn parse_signature_member(&mut self, kind: Kind) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         if kind == Kind::ConstructSignature {
@@ -1271,7 +1268,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn parse_type_parameter(&mut self) -> P<Node> {
+    fn parse_type_parameter(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let modifiers = self.parse_modifiers_ex(
             false, /*allowDecorators*/
@@ -1373,11 +1370,11 @@ impl Parser {
         parameters
     }
 
-    pub(crate) fn parse_parameter(&mut self) -> P<Node> {
+    fn parse_parameter(&mut self) -> P<Node> {
         self.parse_parameter_ex(false /*inOuterAwaitContext*/, true /*allowAmbiguity*/).unwrap()
     }
 
-    pub(crate) fn parse_parameter_ex(
+    fn parse_parameter_ex(
         &mut self,
         in_outer_await_context: bool,
         allow_ambiguity: bool,
@@ -1438,7 +1435,7 @@ impl Parser {
         Some(result)
     }
 
-    pub(crate) fn is_parameter_name_start(&self) -> bool {
+    fn is_parameter_name_start(&self) -> bool {
         // Be permissive about await and yield by calling isBindingIdentifier instead of isIdentifier; disallowing
         // them during a speculative parse leads to many more follow-on errors than allowing the function to parse then later
         // complaining about the use of the keywords.
@@ -1447,10 +1444,7 @@ impl Parser {
             || self.token == Kind::OpenBraceToken
     }
 
-    pub(crate) fn parse_name_of_parameter(
-        &mut self,
-        modifiers: Option<P<ModifierList>>,
-    ) -> P<Node> {
+    fn parse_name_of_parameter(&mut self, modifiers: Option<P<ModifierList>>) -> P<Node> {
         // FormalParameter [Yield,Await]:
         //      BindingElement[?Yield,?Await]
         let name = self.parse_identifier_or_pattern_with_diagnostic(Some(
@@ -1485,7 +1479,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn should_parse_return_type(&mut self, return_token: Kind, is_type: bool) -> bool {
+    fn should_parse_return_type(&mut self, return_token: Kind, is_type: bool) -> bool {
         if return_token == Kind::EqualsGreaterThanToken {
             self.parse_expected(return_token);
             return true;
@@ -1503,7 +1497,7 @@ impl Parser {
         false
     }
 
-    pub(crate) fn parse_type_or_type_predicate(&mut self) -> P<Node> {
+    fn parse_type_or_type_predicate(&mut self) -> P<Node> {
         if self.is_identifier() {
             let state = self.mark();
             let pos = self.node_pos();
@@ -1523,7 +1517,7 @@ impl Parser {
         self.parse_type()
     }
 
-    pub(crate) fn parse_type_member_semicolon(&mut self) {
+    fn parse_type_member_semicolon(&mut self) {
         // We allow type members to be separated by commas or (possibly ASI) semicolons.
         // First check if it was a comma.  If so, we're done with the member.
         if self.parse_optional(Kind::CommaToken) {
@@ -1584,10 +1578,7 @@ impl Parser {
         prop
     }
 
-    pub(crate) fn parse_property_name_worker(
-        &mut self,
-        allow_computed_property_names: bool,
-    ) -> P<Node> {
+    fn parse_property_name_worker(&mut self, allow_computed_property_names: bool) -> P<Node> {
         if self.token == Kind::StringLiteral
             || self.token == Kind::NumericLiteral
             || self.token == Kind::BigIntLiteral
@@ -1603,7 +1594,7 @@ impl Parser {
         self.parse_identifier_name()
     }
 
-    pub(crate) fn parse_computed_property_name(&mut self) -> P<Node> {
+    fn parse_computed_property_name(&mut self) -> P<Node> {
         // PropertyName [Yield]:
         //      LiteralPropertyName
         //      ComputedPropertyName[?Yield]
@@ -1660,7 +1651,7 @@ impl Parser {
             && self.look_ahead(Parser::next_is_unambiguously_index_signature)
     }
 
-    pub(crate) fn next_is_unambiguously_index_signature(&mut self) -> bool {
+    fn next_is_unambiguously_index_signature(&mut self) -> bool {
         // The only allowed sequence is:
         //
         //   [id:
@@ -1734,7 +1725,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_property_or_method_signature(
+    fn parse_property_or_method_signature(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -1798,7 +1789,7 @@ impl Parser {
         self.create_missing_list()
     }
 
-    pub(crate) fn parse_tuple_type(&mut self) -> P<Node> {
+    fn parse_tuple_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let elements = self
             .parse_bracketed_list(
@@ -1812,7 +1803,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_tuple_element_name_or_tuple_element_type(&mut self) -> P<Node> {
+    fn parse_tuple_element_name_or_tuple_element_type(&mut self) -> P<Node> {
         if self.look_ahead(Parser::scan_start_of_named_tuple_element) {
             let pos = self.node_pos();
             let jsdoc = self.jsdoc_scanner_info();
@@ -1834,7 +1825,7 @@ impl Parser {
         self.parse_tuple_element_type()
     }
 
-    pub(crate) fn scan_start_of_named_tuple_element(&mut self) -> bool {
+    fn scan_start_of_named_tuple_element(&mut self) -> bool {
         if self.token == Kind::DotDotDotToken {
             return token_is_identifier_or_keyword(self.next_token())
                 && self.next_token_is_colon_or_question_colon();
@@ -1842,12 +1833,12 @@ impl Parser {
         token_is_identifier_or_keyword(self.token) && self.next_token_is_colon_or_question_colon()
     }
 
-    pub(crate) fn next_token_is_colon_or_question_colon(&mut self) -> bool {
+    fn next_token_is_colon_or_question_colon(&mut self) -> bool {
         self.next_token() == Kind::ColonToken
             || self.token == Kind::QuestionToken && self.next_token() == Kind::ColonToken
     }
 
-    pub(crate) fn parse_tuple_element_type(&mut self) -> P<Node> {
+    fn parse_tuple_element_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         if self.parse_optional(Kind::DotDotDotToken) {
             let type_ = self.parse_type();
@@ -1868,7 +1859,7 @@ impl Parser {
         type_node
     }
 
-    pub(crate) fn parse_parenthesized_type(&mut self) -> P<Node> {
+    fn parse_parenthesized_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.parse_expected(Kind::OpenParenToken);
         let type_node = self.parse_type();
@@ -1877,7 +1868,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_asserts_type_predicate(&mut self) -> P<Node> {
+    fn parse_asserts_type_predicate(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let asserts_modifier = self.parse_expected_token(Kind::AssertsKeyword);
 
@@ -1895,7 +1886,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_template_type(&mut self) -> P<Node> {
+    fn parse_template_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let head = self.parse_template_head(false /*isTaggedTemplate*/);
         let spans = self.parse_template_type_spans();
@@ -1915,7 +1906,7 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn get_template_literal_raw_text(&self, end_length: usize) -> &'static str {
+    fn get_template_literal_raw_text(&self, end_length: usize) -> &'static str {
         let mut end_length = end_length;
         let token_text = self.scanner.token_text();
         if self.scanner.token_flags().intersects(TokenFlags::Unterminated) {
@@ -1924,7 +1915,7 @@ impl Parser {
         &token_text[1..token_text.len() - end_length]
     }
 
-    pub(crate) fn parse_template_type_spans(&mut self) -> P<NodeList> {
+    fn parse_template_type_spans(&mut self) -> P<NodeList> {
         let pos = self.node_pos();
         let start = self.node_stack.len();
         loop {
@@ -1938,7 +1929,7 @@ impl Parser {
         self.finish_node_list(start, TextRange::new(pos, end))
     }
 
-    pub(crate) fn parse_template_type_span(&mut self) -> P<Node> {
+    fn parse_template_type_span(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let type_ = self.parse_type();
         let literal = self.parse_literal_of_template_span(false /*isTaggedTemplate*/);
@@ -1960,7 +1951,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_template_middle_or_tail(&mut self) -> P<Node> {
+    fn parse_template_middle_or_tail(&mut self) -> P<Node> {
         let pos = self.node_pos();
 
         let result = if self.token == Kind::TemplateMiddle {
@@ -1976,7 +1967,7 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn parse_function_or_constructor_type_to_error(
+    fn parse_function_or_constructor_type_to_error(
         &mut self,
         is_in_union_type: bool,
         parse_constituent_type: impl Fn(&mut Parser) -> P<Node> + Copy,
@@ -2006,7 +1997,7 @@ impl Parser {
         parse_constituent_type(self)
     }
 
-    pub(crate) fn is_start_of_function_type_or_constructor_type(&mut self) -> bool {
+    fn is_start_of_function_type_or_constructor_type(&mut self) -> bool {
         self.token == Kind::LessThanToken
             || self.token == Kind::OpenParenToken
                 && self.look_ahead(Parser::next_is_unambiguously_start_of_function_type)
@@ -2015,7 +2006,7 @@ impl Parser {
                 && self.look_ahead(Parser::next_token_is_new_keyword)
     }
 
-    pub(crate) fn parse_function_or_constructor_type(&mut self) -> P<Node> {
+    fn parse_function_or_constructor_type(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         let modifiers = self.parse_modifiers_for_constructor_type();
@@ -2044,7 +2035,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_modifiers_for_constructor_type(&mut self) -> Option<P<ModifierList>> {
+    fn parse_modifiers_for_constructor_type(&mut self) -> Option<P<ModifierList>> {
         if self.token == Kind::AbstractKeyword {
             let pos = self.node_pos();
             let modifier = self.factory.new_modifier(self.token);
@@ -2055,11 +2046,11 @@ impl Parser {
         None
     }
 
-    pub(crate) fn next_token_is_new_keyword(&mut self) -> bool {
+    fn next_token_is_new_keyword(&mut self) -> bool {
         self.next_token() == Kind::NewKeyword
     }
 
-    pub(crate) fn next_is_unambiguously_start_of_function_type(&mut self) -> bool {
+    fn next_is_unambiguously_start_of_function_type(&mut self) -> bool {
         self.next_token();
         if self.token == Kind::CloseParenToken || self.token == Kind::DotDotDotToken {
             // ( )
@@ -2090,7 +2081,7 @@ impl Parser {
         false
     }
 
-    pub(crate) fn skip_parameter_start(&mut self) -> bool {
+    fn skip_parameter_start(&mut self) -> bool {
         if ast::is_modifier_kind(self.token) {
             // Skip modifiers
             self.parse_modifiers();
@@ -2183,7 +2174,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn parse_decorator(&mut self) -> P<Node> {
+    fn parse_decorator(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.parse_expected(Kind::AtToken);
         let expression = self.do_in_context(
@@ -2195,7 +2186,7 @@ impl Parser {
         self.finish_node(node, pos)
     }
 
-    pub(crate) fn parse_decorator_expression(&mut self) -> P<Node> {
+    fn parse_decorator_expression(&mut self) -> P<Node> {
         if self.in_await_context() && self.token == Kind::AwaitKeyword {
             // `@await` is disallowed in an [Await] context, but can cause parsing to go off the rails
             // This simply parses the missing identifier and moves on.
@@ -2213,7 +2204,7 @@ impl Parser {
         self.parse_left_hand_side_expression_or_higher()
     }
 
-    pub(crate) fn try_parse_modifier(
+    fn try_parse_modifier(
         &mut self,
         has_seen_static_modifier: bool,
         permit_const_as_modifier: bool,
@@ -2259,7 +2250,7 @@ impl Parser {
         false
     }
 
-    pub(crate) fn parse_any_contextual_modifier(&mut self) -> bool {
+    fn parse_any_contextual_modifier(&mut self) -> bool {
         // Not a modifier: Go marks and rewinds an unchanged state (a no-op) before returning false.
         if !ast::is_modifier_kind(self.token) {
             return false;
@@ -2272,7 +2263,7 @@ impl Parser {
         false
     }
 
-    pub(crate) fn next_token_can_follow_modifier(&mut self) -> bool {
+    fn next_token_can_follow_modifier(&mut self) -> bool {
         match self.token {
             Kind::ConstKeyword => {
                 // 'const' is only a modifier if followed by 'enum'.
@@ -2301,7 +2292,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn next_token_can_follow_default_keyword(&mut self) -> bool {
+    fn next_token_can_follow_default_keyword(&mut self) -> bool {
         match self.next_token() {
             Kind::ClassKeyword | Kind::FunctionKeyword | Kind::InterfaceKeyword | Kind::AtToken => {
                 true
@@ -2336,7 +2327,7 @@ impl Parser {
             && !self.has_preceding_line_break()
     }
 
-    pub(crate) fn next_token_is_class_keyword_on_same_line(&mut self) -> bool {
+    fn next_token_is_class_keyword_on_same_line(&mut self) -> bool {
         self.next_token() == Kind::ClassKeyword && !self.has_preceding_line_break()
     }
 
@@ -2344,12 +2335,12 @@ impl Parser {
         self.next_token() == Kind::FunctionKeyword && !self.has_preceding_line_break()
     }
 
-    pub(crate) fn next_token_can_follow_export_modifier(&mut self) -> bool {
+    fn next_token_can_follow_export_modifier(&mut self) -> bool {
         self.next_token();
         self.can_follow_export_modifier()
     }
 
-    pub(crate) fn can_follow_export_modifier(&self) -> bool {
+    fn can_follow_export_modifier(&self) -> bool {
         self.token == Kind::AtToken
             || self.token != Kind::AsteriskToken
                 && self.token != Kind::AsKeyword
@@ -2357,7 +2348,7 @@ impl Parser {
                 && self.can_follow_modifier()
     }
 
-    pub(crate) fn can_follow_modifier(&self) -> bool {
+    fn can_follow_modifier(&self) -> bool {
         self.token == Kind::OpenBracketToken
             || self.token == Kind::OpenBraceToken
             || self.token == Kind::AsteriskToken
@@ -2365,11 +2356,11 @@ impl Parser {
             || self.is_literal_property_name()
     }
 
-    pub(crate) fn can_follow_get_or_set_keyword(&self) -> bool {
+    fn can_follow_get_or_set_keyword(&self) -> bool {
         self.token == Kind::OpenBracketToken || self.is_literal_property_name()
     }
 
-    pub(crate) fn next_token_is_on_same_line_and_can_follow_modifier(&mut self) -> bool {
+    fn next_token_is_on_same_line_and_can_follow_modifier(&mut self) -> bool {
         self.next_token();
         if self.has_preceding_line_break() {
             return false;

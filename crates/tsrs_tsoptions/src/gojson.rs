@@ -185,6 +185,23 @@ impl GoJson for Option<OrderedMap<String, Option<Vec<String>>>> {
     }
 }
 
+impl GoJson for Option<std::sync::Arc<OrderedMap<String, Option<Vec<String>>>>> {
+    fn to_go_json(&self) -> Option<Value> {
+        self.as_ref().map(|m| {
+            let mut o = JsonMap::new();
+            // encoding/json/v2 marshals a nil slice as `[]` (and unmarshals `null` to nil).
+            o.extend(
+                m.iter().map(|(k, v)| (k.clone(), strings_to(v.as_deref().unwrap_or_default()))),
+            );
+            Value::Object(o)
+        })
+    }
+    fn from_go_json(value: &Value, field: &str) -> Result<Self, String> {
+        Option::<OrderedMap<String, Option<Vec<String>>>>::from_go_json(value, field)
+            .map(|m| m.map(std::sync::Arc::new))
+    }
+}
+
 impl GoJson for Option<Vec<PluginImport>> {
     fn to_go_json(&self) -> Option<Value> {
         self.as_ref().map(|v| {
@@ -305,7 +322,10 @@ pub fn compiler_options_to_go_json(options: &CompilerOptions) -> Value {
     clippy::option_option,
     reason = "Distinguishes no matching serializer or field from a matching nil value, as in Go."
 )]
-pub fn compiler_option_to_go_json(options: &CompilerOptions, name: &str) -> Option<Option<Value>> {
+pub(crate) fn compiler_option_to_go_json(
+    options: &CompilerOptions,
+    name: &str,
+) -> Option<Option<Value>> {
     let unknown = |json: &str| {
         options
             .api_unknown_enum_values
@@ -437,31 +457,4 @@ pub fn project_reference_from_go_json(value: &Value) -> Result<ProjectReference,
         )?,
         circular: bool::from_go_json(o.get("circular").unwrap_or(&null), "circular")?,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // A `paths` substitution that is not an array parses to Go's nil slice (TS5063, program.go:1153), which Go's
-    // encoding/json/v2 still marshals as `[]`; `null` unmarshals back to nil.
-    #[test]
-    fn nil_paths_substitutions_round_trip_like_go() {
-        let mut paths = OrderedMap::default();
-        paths.insert("@nil/*".to_string(), None);
-        paths.insert("@empty/*".to_string(), Some(Vec::new()));
-        let options = CompilerOptions { paths: Some(paths), ..Default::default() };
-        assert_eq!(
-            tsrs_core::json::marshal(&compiler_options_to_go_json(&options)).unwrap(),
-            r#"{"paths":{"@nil/*":[],"@empty/*":[]}}"#
-        );
-
-        let back = compiler_options_from_go_json(
-            &tsrs_core::json::unmarshal(r#"{"paths":{"@n/*":null,"@e/*":[]}}"#).unwrap(),
-        )
-        .unwrap();
-        let paths = back.paths.unwrap();
-        assert_eq!(paths.get("@n/*"), Some(&None));
-        assert_eq!(paths.get("@e/*"), Some(&Some(Vec::new())));
-    }
 }

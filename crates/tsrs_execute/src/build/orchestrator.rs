@@ -105,8 +105,8 @@ pub struct Orchestrator {
     pub(crate) content_mapper_host: Mutex<Option<Arc<dyn tsrs_contentmapper::Host>>>,
 
     // order generation result
-    tasks: Mutex<FxHashMap<Path, P<BuildTask>>>,
-    order: Mutex<Vec<String>>,
+    pub tasks: Mutex<FxHashMap<Path, P<BuildTask>>>,
+    pub order: Mutex<Vec<String>>,
     errors: Mutex<Vec<P<Diagnostic>>>,
     graph_generated: AtomicBool,
     // Set when a builder thread panicked (see range_tasks).
@@ -149,7 +149,7 @@ impl Orchestrator {
     }
 
     // orchestrator.go:98
-    pub(crate) fn to_path(&self, file_name: &str) -> Path {
+    pub fn to_path(&self, file_name: &str) -> Path {
         tspath::to_path(
             file_name,
             &self.compare_paths_options.current_directory,
@@ -163,12 +163,12 @@ impl Orchestrator {
     }
 
     // ScheduleOrder is the order in which builders pick up projects: Order() stably sorted by dependency depth.
-    pub fn schedule_order(&self) -> Vec<String> {
+    fn schedule_order(&self) -> Vec<String> {
         self.schedule_order.lock().unwrap().clone()
     }
 
     // orchestrator.go:131
-    fn compute_schedule_order(&self, order: &[String]) -> Vec<String> {
+    pub fn compute_schedule_order(&self, order: &[String]) -> Vec<String> {
         let mut entries: Vec<(String, usize)> = Vec::with_capacity(order.len());
         let mut depths: FxHashMap<P<BuildTask>, usize> = FxHashMap::default();
         for config in order {
@@ -188,11 +188,6 @@ impl Orchestrator {
 
     // orchestrator.go:155
     // Only Go tests call it (graph_test.go), and those are not ported.
-    pub fn upstream(&self, config_name: &str) -> Vec<String> {
-        let task = self.get_task(&self.to_path(config_name));
-        let upstream = task.up_stream.lock().unwrap();
-        upstream.iter().map(|t| t.task.config.clone()).collect()
-    }
 
     // orchestrator.go:171
     pub(crate) fn get_task(&self, path: &Path) -> P<BuildTask> {
@@ -299,7 +294,7 @@ impl Orchestrator {
     }
 
     // orchestrator.go:265
-    pub fn generate_graph(&self) {
+    fn generate_graph(&self) {
         self.generate_graph_with(None);
     }
 
@@ -362,7 +357,7 @@ impl Orchestrator {
             task.reset_status();
             task.reset_config(self, &path);
         }
-        *self.host().m_times.lock().unwrap() = Arc::new(Mutex::new(FxHashMap::default()));
+        *self.host().m_times.write().unwrap() = Arc::default();
         self.reset_caches();
     }
 
@@ -377,7 +372,7 @@ impl Orchestrator {
 
     // tsc -b entrypoint
     // orchestrator.go:295
-    pub fn start(&'static self) -> CommandLineResult {
+    pub(crate) fn start(&'static self) -> CommandLineResult {
         if self.frees_built_programs() {
             // The declaration and JSON files every project shares go to regions of their own (`host::get_source_file`),
             // bound there, so that freeing a project's program does not take their binder data with it.
@@ -738,7 +733,7 @@ impl Orchestrator {
     }
 
     // orchestrator.go:925
-    fn range_tasks(&'static self, order: &[String], f: &(dyn Fn(&Path, P<BuildTask>) + Sync)) {
+    pub fn range_tasks(&'static self, order: &[String], f: &(dyn Fn(&Path, P<BuildTask>) + Sync)) {
         let mut num_routines = 4;
         if self.api_mode.load(Ordering::SeqCst) {
             // API builds: one task region is entered at a time. Concurrent tasks could each wait to enter the
@@ -820,6 +815,11 @@ impl Orchestrator {
             task.clean_project(self, path);
         } else {
             task.get().build_project(self, path);
+            if self.opts.testing.is_none() && self.frees_built_programs() {
+                // The error summary outlives the program; replace file references with lightweight copies so the
+                // program's loader regions can be dropped without invalidating the retained diagnostics.
+                task.detach_diagnostic_files();
+            }
         }
         if self.opts.testing.is_none() {
             // The program is only needed by Testing.OnProgram at report time; drop it now so a task
@@ -1050,10 +1050,7 @@ impl Orchestrator {
 
     // orchestrator.go:498
     fn update_watch(&self) {
-        let old_cache = std::mem::replace(
-            &mut *self.host().m_times.lock().unwrap(),
-            Arc::new(Mutex::new(FxHashMap::default())),
-        );
+        let old_cache = std::mem::take(&mut *self.host().m_times.write().unwrap());
         let order = self.order.lock().unwrap().clone();
         for config in order {
             self.get_task(&self.to_path(&config)).update_watch(self, &old_cache);
@@ -1061,7 +1058,7 @@ impl Orchestrator {
     }
 
     // orchestrator.go:816 DoCycle
-    pub fn do_cycle(&'static self) {
+    fn do_cycle(&'static self) {
         let mut state = self.wm.lock();
         let (mut changed_paths, overflow) = self.wm.drain_events();
         // tsrs-only: whatever the cached file system holds predates the events (`get_watch_source_file` reuses a file
@@ -1563,7 +1560,7 @@ impl Orchestrator {
     }
 
     // orchestrator.go:906
-    pub(crate) fn get_writer(&self, task: Option<P<BuildTask>>) -> Writer<'static> {
+    fn get_writer(&self, task: Option<P<BuildTask>>) -> Writer<'static> {
         let sys = self.opts.sys;
         match task {
             None => std::sync::Arc::new(move |t: &str| sys.write(t)),
@@ -1578,7 +1575,7 @@ impl Orchestrator {
     }
 
     // orchestrator.go:913
-    pub(crate) fn create_builder_status_reporter(
+    fn create_builder_status_reporter(
         &self,
         task: Option<P<BuildTask>>,
     ) -> DiagnosticReporter<'static> {
@@ -1591,7 +1588,7 @@ impl Orchestrator {
     }
 
     // orchestrator.go:917
-    pub(crate) fn create_diagnostic_reporter(
+    fn create_diagnostic_reporter(
         &self,
         task: Option<P<BuildTask>>,
     ) -> DiagnosticReporter<'static> {
@@ -1757,75 +1754,11 @@ pub fn new_orchestrator(opts: Options) -> &'static Orchestrator {
         source_files: ParseCache::default(),
         config_times: Mutex::new(FxHashMap::default()),
         resolved_references: ParseCache::default(),
-        m_times: Mutex::new(Arc::new(Mutex::new(FxHashMap::default()))),
+        m_times: std::sync::RwLock::new(Arc::default()),
         watch_source_files: watch.then(|| Mutex::new(FxHashMap::default())),
         watch_file_regions: crate::watchmem::FileRegions::default(),
     }));
     let _ = h.orchestrator.set(orchestrator);
     let _ = orchestrator.host.set(h);
     orchestrator
-}
-
-#[cfg(test)]
-mod scheduling_tests {
-    use super::*;
-    use crate::build::buildtask::UpstreamTask;
-
-    #[test]
-    fn schedules_full_selected_and_references_only_graphs_by_dependency_depth() {
-        let sys: &'static dyn System = Box::leak(Box::new(crate::sys::new_system()));
-        let host = crate::execute::parse_config_host(sys);
-        let command = P::new(tsrs_tsoptions::parse_build_command_line(
-            &["--build".into(), "--builders".into(), "1".into()],
-            host,
-        ));
-        let orchestrator = new_orchestrator(Options { sys, command, testing: None });
-
-        let names = ["Leaf", "Middle", "Independent", "Root", "Other"];
-        let mut tasks = FxHashMap::default();
-        for name in names {
-            let config = format!("/project/{name}/tsconfig.json");
-            let task = P::new(BuildTask::new(config.clone(), true));
-            orchestrator.tasks.lock().unwrap().insert(orchestrator.to_path(&config), task);
-            tasks.insert(name, task);
-            orchestrator.order.lock().unwrap().push(config);
-        }
-        tasks["Middle"]
-            .up_stream
-            .lock()
-            .unwrap()
-            .push(UpstreamTask { task: tasks["Leaf"], ref_index: 0 });
-        tasks["Root"].up_stream.lock().unwrap().extend([
-            UpstreamTask { task: tasks["Middle"], ref_index: 0 },
-            UpstreamTask { task: tasks["Independent"], ref_index: 1 },
-        ]);
-
-        let full = orchestrator.order();
-        let selected = full[..4].to_vec();
-        let references = full[..3].to_vec();
-        let project_names = |order: Vec<String>| -> Vec<String> {
-            order.iter().map(|config| config.split('/').nth(2).unwrap().to_string()).collect()
-        };
-        assert_eq!(
-            project_names(orchestrator.compute_schedule_order(&full)),
-            ["Leaf", "Independent", "Other", "Middle", "Root"]
-        );
-        assert_eq!(
-            project_names(orchestrator.compute_schedule_order(&selected)),
-            ["Leaf", "Independent", "Middle", "Root"]
-        );
-        let schedule = orchestrator.compute_schedule_order(&references);
-        assert_eq!(project_names(schedule.clone()), ["Leaf", "Independent", "Middle"]);
-
-        // A single builder takes exactly the selected projects in their computed order.
-        let dispatched = Mutex::new(Vec::new());
-        orchestrator.range_tasks(&schedule, &|_, task| {
-            dispatched.lock().unwrap().push(task.config.clone());
-        });
-        assert_eq!(
-            project_names(dispatched.into_inner().unwrap()),
-            ["Leaf", "Independent", "Middle"]
-        );
-        assert_eq!(project_names(orchestrator.order()), names);
-    }
 }

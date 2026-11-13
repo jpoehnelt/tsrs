@@ -14,11 +14,7 @@ impl Checker {
     }
 
     // services.go:21
-    pub(crate) fn get_symbols_in_scope(
-        &mut self,
-        location: P<Node>,
-        meaning: SymbolFlags,
-    ) -> Vec<P<Symbol>> {
+    fn get_symbols_in_scope(&mut self, location: P<Node>, meaning: SymbolFlags) -> Vec<P<Symbol>> {
         if location.flags().intersects(NodeFlags::InWithStatement) {
             // We cannot answer semantic questions within a with block, do not proceed any further
             return Vec::new();
@@ -151,44 +147,6 @@ impl Checker {
         symbols_to_array(Some(self.get_exports_of_module(symbol)))
     }
 
-    // services.go:136
-    pub fn for_each_export_and_property_of_module(
-        &mut self,
-        module_symbol: P<Symbol>,
-        mut cb: impl FnMut(&mut Checker, P<Symbol>, &str),
-    ) {
-        for (key, exported_symbol) in self.get_exports_of_module(module_symbol).entries() {
-            if !is_reserved_member_name(key) {
-                cb(self, exported_symbol, key);
-            }
-        }
-
-        let export_equals =
-            self.resolve_external_module_symbol(module_symbol, false /*dontResolveAlias*/);
-        if export_equals == module_symbol {
-            return;
-        }
-
-        let type_of_symbol = self.get_type_of_symbol(export_equals);
-        if !self.should_treat_properties_of_external_module_as_exports(type_of_symbol) {
-            return;
-        }
-
-        // forEachPropertyOfType
-        let reduced_type = self.get_reduced_apparent_type(type_of_symbol);
-        if !reduced_type.flags().intersects(TypeFlags::StructuredType) {
-            return;
-        }
-        let members = self.resolve_structured_type_members(reduced_type).members();
-        if let Some(members) = members {
-            for (name, symbol) in members.entries() {
-                if self.is_named_member(symbol, name) {
-                    cb(self, symbol, name);
-                }
-            }
-        }
-    }
-
     // services.go:165
     pub fn is_valid_property_access_exported(
         &mut self,
@@ -199,7 +157,7 @@ impl Checker {
     }
 
     // services.go:169
-    pub(crate) fn is_valid_property_access(&mut self, node: P<Node>, property_name: &str) -> bool {
+    fn is_valid_property_access(&mut self, node: P<Node>, property_name: &str) -> bool {
         match node.kind() {
             Kind::PropertyAccessExpression => {
                 let expression = node.expression().unwrap();
@@ -236,7 +194,7 @@ impl Checker {
     }
 
     // services.go:181
-    pub(crate) fn is_valid_property_access_with_type(
+    fn is_valid_property_access_with_type(
         &mut self,
         node: P<Node>,
         is_super: bool,
@@ -351,18 +309,13 @@ impl Checker {
         self.get_signatures_of_type(t, SignatureKind::Call)
     }
 
-    // services.go:265
-    pub fn get_construct_signatures(&mut self, t: P<Type>) -> &'static [P<Signature>] {
-        self.get_signatures_of_type(t, SignatureKind::Construct)
-    }
-
     // services.go:269
     pub fn get_apparent_properties(&mut self, t: P<Type>) -> Vec<P<Symbol>> {
         self.get_augmented_properties_of_type(t)
     }
 
     // services.go:273
-    pub(crate) fn get_augmented_properties_of_type(&mut self, t: P<Type>) -> Vec<P<Symbol>> {
+    fn get_augmented_properties_of_type(&mut self, t: P<Type>) -> Vec<P<Symbol>> {
         let t = self.get_apparent_type(t);
         let props = self.get_properties_of_type(t);
         let props_by_name = create_symbol_table(props);
@@ -419,7 +372,7 @@ impl Checker {
     }
 
     // services.go:319
-    pub(crate) fn should_treat_properties_of_external_module_as_exports(
+    fn should_treat_properties_of_external_module_as_exports(
         &self,
         resolved_external_module_type: P<Type>,
     ) -> bool {
@@ -445,7 +398,7 @@ impl Checker {
     }
 
     // services.go:334
-    pub(crate) fn run_with_inference_blocked_from_source_node<T>(
+    fn run_with_inference_blocked_from_source_node<T>(
         &mut self,
         node: P<Node>,
         f: impl FnOnce(&mut Checker) -> T,
@@ -484,7 +437,7 @@ pub fn get_resolved_signature_for_signature_help(
 
 impl Checker {
     // services.go:367
-    pub(crate) fn run_without_resolved_signature_caching<T>(
+    fn run_without_resolved_signature_caching<T>(
         &mut self,
         node: P<Node>,
         f: impl FnOnce(&mut Checker) -> T,
@@ -550,7 +503,7 @@ impl Checker {
     }
 
     // services.go:422
-    pub(crate) fn get_immediate_root_symbols(&mut self, symbol: P<Symbol>) -> Vec<P<Symbol>> {
+    fn get_immediate_root_symbols(&mut self, symbol: P<Symbol>) -> Vec<P<Symbol>> {
         if symbol.check_flags().intersects(CheckFlags::Synthetic) {
             let types =
                 self.value_symbol_links.get(symbol).containing_type().unwrap().types().to_vec();
@@ -583,7 +536,7 @@ impl Checker {
     }
 
     // services.go:453
-    pub(crate) fn try_get_target(&mut self, symbol: P<Symbol>) -> Option<P<Symbol>> {
+    fn try_get_target(&mut self, symbol: P<Symbol>) -> Option<P<Symbol>> {
         let mut target = None;
         let mut next = Some(symbol);
         loop {
@@ -736,7 +689,7 @@ impl Checker {
     // services.go:552
     // IsSymbolReferencedInFile checks if a symbol is referenced in the source file (besides its definition).
     // This is used as a quick check for whether a symbol is used at all in a file.
-    pub fn is_symbol_referenced_in_file(
+    fn is_symbol_referenced_in_file(
         &mut self,
         source_file: P<SourceFile>,
         definition: P<Node>,
@@ -837,7 +790,7 @@ impl Checker {
     }
 
     // services.go:624
-    pub(crate) fn get_local_symbol_for_export_specifier(
+    fn get_local_symbol_for_export_specifier(
         &mut self,
         reference_location: P<Node>,
         reference_symbol: Option<P<Symbol>>,
@@ -959,10 +912,7 @@ impl Checker {
 
     // services.go:708
     // getUninstantiatedSignatures gets generic signatures from the function's/constructor's type.
-    pub(crate) fn get_uninstantiated_signatures(
-        &mut self,
-        node: P<Node>,
-    ) -> &'static [P<Signature>] {
+    fn get_uninstantiated_signatures(&mut self, node: P<Node>) -> &'static [P<Signature>] {
         match node.kind() {
             Kind::CallExpression | Kind::Decorator => {
                 let t = self.get_type_of_expression(node.expression().unwrap());
@@ -988,7 +938,7 @@ impl Checker {
     }
 
     // services.go:727
-    pub(crate) fn get_type_parameter_constraint_for_position_across_signatures(
+    fn get_type_parameter_constraint_for_position_across_signatures(
         &mut self,
         signatures: &[P<Signature>],
         position: usize,
@@ -1006,7 +956,7 @@ impl Checker {
     }
 
     // services.go:742
-    pub(crate) fn get_type_argument_constraint(&mut self, node: P<Node>) -> Option<P<Type>> {
+    fn get_type_argument_constraint(&mut self, node: P<Node>) -> Option<P<Type>> {
         let mut type_argument_position = None;
         let parent = node.parent().unwrap();
         if ast::has_type_arguments(parent) {
@@ -1156,10 +1106,7 @@ impl Checker {
     }
 
     // services.go:853
-    pub(crate) fn get_exports_of_module_as_array(
-        &mut self,
-        module_symbol: P<Symbol>,
-    ) -> Vec<P<Symbol>> {
+    fn get_exports_of_module_as_array(&mut self, module_symbol: P<Symbol>) -> Vec<P<Symbol>> {
         symbols_to_array(Some(self.get_exports_of_module(module_symbol)))
     }
 
@@ -1211,7 +1158,7 @@ impl Checker {
     }
 
     // services.go:899
-    pub(crate) fn get_resolved_signature_worker(
+    fn get_resolved_signature_worker(
         &mut self,
         node: P<Node>,
         check_mode: CheckMode,
@@ -1450,7 +1397,7 @@ impl Checker {
     // [ a ] from
     //
     //	[a] = [ some array ...]
-    pub(crate) fn get_type_of_assignment_pattern(&mut self, expr: P<Node>) -> Option<P<Type>> {
+    fn get_type_of_assignment_pattern(&mut self, expr: P<Node>) -> Option<P<Type>> {
         let parent = expr.parent().unwrap();
         // If this is from "for of"
         //     for ( { a } of elems) {
@@ -1519,7 +1466,7 @@ impl Checker {
 
     // services.go:1125
     // IsLibSymbolForHoverVerbosity returns true if a symbol is declared in a lib file.
-    pub fn is_lib_symbol_for_hover_verbosity(&self, symbol: Option<P<Symbol>>) -> bool {
+    pub(crate) fn is_lib_symbol_for_hover_verbosity(&self, symbol: Option<P<Symbol>>) -> bool {
         let Some(symbol) = symbol else {
             return false;
         };

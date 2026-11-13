@@ -8,7 +8,15 @@ use crate::astnav;
 // completednode.go:12
 // PositionBelongsToNode returns true if the position belongs to the node.
 // Assumes `candidate.Pos() <= position` holds.
-pub fn position_belongs_to_node(candidate: P<Node>, position: u32, file: P<SourceFile>) -> bool {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+pub(crate) fn position_belongs_to_node(
+    candidate: P<Node>,
+    position: u32,
+    file: P<SourceFile>,
+) -> bool {
     let candidate_pos = candidate.pos().expect_source("parsed nodes have source positions");
     assert!(candidate_pos <= position, "Expected candidate.pos <= position");
     position < candidate.end().expect_source("parsed nodes have source positions")
@@ -16,7 +24,7 @@ pub fn position_belongs_to_node(candidate: P<Node>, position: u32, file: P<Sourc
 }
 
 // completednode.go:19
-pub fn is_completed_node(n: Option<P<Node>>, source_file: P<SourceFile>) -> bool {
+fn is_completed_node(n: Option<P<Node>>, source_file: P<SourceFile>) -> bool {
     let Some(n) = n else {
         return false;
     };

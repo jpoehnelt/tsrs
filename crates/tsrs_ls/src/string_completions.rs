@@ -291,7 +291,7 @@ impl LanguageService {
     }
 
     // string_completions.go:263
-    pub(crate) fn get_string_literal_completion_entries(
+    fn get_string_literal_completion_entries(
         &self,
         _ctx: &Context,
         file: P<SourceFile>,
@@ -829,7 +829,7 @@ impl LanguageService {
             Some(checker),
         );
 
-        let paths_size = options.paths.as_ref().map_or(0, indexmap::IndexMap::len);
+        let paths_size = options.paths.as_ref().map_or(0, |paths| paths.len());
         if is_path_relative_to_script(&literal_value)
             || (paths_size == 0
                 && (tspath::is_rooted_disk_path(&literal_value) || tspath::is_url(&literal_value)))
@@ -1563,7 +1563,7 @@ impl ModuleCompletionNameAndKindSet {
 }
 
 // string_completions.go:1256
-pub struct ExtensionOptions {
+struct ExtensionOptions {
     extensions_to_search: Vec<String>,
     reference_kind: ReferenceKind,
     importing_source_file: P<SourceFile>,
@@ -2692,7 +2692,3 @@ impl LanguageService {
         Some(PathCompletions { entries: to_path_completions(names), replacement_span })
     }
 }
-
-#[cfg(test)]
-#[path = "string_completions_test.rs"]
-mod string_completions_test;

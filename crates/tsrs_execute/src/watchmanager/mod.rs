@@ -33,7 +33,7 @@ pub struct WatchDirectoryRequest {
 }
 
 /// Go `FSWatchBackend`.
-pub struct FsWatchBackend(pub &'static dyn tsrs_fswatch::Watcher);
+pub struct FsWatchBackend(&'static dyn tsrs_fswatch::Watcher);
 
 impl WatchBackend for FsWatchBackend {
     fn watch_directories(
@@ -97,7 +97,7 @@ pub struct WatchManager {
 
 impl WatchManager {
     /// Go `NewWatchManager`.
-    pub fn new(
+    pub(crate) fn new(
         warn_writer: SyncWriter,
         dir_exists: Box<dyn Fn(&str) -> bool + Send + Sync>,
     ) -> Arc<WatchManager> {
@@ -117,7 +117,7 @@ impl WatchManager {
         })
     }
 
-    pub fn lock(&self) -> MutexGuard<'_, WatchState> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, WatchState> {
         self.mu.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
@@ -125,11 +125,11 @@ impl WatchManager {
         self.changed.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub fn set_debug_log(&self, log: SyncWriter) {
+    pub(crate) fn set_debug_log(&self, log: SyncWriter) {
         let _ = self.debug_log.set(log);
     }
 
-    pub fn debug_log(&self) -> Option<&SyncWriter> {
+    pub(crate) fn debug_log(&self) -> Option<&SyncWriter> {
         self.debug_log.get()
     }
 
@@ -139,12 +139,12 @@ impl WatchManager {
         }
     }
 
-    pub fn set_backend(state: &mut WatchState, backend: Arc<dyn WatchBackend>) {
+    pub(crate) fn set_backend(state: &mut WatchState, backend: Arc<dyn WatchBackend>) {
         state.backend = Some(backend);
     }
 
     /// Go `EnsureDefaultBackend`.
-    pub fn ensure_default_backend(&self, state: &mut WatchState) {
+    pub(crate) fn ensure_default_backend(&self, state: &mut WatchState) {
         if state.backend.is_none() {
             // tsrs-only: a cycle starts when the saved files are closed, not at the first write (a save's truncation).
             tsrs_fswatch::set_write_settling(true);
@@ -160,13 +160,13 @@ impl WatchManager {
     }
 
     /// Go `DrainEvents`.
-    pub fn drain_events(&self) -> (FxHashMap<String, EventKind>, bool) {
+    pub(crate) fn drain_events(&self) -> (FxHashMap<String, EventKind>, bool) {
         let mut changed = self.changed();
         (changed.paths.take().unwrap_or_default(), std::mem::take(&mut changed.overflow))
     }
 
     /// tsrs-only: records `paths` as updated, as if their events had arrived, and starts a cycle.
-    pub fn queue_changes(&self, paths: Vec<String>) {
+    pub(crate) fn queue_changes(&self, paths: Vec<String>) {
         {
             let mut changed = self.changed();
             let map = changed.paths.get_or_insert_with(FxHashMap::default);
@@ -178,7 +178,7 @@ impl WatchManager {
     }
 
     /// Go `ForceOverflow`.
-    pub fn force_overflow(&self) {
+    pub(crate) fn force_overflow(&self) {
         self.changed().overflow = true;
     }
 
@@ -245,7 +245,7 @@ impl WatchManager {
     }
 
     /// Go `CloseAllWatches`.
-    pub fn close_all_watches(&self) {
+    fn close_all_watches(&self) {
         let closers: Vec<_> =
             self.lock().watched_dirs.drain().filter_map(|(_, wd)| wd.closer).collect();
         for c in closers {
@@ -279,7 +279,7 @@ impl WatchManager {
     }
 
     /// Go `ResolveDesiredDirs`: each wanted directory, or its nearest existing ancestor (non-recursive).
-    pub fn resolve_desired_dirs(
+    pub(crate) fn resolve_desired_dirs(
         &self,
         desired_dirs: &FxHashMap<String, bool>,
     ) -> FxHashMap<String, bool> {
@@ -323,7 +323,7 @@ impl WatchManager {
     }
 
     /// Go `ReconcileWatches`: open the missing watches, close the stale ones, recreate those whose recursion changed.
-    pub fn reconcile_watches(
+    pub(crate) fn reconcile_watches(
         self: &Arc<Self>,
         state: &mut WatchState,
         desired_dirs: &FxHashMap<String, bool>,
@@ -408,20 +408,16 @@ impl WatchManager {
     }
 
     /// Go `IsPathUnderWatch`.
-    pub fn is_path_under_watch(state: &WatchState, path: &str, opts: &ComparePathsOptions) -> bool {
+    pub(crate) fn is_path_under_watch(
+        state: &WatchState,
+        path: &str,
+        opts: &ComparePathsOptions,
+    ) -> bool {
         state.watched_dirs.keys().any(|dir| tspath::contains_path(dir, path, opts))
     }
 
-    /// The watched directories and whether each is recursive (diagnostics and tests).
-    pub fn watched_dirs(state: &WatchState) -> Vec<(String, bool)> {
-        let mut dirs: Vec<(String, bool)> =
-            state.watched_dirs.iter().map(|(d, w)| (d.clone(), w.recursive)).collect();
-        dirs.sort();
-        dirs
-    }
-
     /// Go `RunLoop`: runs `do_cycle` whenever events were signaled, until `stop` (Go: the context is cancelled).
-    pub fn run_loop(&self, mut do_cycle: impl FnMut()) {
+    pub(crate) fn run_loop(&self, mut do_cycle: impl FnMut()) {
         loop {
             {
                 let mut pending =
@@ -443,27 +439,18 @@ impl WatchManager {
             do_cycle();
         }
     }
-
-    /// Ends `run_loop` (Go: cancelling the context).
-    pub fn stop(&self) {
-        *self.stopped.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        // Under `do_cycle`'s lock: `run_loop` checks `stopped` and starts waiting while it holds it, so the notification
-        // cannot fall between the two.
-        let _pending = self.do_cycle.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.do_cycle_cv.notify_all();
-    }
 }
 
 /// Go `DirWatchSet`: the directories to watch, answering "is this directory already covered" (present, or under a
 /// recursive entry).
-pub struct DirWatchSet {
+pub(crate) struct DirWatchSet {
     use_case_sensitive_file_names: bool,
     dirs: FxHashMap<String, bool>,
     names: FxHashMap<String, String>,
 }
 
 impl DirWatchSet {
-    pub fn new(opts: &ComparePathsOptions) -> DirWatchSet {
+    pub(crate) fn new(opts: &ComparePathsOptions) -> DirWatchSet {
         DirWatchSet {
             use_case_sensitive_file_names: opts.use_case_sensitive_file_names,
             dirs: FxHashMap::default(),
@@ -475,7 +462,7 @@ impl DirWatchSet {
         tspath::get_canonical_file_name(dir, self.use_case_sensitive_file_names)
     }
 
-    pub fn set(&mut self, dir: &str, recursive: bool) {
+    pub(crate) fn set(&mut self, dir: &str, recursive: bool) {
         let key = self.canonical(dir);
         self.names.entry(key.clone()).or_insert_with(|| dir.to_string());
         let entry = self.dirs.entry(key).or_insert(false);
@@ -483,11 +470,11 @@ impl DirWatchSet {
     }
 
     /// tsrs-only: whether `dir` itself is in the set (not only under a recursive entry).
-    pub fn has(&self, dir: &str) -> bool {
+    pub(crate) fn has(&self, dir: &str) -> bool {
         self.dirs.contains_key(&self.canonical(dir))
     }
 
-    pub fn covered(&self, dir: &str) -> bool {
+    pub(crate) fn covered(&self, dir: &str) -> bool {
         let mut dir = self.canonical(dir);
         if self.dirs.contains_key(&dir) {
             return true;
@@ -502,19 +489,19 @@ impl DirWatchSet {
         false
     }
 
-    pub fn dirs(&self) -> FxHashMap<String, bool> {
+    pub(crate) fn dirs(&self) -> FxHashMap<String, bool> {
         self.dirs.iter().map(|(key, &recursive)| (self.names[key].clone(), recursive)).collect()
     }
 }
 
 /// tsrs-only: whether `p` is a `node_modules` directory or lies in one.
-pub fn is_in_node_modules(p: &tspath::Path) -> bool {
+pub(crate) fn is_in_node_modules(p: &tspath::Path) -> bool {
     let s = p.as_str();
     s.ends_with("/node_modules") || s.contains("/node_modules/")
 }
 
 /// Go `ShouldIgnoreWatchPath`.
-pub fn should_ignore_watch_path(path: &str) -> bool {
+fn should_ignore_watch_path(path: &str) -> bool {
     let p = tspath::normalize_slashes(path);
     p.ends_with("/.git")
         || p.contains("/.git/")
@@ -523,7 +510,7 @@ pub fn should_ignore_watch_path(path: &str) -> bool {
 }
 
 /// Go `CanWatchDirectory`.
-pub fn can_watch_directory(dir: &str) -> bool {
+pub(crate) fn can_watch_directory(dir: &str) -> bool {
     let components = tspath::get_path_components(dir, "");
     let length = components.len();
     if length <= 2 {
@@ -534,7 +521,7 @@ pub fn can_watch_directory(dir: &str) -> bool {
 }
 
 /// Go `PerceivedOsRootLengthForWatching`.
-pub fn perceived_os_root_length_for_watching(components: &[String]) -> usize {
+fn perceived_os_root_length_for_watching(components: &[String]) -> usize {
     let length = components.len();
     if length <= 1 {
         return 1;

@@ -1,0 +1,1444 @@
+// Not a Go test: an end-to-end smoke test of the phase-1 language service (hover, definition, type definition,
+// diagnostics) over an in-memory program with the bundled libs. The exact output is gated by the LSP oracle
+// (tools/oracle/lsp); the expected strings here were recorded from `tsgo-ref --lsp -stdio` (the recorder scripts
+// are scratch files, not checked in).
+
+use std::sync::Arc;
+
+use tsrs_compiler::{CompilerHost, Program, ProgramOptions, new_compiler_host, new_program};
+use tsrs_core::P;
+use tsrs_core::context::Context;
+use tsrs_lsproto as lsproto;
+use tsrs_tsoptions::{self as tsoptions, ParseConfigHost};
+use tsrs_vfs::{FS, bundled, vfstest};
+
+use tsrs_ls::autoimport::{ProjectID, Registry};
+use tsrs_ls::lsconv::{self, Converters, compute_lsp_line_starts};
+use tsrs_ls::lsutil::{UserPreferences, new_default_user_preferences};
+use tsrs_ls::sourcemap::ECMALineInfo;
+use tsrs_ls::{Host, LanguageService, new_language_service};
+
+struct TestHost {
+    fs: Arc<dyn FS>,
+    converters: Arc<Converters>,
+}
+
+impl Host for TestHost {
+    fn use_case_sensitive_file_names(&self) -> bool {
+        true
+    }
+    fn read_file(&self, path: &str) -> Option<String> {
+        self.fs.read_file(path)
+    }
+    fn converters(&self) -> Arc<Converters> {
+        std::sync::Arc::clone(&self.converters)
+    }
+    fn get_preferences(&self, _active_file: &str) -> UserPreferences {
+        new_default_user_preferences()
+    }
+    fn get_ecma_line_info(&self, _file_name: &str) -> Option<Arc<ECMALineInfo>> {
+        None
+    }
+    fn auto_import_registry(&self) -> Option<Arc<Registry>> {
+        None
+    }
+    fn read_directory(
+        &self,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: &[String],
+        _: &[String],
+        _: usize,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+    fn get_directories(&self, _path: &str) -> Vec<String> {
+        Vec::new()
+    }
+    fn directory_exists(&self, path: &str) -> bool {
+        self.fs.directory_exists(path)
+    }
+    fn file_exists(&self, path: &str) -> bool {
+        self.fs.file_exists(path)
+    }
+}
+
+struct ParseConfigHostImpl {
+    fs: Arc<dyn FS>,
+}
+
+impl ParseConfigHost for ParseConfigHostImpl {
+    fn fs(&self) -> &dyn FS {
+        &*self.fs
+    }
+    fn get_current_directory(&self) -> &'static str {
+        "/"
+    }
+}
+
+fn setup(files: &[(&str, &str)]) -> (LanguageService, Context) {
+    setup_with(files, false)
+}
+
+fn setup_with(files: &[(&str, &str)], vs: bool) -> (LanguageService, Context) {
+    let fs: Arc<dyn FS> =
+        Arc::new(bundled::wrap_fs(vfstest::from_map(files.iter().map(|&(k, v)| (k, v)), true)));
+    let config_host: &'static ParseConfigHostImpl =
+        Box::leak(Box::new(ParseConfigHostImpl { fs: std::sync::Arc::clone(&fs) }));
+    let (config, diagnostics) = tsoptions::get_parsed_command_line_of_config_file(
+        "/tsconfig.json",
+        None,
+        None,
+        config_host,
+        None,
+    );
+    assert_eq!(diagnostics, [] as [tsrs_core::P<tsrs_ast::Diagnostic>; 0]);
+    let host: Arc<dyn CompilerHost> =
+        new_compiler_host("/", std::sync::Arc::clone(&fs), &bundled::lib_path(), None, None, None);
+    let program: &'static Program = new_program(ProgramOptions::new(P::new(config.unwrap()), host));
+    let fs_for_lines = std::sync::Arc::clone(&fs);
+    let converters =
+        lsconv::new_converters(lsproto::PositionEncodingKind::UTF16, move |file_name| {
+            fs_for_lines.read_file(file_name).map(|text| compute_lsp_line_starts(&text))
+        });
+    let host = Arc::new(TestHost { fs, converters });
+    let ls =
+        new_language_service(ProjectID("/tsconfig.json".to_string()), program, host, "/index.ts");
+    let mut caps = lsproto::ResolvedClientCapabilities::default();
+    caps.text_document.hover.content_format = vec![lsproto::MarkupKind::MARKDOWN];
+    caps.text_document.definition.link_support = true;
+    caps.text_document.type_definition.link_support = true;
+    caps.text_document.semantic_tokens.token_types = [
+        "namespace",
+        "class",
+        "enum",
+        "interface",
+        "struct",
+        "typeParameter",
+        "type",
+        "parameter",
+        "variable",
+        "property",
+        "enumMember",
+        "decorator",
+        "event",
+        "function",
+        "method",
+        "macro",
+        "label",
+        "comment",
+        "string",
+        "keyword",
+        "number",
+        "regexp",
+        "operator",
+    ]
+    .map(String::from)
+    .to_vec();
+    caps.text_document.semantic_tokens.token_modifiers = [
+        "declaration",
+        "definition",
+        "readonly",
+        "static",
+        "deprecated",
+        "abstract",
+        "async",
+        "modification",
+        "documentation",
+        "defaultLibrary",
+    ]
+    .map(String::from)
+    .to_vec();
+    caps.vs_supports_visual_studio_extensions = vs;
+    let ctx = lsproto::with_client_capabilities(&Context::background(), Arc::new(caps));
+    (ls, ctx)
+}
+
+fn position_of(text: &str, marker: &str) -> lsproto::Position {
+    let offset = text.find(marker).unwrap();
+    let before = &text[..offset];
+    let line = before.matches('\n').count() as u32;
+    let character = (offset - before.rfind('\n').map_or(0, |i| i + 1)) as u32;
+    lsproto::Position { line, character }
+}
+
+const INDEX: &str = r"/**
+ * Adds two numbers.
+ * @param a the first
+ * @returns the sum
+ */
+function add(a: number, b: number): number { return a + b; }
+interface Point { x: number; y: number }
+const p: Point = { x: 1, y: 2 };
+const total = add(p.x, p.y);
+let s: string = 1;
+";
+
+fn json<T: lsproto::Json>(v: &T) -> String {
+    tsrs_core::json::marshal(&v.to_json()).unwrap()
+}
+
+// Expected responses recorded from `tsgo-ref --lsp -stdio` with the same file and client capabilities
+// (target/scratch/lscore/drive.mjs), with the project directory replaced by `/`.
+#[test]
+fn hover_definition_diagnostics() {
+    let files = [
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", INDEX),
+    ];
+    let (ls, ctx) = setup(&files);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let hover = |marker: &str| {
+        let params = lsproto::HoverParams {
+            text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+            position: position_of(INDEX, marker),
+            ..Default::default()
+        };
+        json(&ls.provide_hover(&ctx, &params).unwrap())
+    };
+
+    assert_eq!(
+        hover("add(p.x"),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\nfunction add(a: number, b: number): number\n```\nAdds two numbers.\n\n*@param* `a` — the first\n\n*@returns* — the sum"},"range":{"start":{"line":8,"character":14},"end":{"line":8,"character":17}}}"#
+    );
+    assert_eq!(
+        hover("total"),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\nconst total: number\n```\n"},"range":{"start":{"line":8,"character":6},"end":{"line":8,"character":11}}}"#
+    );
+    assert_eq!(
+        hover("Point {"),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\ninterface Point\n```\n"},"range":{"start":{"line":6,"character":10},"end":{"line":6,"character":15}}}"#
+    );
+    assert_eq!(
+        hover("x: 1"),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\n(property) Point.x: number\n```\n"},"range":{"start":{"line":7,"character":19},"end":{"line":7,"character":20}}}"#
+    );
+
+    assert_eq!(
+        json(&ls.provide_definition(&ctx, &uri, position_of(INDEX, "add(p.x")).unwrap()),
+        r#"[{"originSelectionRange":{"start":{"line":8,"character":14},"end":{"line":8,"character":17}},"targetUri":"file:///index.ts","targetRange":{"start":{"line":5,"character":0},"end":{"line":5,"character":60}},"targetSelectionRange":{"start":{"line":5,"character":9},"end":{"line":5,"character":12}}}]"#
+    );
+    assert_eq!(
+        json(&ls.provide_type_definition(&ctx, &uri, position_of(INDEX, "p.x, p.y")).unwrap()),
+        r#"[{"originSelectionRange":{"start":{"line":8,"character":18},"end":{"line":8,"character":19}},"targetUri":"file:///index.ts","targetRange":{"start":{"line":6,"character":0},"end":{"line":6,"character":40}},"targetSelectionRange":{"start":{"line":6,"character":10},"end":{"line":6,"character":15}}}]"#
+    );
+    assert_eq!(
+        json(&ls.provide_diagnostics(&ctx, &uri).unwrap()),
+        r#"{"kind":"full","items":[{"range":{"start":{"line":9,"character":4},"end":{"line":9,"character":5}},"severity":1,"code":2322,"source":"ts","message":"Type 'number' is not assignable to type 'string'."}]}"#
+    );
+}
+
+const INDEX2: &str = r#"/** A widget. See {@link Gadget} and {@link https://example.com docs}.
+ * @example
+ * const w = new Widget<number>();
+ * @see Gadget for more
+ * @deprecated use Gadget
+ */
+class Widget<T extends object = {}> { value?: T; static count = 0; method(n: number): string { return ""; } }
+class Gadget {}
+enum Color { Red = 1, Green = "g" }
+namespace NS { export const inner = 1; }
+function over(a: string): string;
+function over(a: number): number;
+function over(a: any) { return a; }
+type Alias<U> = { u: U } | null;
+const w = new Widget<{}>();
+w.method(1);
+const c = Color.Green;
+over(1);
+let a: Alias<string> = null;
+import G = NS.inner;
+for (let i = 0; i < 1; i++) { this; }
+"#;
+
+// Expected responses recorded from `tsgo-ref --lsp -stdio` (target/scratch/lscore/drive.mjs, proj2).
+#[test]
+fn hover_jsdoc_aliases_overloads() {
+    let files = [
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", INDEX2),
+    ];
+    let (ls, ctx) = setup(&files);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "Widget<number>"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r"null",
+        "{}",
+        "Widget<number>"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "Widget<{}>"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\nconstructor Widget<{}>(): Widget<{}>\n```\nA widget. See [Gadget](file:///index.ts#8,7-8,13) and [docs](https://example.com).\n\n*@example*\n```tsx\nconst w = new Widget<number>();\n```\n\n\n*@see* — [Gadget](file:///index.ts#8,7-8,13) for more\n\n*@deprecated* — use Gadget"},"range":{"start":{"line":14,"character":14},"end":{"line":14,"character":20}}}"#,
+        "{}",
+        "Widget<{}>"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "method(1"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\n(method) Widget<{}>.method(n: number): string\n```\n"},"range":{"start":{"line":15,"character":2},"end":{"line":15,"character":8}}}"#,
+        "{}",
+        "method(1"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "Green;"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\n(enum member) Color.Green = \"g\"\n```\n"},"range":{"start":{"line":16,"character":16},"end":{"line":16,"character":21}}}"#,
+        "{}",
+        "Green;"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "NS {"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\nnamespace NS\n```\n"},"range":{"start":{"line":9,"character":10},"end":{"line":9,"character":12}}}"#,
+        "{}",
+        "NS {"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "over(1"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\nfunction over(a: number): number\n```\n"},"range":{"start":{"line":17,"character":0},"end":{"line":17,"character":4}}}"#,
+        "{}",
+        "over(1"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "Alias<string>"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\ntype Alias<U> = {\n    u: U;\n} | null\n```\n"},"range":{"start":{"line":18,"character":7},"end":{"line":18,"character":12}}}"#,
+        "{}",
+        "Alias<string>"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "U> ="),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\n(type parameter) U in type Alias<U>\n```\n"},"range":{"start":{"line":13,"character":11},"end":{"line":13,"character":12}}}"#,
+        "{}",
+        "U> ="
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "G ="),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\n(alias) const NS.inner: 1\n```\n"},"range":{"start":{"line":19,"character":7},"end":{"line":19,"character":8}}}"#,
+        "{}",
+        "G ="
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "count"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\n(property) Widget<T extends object = {}>.count: number\n```\n"},"range":{"start":{"line":6,"character":56},"end":{"line":6,"character":61}}}"#,
+        "{}",
+        "count"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "i <"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\nlet i: number\n```\n"},"range":{"start":{"line":20,"character":16},"end":{"line":20,"character":17}}}"#,
+        "{}",
+        "i <"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "this;"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\nthis: typeof globalThis\n```\n"},"range":{"start":{"line":20,"character":30},"end":{"line":20,"character":34}}}"#,
+        "{}",
+        "this;"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX2, "value?"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\n(property) Widget<T extends object = {}>.value?: T | undefined\n```\n"},"range":{"start":{"line":6,"character":38},"end":{"line":6,"character":43}}}"#,
+        "{}",
+        "value?"
+    );
+    assert_eq!(
+        json(&ls.provide_definition(&ctx, &uri, position_of(INDEX2, "Gadget}")).unwrap()),
+        r#"[{"originSelectionRange":{"start":{"line":0,"character":25},"end":{"line":0,"character":31}},"targetUri":"file:///index.ts","targetRange":{"start":{"line":7,"character":0},"end":{"line":7,"character":15}},"targetSelectionRange":{"start":{"line":7,"character":6},"end":{"line":7,"character":12}}}]"#,
+        "{}",
+        "Gadget}"
+    );
+    assert_eq!(
+        json(&ls.provide_definition(&ctx, &uri, position_of(INDEX2, "G =")).unwrap()),
+        r#"[{"originSelectionRange":{"start":{"line":19,"character":7},"end":{"line":19,"character":8}},"targetUri":"file:///index.ts","targetRange":{"start":{"line":9,"character":15},"end":{"line":9,"character":38}},"targetSelectionRange":{"start":{"line":9,"character":28},"end":{"line":9,"character":33}}}]"#,
+        "{}",
+        "G ="
+    );
+    assert_eq!(
+        json(&ls.provide_diagnostics(&ctx, &uri).unwrap()),
+        r#"{"kind":"full","items":[{"range":{"start":{"line":6,"character":74},"end":{"line":6,"character":75}},"severity":4,"code":6133,"source":"ts","message":"'n' is declared but its value is never read."},{"range":{"start":{"line":14,"character":14},"end":{"line":14,"character":20}},"severity":4,"code":6385,"source":"ts","message":"'Widget' is deprecated."}]}"#,
+        "{}",
+        ""
+    );
+}
+
+// Visual Studio client: classified runs and `_vs_rawContent`, recorded from tsgo-ref (drive_vs.py).
+#[test]
+fn hover_visual_studio_raw_content() {
+    let files = [
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", INDEX),
+    ];
+    let (ls, ctx) = setup_with(&files, true);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    position: position_of(INDEX, "add(p.x"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\nfunction add(a: number, b: number): number;\n```\nAdds two numbers.\n\n*@param* `a` — the first\n\n*@returns* — the sum"},"range":{"start":{"line":8,"character":14},"end":{"line":8,"character":17}},"_vs_rawContent":{"Style":1,"Elements":[{"Style":0,"Elements":[{"ImageId":{"Guid":"ae27a6b0-e345-4288-96df-5eaf394ee369","Id":1880,"_vs_type":"ImageId"},"_vs_type":"ImageElement"},{"Runs":[{"ClassificationTypeName":"keyword","Text":"function ","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"method name","Text":"add","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"punctuation","Text":"(","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"parameter name","Text":"a","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"punctuation","Text":":","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"whitespace","Text":" ","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"keyword","Text":"number","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"punctuation","Text":",","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"whitespace","Text":" ","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"parameter name","Text":"b","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"punctuation","Text":":","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"whitespace","Text":" ","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"keyword","Text":"number","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"punctuation","Text":")","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"punctuation","Text":":","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"whitespace","Text":" ","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"keyword","Text":"number","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"punctuation","Text":";","_vs_type":"ClassifiedTextRun"}],"_vs_type":"ClassifiedTextElement"}],"_vs_type":"ContainerElement"},{"Runs":[{"ClassificationTypeName":"text","Text":"Adds two numbers.","_vs_type":"ClassifiedTextRun"}],"_vs_type":"ClassifiedTextElement"}],"_vs_type":"ContainerElement"}}"#,
+        "{}",
+        "add(p.x"
+    );
+    assert_eq!(
+        json(
+            &ls.provide_hover(
+                &ctx,
+                &lsproto::HoverParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri },
+                    position: position_of(INDEX, "x: 1"),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        ),
+        r#"{"contents":{"kind":"markdown","value":"```typescript\n(property) Point.x: number\n```\n"},"range":{"start":{"line":7,"character":19},"end":{"line":7,"character":20}},"_vs_rawContent":{"Style":0,"Elements":[{"ImageId":{"Guid":"ae27a6b0-e345-4288-96df-5eaf394ee369","Id":2436,"_vs_type":"ImageId"},"_vs_type":"ImageElement"},{"Runs":[{"ClassificationTypeName":"punctuation","Text":"(","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"text","Text":"property","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"punctuation","Text":") ","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"property name","Text":"Point.x","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"punctuation","Text":": ","_vs_type":"ClassifiedTextRun"},{"ClassificationTypeName":"keyword","Text":"number","_vs_type":"ClassifiedTextRun"}],"_vs_type":"ClassifiedTextElement"}],"_vs_type":"ContainerElement"}}"#,
+        "{}",
+        "x: 1"
+    );
+}
+
+// A JSDoc `@this` tag adds a `this` parameter whose name has no source position. Building the name table of such
+// a file (any search for a global name) panicked. The highlights were recorded from tsgo-ref; the definition of
+// `this` deliberately points at the tag name where tsgo-ref returns the start of the file (docs/LSP.md, "Deviations
+// from Go").
+#[test]
+fn jsdoc_this_parameter() {
+    const A: &str =
+        "const m = 1;\nm;\n/** @this {string} */\nfunction f() { return this.length; }\n";
+    let files = [
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true},"files":["a.js"]}"#,
+        ),
+        ("/a.js", A),
+    ];
+    let (ls, ctx) = setup(&files);
+    let uri = lsconv::file_name_to_document_uri("/a.js");
+    assert_eq!(
+        json(&ls.provide_document_highlights(&ctx, &uri, position_of(A, "m;")).unwrap()),
+        r#"[{"range":{"start":{"line":0,"character":6},"end":{"line":0,"character":7}},"kind":3},{"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":1}},"kind":2}]"#
+    );
+    let this_definition = r#"[{"originSelectionRange":{"start":{"line":3,"character":22},"end":{"line":3,"character":26}},"targetUri":"file:///a.js","targetRange":{"start":{"line":2,"character":5},"end":{"line":2,"character":9}},"targetSelectionRange":{"start":{"line":2,"character":5},"end":{"line":2,"character":9}}}]"#;
+    assert_eq!(
+        json(&ls.provide_definition(&ctx, &uri, position_of(A, "this.length")).unwrap()),
+        this_definition
+    );
+    assert_eq!(
+        json(&ls.provide_source_definition(&ctx, &uri, position_of(A, "this.length")).unwrap()),
+        this_definition
+    );
+}
+
+// U+2028 / U+2029 end an ECMAScript line. Slicing up to "next line start - 1" (Go's arithmetic) cut through their
+// three-byte encoding and panicked; the line now ends before the whole line break, so a region's collapsed text and
+// end do not include part of it (tsgo-ref returns `foo` plus two U+FFFD and an end two characters later; docs/LSP.md,
+// "Deviations from Go"). The JSDoc template after `/**` matches tsgo-ref's for the same text with `\n`.
+#[test]
+fn ecma_line_separators() {
+    const A: &str = "// #region foo\u{2028}let a = 1;\n// #endregion\u{2028}let b = 2;\n/**\u{2029}function f(x) {}\n";
+    let files = [("/tsconfig.json", r#"{"files":["a.ts"]}"#), ("/a.ts", A)];
+    let (ls, _) = setup(&files);
+    let mut caps = lsproto::ResolvedClientCapabilities::default();
+    caps.text_document.folding_range.folding_range.collapsed_text = true;
+    let ctx = lsproto::with_client_capabilities(&Context::background(), Arc::new(caps));
+    let uri = lsconv::file_name_to_document_uri("/a.ts");
+    assert_eq!(
+        json(&ls.provide_folding_range(&ctx, &uri).unwrap()),
+        r#"[{"startLine":0,"startCharacter":0,"endLine":1,"endCharacter":13,"kind":"region","collapsedText":"foo"},{"startLine":2,"startCharacter":0,"endLine":3,"endCharacter":0,"kind":"comment"}]"#
+    );
+    let completion =
+        json(&ls.provide_completion(&ctx, &uri, position_of(A, "\u{2029}function"), None).unwrap());
+    assert!(completion.contains(r#""label":"/** */""#), "{completion}");
+}
+
+// `not` is a property whose type has call signatures and properties: Go classifies it as a property. With lazy member
+// tables the instantiated interface's resolved property list is empty, which used to make it a method. Expected
+// tokens recorded from `tsgo-ref --lsp -stdio`.
+#[test]
+fn semantic_tokens_property_of_lazily_resolved_interface() {
+    let text = "interface A<T> { (x: string): A<T>; not: A<T>; foo(): void }\ndeclare function expect<T>(x: T): A<T>;\nexpect(1).not.foo();\n";
+    let files = [
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ];
+    let (ls, ctx) = setup(&files);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    assert_eq!(
+        json(&ls.provide_semantic_tokens(&ctx, &uri).unwrap()),
+        r#"{"data":[0,10,1,3,1,0,2,1,5,1,0,6,1,7,1,0,12,1,3,0,0,2,1,5,0,0,4,3,9,1,0,5,1,3,0,0,2,1,5,0,0,4,3,14,1,1,17,6,13,1,0,7,1,5,1,0,3,1,7,1,0,3,1,5,0,0,4,1,3,0,0,2,1,5,0,1,0,6,13,0,0,10,3,9,0,0,4,3,14,0]}"#
+    );
+}
+
+#[test]
+fn embedded_usage_inference_edits_and_unicode_positions() {
+    let text = "// 🧪\nfunction repeat(value) { return value.repeat(2); } repeat('x');";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let start = text.find("value)").unwrap() as u32;
+    let fix = tsrs_ls::codeactions::CodeFixContext {
+        source_file: file,
+        span: tsrs_core::TextRange::new(start, start + 5),
+        error_code: 7006,
+        fix_id: None,
+        program: ls.get_program(),
+        ls: &ls,
+        diagnostic: None,
+        params: None,
+    };
+    let actions =
+        (tsrs_ls::codeactions_usage::INFER_USAGE_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].fix_name.as_deref(), Some("inferFromUsage"));
+    let edits = &actions[0].changes_by_file[0].1;
+    assert!(edits.iter().any(|e| e.new_text.contains("@param {string} value")), "{edits:?}");
+    assert!(edits.iter().all(|e| e.range.start.line >= 1));
+}
+
+#[test]
+fn embedded_usage_reference_scopes() {
+    let sources = [
+        "function convert(value) { function nested() { return value.repeat(2); } function shadow(value) { return value + 1; } return nested(); } convert('x');",
+        r"function convert(\u0076alue) { return \u0076alue.repeat(2); } convert('x');",
+        "function convert(value) { return value; } // value and convert are not references here",
+    ];
+    for text in sources {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js","other.js"]}"#,
+            ),
+            ("/index.js", text),
+            ("/other.js", "convert('external'); function shadow(value) { return value + 1; }"),
+        ]);
+        let file = ls.get_program().get_source_file("/index.js").unwrap();
+        let start = text.find("value)").or_else(|| text.find(r"\u0076alue)")).unwrap() as u32;
+        let fix = tsrs_ls::codeactions::CodeFixContext {
+            source_file: file,
+            span: tsrs_core::TextRange::new(start, start + 5),
+            error_code: 7006,
+            fix_id: None,
+            program: ls.get_program(),
+            ls: &ls,
+            diagnostic: None,
+            params: None,
+        };
+        let actions =
+            (tsrs_ls::codeactions_usage::INFER_USAGE_PROVIDER.get_code_actions)(&ctx, &fix)
+                .unwrap();
+        assert_eq!(actions.len(), 1, "{text}");
+        assert!(
+            actions[0].changes_by_file[0]
+                .1
+                .iter()
+                .any(|e| e.new_text.contains("@param {string} value")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn embedded_commonjs_export_assignment_symbol() {
+    let text = "!function(root, factory) { typeof module !== 'undefined' ? module.exports = factory() : root.library = factory(); }(this, function() { function library() {} library.version = '1'; return library; });";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let node =
+        tsrs_ls::astnav::get_touching_property_name(file, text.find("exports").unwrap() as u32 + 1);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let symbol = c.get_editor_symbol_at_location(node).unwrap();
+    assert!(
+        symbol.declarations().iter().any(|d| tsrs_ast::is_binary_expression(*d)),
+        "{:?}",
+        symbol.declarations().iter().map(|d| d.kind()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn embedded_constructor_this_has_instance_fields() {
+    let text = "function Item(n) { this._n = n; this._data = {}; this._bubble(); }";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let node = tsrs_ls::astnav::get_touching_property_name(
+        file,
+        text.find("this._bubble").unwrap() as u32,
+    );
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let native = c.get_type_at_location(node);
+    let t = c.get_editor_type_at_location(node);
+    let names: Vec<_> = c.get_properties_of_type(t).iter().map(|s| s.name()).collect();
+    assert!(names.contains(&"_n") && names.contains(&"_data"), "{names:?}");
+    assert_eq!(c.get_type_at_location(node), native);
+}
+
+#[test]
+fn embedded_quick_info_budget_isolated_from_normal_serialization() {
+    use std::cell::Cell;
+    use tsrs_checker::{self as checker, Flags, InternalFlags, VerbosityContext};
+    let members =
+        (0..32).map(|i| format!("readonly PROPERTY_{i}: Item;")).collect::<Vec<_>>().join("\n");
+    let declarations = format!(
+        "declare namespace Catalog {{ type Item = {{readonly brand: unique symbol}}; const Item: {{ {members} }}; }}"
+    );
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true},"files":["index.ts","types.d.ts"]}"#,
+        ),
+        ("/index.ts", "Catalog.Item;"),
+        ("/types.d.ts", &declarations),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let node = tsrs_ls::astnav::get_touching_property_name(file, 9);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let typ = c.get_editor_type_at_location(node);
+    let builder = checker::new_node_builder(&c, tsrs_printer::new_emit_context());
+    let flags = Flags::MultilineObjectLiterals | Flags::UseAliasDefinedOutsideCurrentScope;
+    builder
+        .type_to_type_node(&mut c, typ, Some(file.as_node()), flags, InternalFlags::None, None)
+        .unwrap();
+    builder.verbosity.set(Some(P::new(VerbosityContext {
+        level: Cell::new(0),
+        max_truncation_length: Cell::new(500),
+        disable_expansion: true,
+        can_increase_verbosity: Cell::new(false),
+        truncated: Cell::new(false),
+    })));
+    let display = builder
+        .type_to_type_node(&mut c, typ, Some(file.as_node()), flags, InternalFlags::None, None)
+        .unwrap();
+    assert_eq!(display.as_type_literal_node().members.nodes().len(), 13);
+}
+
+#[test]
+fn embedded_inference_preserves_nested_jsdoc() {
+    let text = "/** @param {object} options\n * @param {string} options.name\n */\nfunction convert(options, value) { return value.repeat(2); }";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let start = text.find("value)").unwrap() as u32;
+    let fix = tsrs_ls::codeactions::CodeFixContext {
+        source_file: file,
+        span: tsrs_core::TextRange::new(start, start + 5),
+        error_code: 7006,
+        fix_id: None,
+        program: ls.get_program(),
+        ls: &ls,
+        diagnostic: None,
+        params: None,
+    };
+    let actions =
+        (tsrs_ls::codeactions_usage::INFER_USAGE_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].changes_by_file[0].1.iter().any(
+        |e| e.new_text.contains("options.name") && e.new_text.contains("@param {string} value")
+    ));
+}
+#[test]
+fn embedded_missing_method_infers_call_parameters() {
+    let text = "/** @type {Widget} */ let widget; widget.render(1, 'x');";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"strict":true},"files":["index.js","types.d.ts"]}"#,
+        ),
+        ("/index.js", text),
+        ("/types.d.ts", "interface Widget { existing():void; }"),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let start = text.find("render").unwrap() as u32;
+    let fix = tsrs_ls::codeactions::CodeFixContext {
+        source_file: file,
+        span: tsrs_core::TextRange::new(start, start + 6),
+        error_code: 2339,
+        fix_id: None,
+        program: ls.get_program(),
+        ls: &ls,
+        diagnostic: None,
+        params: None,
+    };
+    let actions =
+        (tsrs_ls::codeactions_usage::MISSING_MEMBER_PROVIDER.get_code_actions)(&ctx, &fix).unwrap();
+    assert!(
+        actions[0].changes_by_file[0]
+            .1
+            .iter()
+            .any(|e| e.new_text.contains("arg0: number") && e.new_text.contains("arg1: string"))
+    );
+}
+
+#[test]
+fn embedded_spelling_edits_and_fix_all() {
+    let text = "// 🧪\ndeclare namespace Audit { function log(text: string): void; }\nAudit.loog('x'); Audit?.loog('y');\nconst count = 1; console.log(coutn);";
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let diagnostics =
+        ls.provide_diagnostics(&ctx, &uri).unwrap().full_document_diagnostic_report.unwrap().items;
+    let spelling: Vec<_> = diagnostics
+        .into_iter()
+        .filter(|d| d.code.as_ref().and_then(|c| c.integer).is_some_and(|c| c == 2551 || c == 2552))
+        .collect();
+    assert_eq!(spelling.len(), 3);
+    assert!(tsrs_ls::supported_code_fix_codes().contains(&2552));
+    // The minimal host has no prepared auto-import registry. Property corrections
+    // exercise the registered dispatch; fix-all below also covers the name correction.
+    for diagnostic in
+        spelling.iter().filter(|d| d.code.as_ref().and_then(|c| c.integer) == Some(2551))
+    {
+        let actions = ls
+            .embedded_code_fixes(
+                &ctx,
+                &lsproto::CodeActionParams {
+                    text_document: lsproto::TextDocumentIdentifier { uri: uri.clone() },
+                    range: diagnostic.range,
+                    context: lsproto::CodeActionContext {
+                        diagnostics: vec![diagnostic.clone()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let action = actions.iter().find(|a| a.fix_name.as_deref() == Some("spelling")).unwrap();
+        assert_eq!(action.fix_id, "fixSpelling");
+        let edits = action.workspace_edit(&uri).changes.unwrap();
+        assert_eq!(edits[&uri].len(), 1);
+        assert_eq!(edits[&uri][0].range, diagnostic.range);
+    }
+    let all = ls.embedded_combined_code_fix(&ctx, &uri, "fixSpelling").unwrap().unwrap();
+    let all_edits = all.workspace_edit(&uri).changes.unwrap();
+    assert_eq!(all_edits[&uri].len(), 3);
+    assert_eq!(
+        all_edits[&uri].iter().map(|e| e.new_text.as_str()).collect::<Vec<_>>(),
+        vec!["log", "log", "count"]
+    );
+}
+
+#[test]
+fn embedded_cleanup_providers_and_fix_all() {
+    for (text, code, name, id) in [
+        (
+            "const count = 1; count = 2; count = 3;",
+            2588,
+            "fixConvertConstToLet",
+            "fixConvertConstToLet",
+        ),
+        (
+            "function read(unused: number) { return 1; } read(2);",
+            6133,
+            "unusedIdentifier",
+            "unusedIdentifier_prefix",
+        ),
+        (
+            "function read() { await 1; await 2; }",
+            1308,
+            "fixAwaitInSyncFunction",
+            "fixAwaitInSyncFunction",
+        ),
+        (
+            "class Counter { value = 1; read() { return value; } }",
+            2663,
+            "forgottenThisPropertyAccess",
+            "forgottenThisPropertyAccess",
+        ),
+        (
+            "function read() { return 1; let unused = 2; unused++; }",
+            7027,
+            "fixUnreachableCode",
+            "fixUnreachableCode",
+        ),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"strict":true,"noUnusedLocals":true,"noUnusedParameters":true,"allowUnreachableCode":false},"files":["index.ts"]}"#,
+            ),
+            ("/index.ts", text),
+        ]);
+        let uri = lsconv::file_name_to_document_uri("/index.ts");
+        let diagnostics = ls
+            .provide_diagnostics(&ctx, &uri)
+            .unwrap()
+            .full_document_diagnostic_report
+            .unwrap()
+            .items;
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| d.code.as_ref().and_then(|c| c.integer) == Some(code))
+            .unwrap();
+        assert!(tsrs_ls::supported_code_fix_codes().contains(&code));
+        let file = ls.get_program().get_source_file("/index.ts").unwrap();
+        let span = tsrs_ls::diagnostics::get_all_diagnostics(&ctx, ls.get_program(), file)
+            .into_iter()
+            .find(|d| d.code() == code)
+            .unwrap()
+            .loc()
+            .unwrap();
+        // This minimal host has no auto-import registry. The prepared embedded
+        // transport tests separately cover dispatch shared with import providers.
+        let actions = (tsrs_ls::codeactions_cleanup::CLEANUP_PROVIDER.get_code_actions)(
+            &ctx,
+            &tsrs_ls::codeactions::CodeFixContext {
+                source_file: file,
+                span,
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: Some(diagnostic),
+                params: None,
+            },
+        )
+        .unwrap();
+        assert!(actions.iter().any(|a| a.fix_name.as_deref() == Some(name)), "{name}");
+        let combined = ls.embedded_combined_code_fix(&ctx, &uri, id).unwrap().unwrap();
+        let changes = combined.workspace_edit(&uri).changes.unwrap();
+        assert!(!changes[&uri].is_empty(), "{id}");
+        if code == 2588 || code == 1308 {
+            assert_eq!(changes[&uri].len(), 1);
+        }
+    }
+}
+
+#[test]
+fn embedded_missing_member_respects_explicit_read_only_roots() {
+    let text = "declare const item: LibraryItem; item.missing();";
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true},"files":["index.ts","types.d.ts"]}"#,
+        ),
+        ("/index.ts", text),
+        ("/types.d.ts", "interface LibraryItem { read(): void; }"),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let start = text.find("missing").unwrap() as u32;
+    let actions = |ls: &LanguageService| {
+        (tsrs_ls::codeactions_usage::MISSING_MEMBER_PROVIDER.get_code_actions)(
+            &ctx,
+            &tsrs_ls::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(start, start + 7),
+                error_code: 2339,
+                fix_id: None,
+                program: ls.get_program(),
+                ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(actions(&ls).len(), 3);
+    ls.set_read_only_files(&["/types.d.ts".into()]);
+    assert!(actions(&ls).is_empty());
+}
+
+#[test]
+fn embedded_quick_info_structured_documentation() {
+    let text = "/** Reads a value.\n * @returns The value.\n * @example\n * const value = read();\n * @see https://example.com/reference\n */\ndeclare function read(): string;\nread();";
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ]);
+    let (documentation, tags) = ls.quick_info_documentation(
+        &ctx,
+        &lsproto::HoverParams {
+            text_document: lsproto::TextDocumentIdentifier {
+                uri: lsconv::file_name_to_document_uri("/index.ts"),
+            },
+            position: lsproto::Position { line: 7, character: 1 },
+            ..Default::default()
+        },
+    );
+    assert_eq!(documentation, "Reads a value.");
+    assert_eq!(
+        tags.iter().map(|t| (t.name.as_str(), t.text.as_str())).collect::<Vec<_>>(),
+        vec![
+            ("returns", "The value."),
+            ("example", "const value = read();"),
+            ("see", "https://example.com/reference")
+        ]
+    );
+}
+
+#[test]
+fn unused_fix_all_does_not_edit_descendants_of_deleted_declarations() {
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true,"noUnusedLocals":true,"noUnusedParameters":true},"files":["index.ts"]}"#,
+        ),
+        ("/index.ts", "export {}; class Obsolete { method(argument: number) {} }"),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let combined =
+        ls.embedded_combined_code_fix(&ctx, &uri, "unusedIdentifier_delete").unwrap().unwrap();
+    let edits = combined.workspace_edit(&uri).changes.unwrap();
+    assert_eq!(edits[&uri].len(), 1);
+    assert_eq!(edits[&uri][0].new_text, "");
+}
+
+#[test]
+fn embedded_local_syntax_repairs_use_parsed_nodes() {
+    for (text, code, name) in [
+        ("class Widget {} const instance = Widget();", 2348, "addMissingNewOperator"),
+        ("const options = {enabled = true};", 1312, "fixPropertyAssignment"),
+        ("const result = 'abc' as number;", 2352, "addConvertToUnknownForNonOverlappingTypes"),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"strict":true,"target":"esnext"},"files":["index.ts"]}"#,
+            ),
+            ("/index.ts", text),
+        ]);
+        let file = ls.get_program().get_source_file("/index.ts").unwrap();
+        let diagnostic = tsrs_ls::diagnostics::get_all_diagnostics(&ctx, ls.get_program(), file)
+            .into_iter()
+            .find(|d| d.code() == code)
+            .unwrap();
+        let fixes = (tsrs_ls::codeactions_syntax::SYNTAX_PROVIDER.get_code_actions)(
+            &ctx,
+            &tsrs_ls::codeactions::CodeFixContext {
+                source_file: file,
+                span: diagnostic.loc().unwrap(),
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        assert!(fixes.iter().any(|f| f.fix_name.as_deref() == Some(name)), "{name}");
+        let uri = lsconv::file_name_to_document_uri("/index.ts");
+        let all = ls.embedded_combined_code_fix(&ctx, &uri, name).unwrap().unwrap();
+        assert_ne!(
+            all.workspace_edit(&uri).changes.unwrap()[&uri],
+            [] as [tsrs_lsproto::TextEdit; 0]
+        );
+    }
+}
+
+#[test]
+fn embedded_provider_repairs_handle_suggestions_and_semantic_nodes() {
+    for (source, needle, code, name) in [
+        ("const same = 4 === NaN;", "4", 2845, "fixNaNEquality"),
+        (
+            "class A {} class B extends A { constructor() {} }",
+            "constructor",
+            2377,
+            "constructorForDerivedNeedSuperCall",
+        ),
+        ("class Unit { size: number; }", "size", 2564, "strictClassInitialization"),
+        (
+            "type Table = { [entry: 'x' | 'y']: boolean };",
+            "entry",
+            1337,
+            "fixConvertToMappedObjectType",
+        ),
+        (
+            "type Columns = 'x' | 'y'; type Row = { [Columns]: boolean };",
+            "Columns]:",
+            2690,
+            "convertLiteralTypeToMappedType",
+        ),
+        (
+            "interface Shape {} class Polygon extends Shape {}",
+            "Shape {}",
+            2689,
+            "extendsInterfaceBecomesImplements",
+        ),
+        (
+            "/** @param {string} absent */ function invoke(actual) { return actual; }",
+            "absent",
+            8024,
+            "deleteUnmatchedParameter",
+        ),
+        (
+            "/** @param {string} input @returns {string} */ function echo(input) { return input; }",
+            "echo",
+            80004,
+            "annotateWithTypeFromJSDoc",
+        ),
+        ("let choice: ?boolean;", "?", 17019, "jdocTypes"),
+        ("new Promise(done => { done(); });", "done();", 2794, "addVoidToPromise"),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"strict":true,"target":"esnext"},"files":["index.ts"]}"#,
+            ),
+            ("/index.ts", source),
+        ]);
+        let file = ls.get_program().get_source_file("/index.ts").unwrap();
+        let at = source.rfind(needle).unwrap() as u32;
+        let fixes = (tsrs_ls::codeactions_syntax::SYNTAX_PROVIDER.get_code_actions)(
+            &ctx,
+            &tsrs_ls::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(at, at + needle.len() as u32),
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        assert!(fixes.iter().any(|f| f.fix_name.as_deref() == Some(name)), "{name}: {fixes:?}");
+        assert!(fixes.iter().all(|f| !f.changes_by_file.is_empty()));
+    }
+}
+
+#[test]
+fn embedded_migrations_preserve_methods_and_generated_names() {
+    for (source, code, name, required) in [
+        (
+            "function Box() { this.total = 0; } Box.prototype.open = function() { return this.total; };",
+            80002,
+            "convertFunctionToEs6Class",
+            "open()",
+        ),
+        (
+            "function load() { return Promise.resolve(3).then(item => item * 2); }",
+            80006,
+            "convertToAsyncFunction",
+            "item_1",
+        ),
+    ] {
+        let (ls, ctx) = setup(&[
+            (
+                "/tsconfig.json",
+                r#"{"compilerOptions":{"checkJs":true,"allowJs":true,"target":"esnext"},"files":["index.js"]}"#,
+            ),
+            ("/index.js", source),
+        ]);
+        let file = ls.get_program().get_source_file("/index.js").unwrap();
+        let actions = (tsrs_ls::codeactions_syntax::SYNTAX_PROVIDER.get_code_actions)(
+            &ctx,
+            &tsrs_ls::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(9, 12),
+                error_code: code,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        let action = actions.iter().find(|a| a.fix_name.as_deref() == Some(name)).unwrap();
+        assert!(
+            action
+                .changes_by_file
+                .iter()
+                .flat_map(|(_, edits)| edits)
+                .any(|edit| edit.new_text.contains(required)),
+            "{name}: {action:?}"
+        );
+        let uri = lsconv::file_name_to_document_uri("/index.js");
+        let all = ls.embedded_combined_code_fix(&ctx, &uri, name).unwrap().unwrap();
+        assert!(
+            all.workspace_edit(&uri).changes.unwrap()[&uri]
+                .iter()
+                .any(|edit| edit.new_text.contains(required))
+        );
+    }
+}
+
+#[test]
+fn combined_missing_members_choose_one_alternative() {
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        (
+            "/index.ts",
+            "interface Transport {} const client: Transport = {}; client.deliver(3); client.deliver(4);",
+        ),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let combined = ls.embedded_combined_code_fix(&ctx, &uri, "fixMissingMember").unwrap().unwrap();
+    let edits = combined.workspace_edit(&uri).changes.unwrap();
+    assert_eq!(edits[&uri].len(), 2);
+    assert!(
+        edits[&uri].iter().any(|edit| edit.new_text.contains("deliver(arg0: number): unknown;"))
+    );
+}
+
+#[test]
+fn isolated_arrow_edits_keep_reference_default_and_explicit_legacy_mode() {
+    let source = "export const read = value => value.toUpperCase();";
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"isolatedDeclarations":true,"declaration":true,"target":"esnext"},"files":["index.ts"]}"#,
+        ),
+        ("/index.ts", source),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let provider =
+        &*tsrs_ls::codeactions_fixmissingtypeannotation::ISOLATED_DECLARATIONS_FIX_PROVIDER;
+    for legacy in [false, true, false] {
+        ls.set_legacy_code_fix_edits(legacy);
+        let actions = (provider.get_code_actions)(
+            &ctx,
+            &tsrs_ls::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(20, 25),
+                error_code: 9007,
+                fix_id: None,
+                program: ls.get_program(),
+                ls: &ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap();
+        let action =
+            actions.iter().find(|a| a.description == "Add annotation of type 'any'").unwrap();
+        let mut texts: Vec<_> = action.changes.iter().map(|edit| edit.new_text.as_str()).collect();
+        for (_, edits) in &action.changes_by_file {
+            texts.extend(edits.iter().map(|edit| edit.new_text.as_str()));
+        }
+        assert!(texts.contains(&": any"), "{texts:?}");
+        assert_eq!(texts.contains(&"("), !legacy, "{texts:?}");
+        assert_eq!(texts.contains(&")"), !legacy, "{texts:?}");
+    }
+}
+
+// The pinned Go LSP currently registers only imports, isolated declarations and
+// interface implementation. The expanded catalogue is an explicit embedding API.
+#[test]
+fn embedded_provider_catalogue_does_not_change_reference_lsp_actions() {
+    let text = "declare namespace Audit { function log(text: string): void; } Audit.loog('x');";
+    let (ls, ctx) = setup(&[
+        ("/tsconfig.json", r#"{"compilerOptions":{"strict":true},"files":["index.ts"]}"#),
+        ("/index.ts", text),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.ts");
+    let diagnostics =
+        ls.provide_diagnostics(&ctx, &uri).unwrap().full_document_diagnostic_report.unwrap().items;
+    let diagnostic = diagnostics
+        .into_iter()
+        .find(|d| d.code.as_ref().and_then(|c| c.integer) == Some(2551))
+        .unwrap();
+    let params = lsproto::CodeActionParams {
+        text_document: lsproto::TextDocumentIdentifier { uri },
+        range: diagnostic.range,
+        context: lsproto::CodeActionContext { diagnostics: vec![diagnostic], ..Default::default() },
+        ..Default::default()
+    };
+    assert!(
+        ls.embedded_code_fixes(&ctx, &params)
+            .unwrap()
+            .iter()
+            .any(|a| a.fix_name.as_deref() == Some("spelling"))
+    );
+    assert_eq!(
+        ls.provide_code_actions(&ctx, &params).unwrap().command_or_code_action_array.unwrap(),
+        [] as [lsproto::CommandOrCodeAction; 0]
+    );
+}
+
+// Pinned reference compiler/javascriptCommonjsModule.types exposes a module
+// container with `exports`, while a legacy editor observes the assigned class.
+#[test]
+fn editor_commonjs_observations_do_not_replace_reference_compiler_types() {
+    let text = "class Foo {} class Bar extends Foo {} module.exports = Bar;";
+    let (ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true,"module":"commonjs"},"files":["index.js"]}"#,
+        ),
+        ("/index.js", text),
+    ]);
+    let file = ls.get_program().get_source_file("/index.js").unwrap();
+    let node =
+        tsrs_ls::astnav::get_touching_property_name(file, text.find("module").unwrap() as u32 + 1);
+    let mut c = ls.get_program().get_type_checker_for_file(&ctx, file);
+    let native = c.get_type_at_location(node);
+    let names: Vec<_> = c.get_properties_of_type(native).iter().map(|s| s.name()).collect();
+    assert_eq!(names, ["exports"]);
+    let editor = c.get_editor_type_at_location(node);
+    assert_ne!(editor, native);
+    assert_eq!(c.get_type_at_location(node), native);
+    let access =
+        tsrs_ls::astnav::get_touching_property_name(file, text.find("exports").unwrap() as u32 + 1);
+    let symbol = c.get_symbol_at_location_exported(access);
+    assert!(c.get_editor_symbol_at_location(access).is_some());
+    assert_eq!(c.get_symbol_at_location_exported(access), symbol);
+}
+
+#[test]
+fn embedded_cross_file_class_property_uses_assignment_type() {
+    let text = "const value = new Entry(); value.count = 1;";
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"strict":false},"files":["index.ts","entry.ts"]}"#,
+        ),
+        ("/index.ts", text),
+        ("/entry.ts", "class Entry { constructor() {} }"),
+    ]);
+    let file = ls.get_program().get_source_file("/index.ts").unwrap();
+    let start = text.find("count").unwrap() as u32;
+    let actions = |ls: &LanguageService| {
+        (tsrs_ls::codeactions_usage::MISSING_MEMBER_PROVIDER.get_code_actions)(
+            &ctx,
+            &tsrs_ls::codeactions::CodeFixContext {
+                source_file: file,
+                span: tsrs_core::TextRange::new(start, start + 5),
+                error_code: 2339,
+                fix_id: None,
+                program: ls.get_program(),
+                ls,
+                diagnostic: None,
+                params: None,
+            },
+        )
+        .unwrap()
+    };
+    let fixes = actions(&ls);
+    assert_eq!(fixes.len(), 2);
+    assert_eq!(fixes[0].description, "Declare property 'count'");
+    assert_eq!(fixes[0].changes_by_file[0].0, lsconv::file_name_to_document_uri("/entry.ts"));
+    assert!(fixes[0].changes_by_file[0].1.iter().any(|e| e.new_text.contains("count: number;")));
+    ls.set_read_only_files(&["/entry.ts".into()]);
+    assert!(actions(&ls).is_empty());
+}
+
+#[test]
+fn legacy_raw_js_fixes_expose_suppression_without_changing_reference_lsp() {
+    let (mut ls, ctx) = setup(&[
+        (
+            "/tsconfig.json",
+            r#"{"compilerOptions":{"allowJs":true,"checkJs":true},"files":["index.js"]}"#,
+        ),
+        ("/index.js", "const item = 1; item.missing;"),
+    ]);
+    let uri = lsconv::file_name_to_document_uri("/index.js");
+    let diagnostic = ls
+        .provide_diagnostics(&ctx, &uri)
+        .unwrap()
+        .full_document_diagnostic_report
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|d| d.code.as_ref().and_then(|c| c.integer) == Some(2339))
+        .unwrap();
+    let params = lsproto::CodeActionParams {
+        text_document: lsproto::TextDocumentIdentifier { uri },
+        range: diagnostic.range,
+        context: lsproto::CodeActionContext { diagnostics: vec![diagnostic], ..Default::default() },
+        ..Default::default()
+    };
+    for legacy in [false, true, false] {
+        ls.set_legacy_code_fix_edits(legacy);
+        let actions = ls.embedded_code_fixes(&ctx, &params).unwrap();
+        let suppress =
+            actions.iter().find(|a| a.fix_name.as_deref() == Some("disableJsDiagnostics"));
+        assert_eq!(suppress.is_some(), legacy);
+        if let Some(action) = suppress {
+            assert_eq!(action.description, "Disable checking for this file");
+            assert_eq!(action.changes[0].new_text, "// @ts-nocheck\n");
+        }
+        let reference =
+            ls.provide_code_actions(&ctx, &params).unwrap().command_or_code_action_array.unwrap();
+        assert!(
+            reference.iter().all(|a| a
+                .code_action
+                .as_ref()
+                .is_none_or(|a| !a.title.contains("Disable checking")))
+        );
+    }
+}
+
+#[test]
+fn editor_closure_callbacks_keep_typed_arguments_and_reference_defaults() {
+    for editor in [false, true, false] {
+        let config = format!(
+            r#"{{"tsrsEditorLegacyJSDocFunctionTypes":{editor},"compilerOptions":{{"allowJs":true,"checkJs":true,"strict":true}},"files":["index.js"]}}"#
+        );
+        let (ls, ctx) = setup(&[
+            ("/tsconfig.json", &config),
+            (
+                "/index.js",
+                "/** @param {function(string): boolean} callback */\nfunction use(callback) { return callback(123); }",
+            ),
+        ]);
+        let diagnostics = ls
+            .provide_diagnostics(&ctx, &lsconv::file_name_to_document_uri("/index.js"))
+            .unwrap()
+            .full_document_diagnostic_report
+            .unwrap()
+            .items;
+        let codes: Vec<_> = diagnostics.iter().filter_map(|d| d.code.as_ref()?.integer).collect();
+        assert_eq!(codes.contains(&1005), !editor, "{editor}: {diagnostics:?}");
+        if editor {
+            assert_eq!(codes, [2345], "{diagnostics:?}");
+        }
+    }
+}

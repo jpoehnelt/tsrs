@@ -18,13 +18,13 @@ use crate::tsc::{
 };
 
 // The system doubles as the config-parsing host (Go's tsc.System satisfies tsoptions.ParseConfigHost).
-pub(crate) struct SysParseConfigHost {
+pub struct SysParseConfigHost {
     sys: &'static dyn System,
     fs: Arc<dyn FS>,
 }
 
 /// The config parse host for `sys` (leaked: tsoptions keeps it for the parsed command line's lifetime).
-pub(crate) fn parse_config_host(sys: &'static dyn System) -> &'static SysParseConfigHost {
+pub fn parse_config_host(sys: &'static dyn System) -> &'static SysParseConfigHost {
     Box::leak(Box::new(SysParseConfigHost { sys, fs: sys.fs() }))
 }
 
@@ -38,11 +38,10 @@ impl ParseConfigHost for SysParseConfigHost {
     }
 }
 
+// tsrs-only, so on stderr: tsgo has no such message, and `tsrs --showConfig > tsconfig.out.json` writes no error into
+// the file.
 fn not_supported(sys: &dyn System, what: &str) -> CommandLineResult {
-    sys.write(&format!(
-        "error: {what} is not supported by tsrs.
-"
-    ));
+    sys.write_error(&format!("error: {what} is not supported by tsrs.\n"));
     CommandLineResult { watcher: None, status: ExitStatus::NotImplemented }
 }
 
@@ -61,6 +60,7 @@ pub fn command_line_with_testing(
             "-b" | "--b" | "-build" | "--build" => {
                 let host = parse_config_host(sys);
                 let mut command = tsoptions::parse_build_command_line(&command_line_args, host);
+                configure_performance(&command.raw);
                 if tsrs_core::NO_THREADS {
                     command.compiler_options.single_threaded = tsrs_core::Tristate::True;
                 }
@@ -128,10 +128,19 @@ pub fn command_line_with_testing(
     }
     let host = parse_config_host(sys);
     let mut command = tsoptions::parse_command_line(&args, host);
+    configure_performance(&command.raw);
     if tsrs_core::NO_THREADS {
         force_single_threaded(&mut command);
     }
     tsc_compilation(sys, host, P::new(command), testing)
+}
+
+fn configure_performance(raw: &CompilerOptionsValue) {
+    if let CompilerOptionsValue::Object(options) = raw
+        && let Some(fast) = options.get("fast")
+    {
+        tsrs_core::fast::set_enabled(matches!(fast, CompilerOptionsValue::Bool(true)));
+    }
 }
 
 /// `tsrs_core::NO_THREADS`: `--singleThreaded`, set on the parsed options so every reader agrees (a config file
@@ -176,7 +185,7 @@ fn tsc_compilation(
 
     if command_line_options.help.is_true() || command_line_options.all.is_true() {
         print_version(sys);
-        sys.write("Usage: tsrs [-p <project>] [options] [files...]\n  Compiles like `tsc`. See `tsc --help` for options.\n");
+        sys.write("Usage: tsrs [-p <project>] [options] [files...]\n  Compiles like `tsc`. See `tsc --help` for options.\n  --fast  Enable tsrs performance modes that may differ from pinned TypeScript behavior.\n");
         return CommandLineResult { watcher: None, status: ExitStatus::Success };
     }
 
@@ -640,7 +649,7 @@ fn tsc_build_compilation(
 
     if build_command.compiler_options.help.is_true() {
         print_version(sys);
-        sys.write("Usage: tsrs -b [projects...] [options]\n  See `tsc -b --help` for options.\n");
+        sys.write("Usage: tsrs -b [projects...] [options]\n  See `tsc -b --help` for options.\n  --fast  Enable tsrs performance modes that may differ from pinned TypeScript behavior.\n");
         return CommandLineResult { watcher: None, status: ExitStatus::Success };
     }
     // tsrs-only: no file watching backend on this platform (Windows; Go has ReadDirectoryChangesW).

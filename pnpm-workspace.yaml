@@ -3,7 +3,7 @@ packages:
   - playground
 # Keep plugins and tests on the Vite+ toolchain's bundled versions.
 overrides:
-  vite@*: npm:@voidzero-dev/vite-plus-core@1.3.0
+  vite@*: "catalog:"
   vitest@*: 5.0.5
 peerDependencyRules:
   allowedVersions:
@@ -25,3 +25,7 @@ minimumReleaseAgeExclude:
   - '@void/platform@1.2.1'
   - sass@1.106.1
   - void@1.2.1
+
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@1.3.0
+  vite-plus: 1.3.0

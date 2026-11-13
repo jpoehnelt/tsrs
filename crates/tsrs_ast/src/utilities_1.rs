@@ -14,7 +14,7 @@ static NEXT_SYMBOL_BLOCK_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Go reserves this part of the 64-bit id space for ids assigned by the checker's dense link stores.
 pub const BLOCK_ID_OFFSET: u64 = 0x1_0000_0000_0000;
-pub const BLOCK_ID_SIZE: u32 = tsrs_core::LINK_PAGE_SIZE as u32;
+const BLOCK_ID_SIZE: u32 = tsrs_core::LINK_PAGE_SIZE as u32;
 
 // Nodes and symbols keep a 32-bit id in the AST. The high bit tags a block id; the remaining bits are its
 // offset from BLOCK_ID_OFFSET. This preserves the Go-visible 64-bit id without enlarging every AST object.
@@ -111,6 +111,14 @@ thread_local! {
 /// a time, exactly as before.
 pub fn use_id_blocks() {
     ID_BLOCK_MODE.set(true);
+}
+
+/// Ends `use_id_blocks` on the current thread and drops the rest of its blocks, as the thread's exit would: a reused
+/// checker thread must not hand out ids from a block it took in an earlier group.
+pub fn stop_id_blocks() {
+    ID_BLOCK_MODE.set(false);
+    NODE_ID_BLOCK.set((0, 0));
+    SYMBOL_ID_BLOCK.set((0, 0));
 }
 
 #[inline]
@@ -293,17 +301,6 @@ pub fn is_destructuring_assignment(node: P<Node>) -> bool {
         return kind == Kind::ObjectLiteralExpression || kind == Kind::ArrayLiteralExpression;
     }
     false
-}
-
-// utilities.go:140
-pub fn is_object_binding_or_assignment_element(node: P<Node>) -> bool {
-    matches!(
-        node.kind(),
-        Kind::BindingElement
-            | Kind::PropertyAssignment
-            | Kind::ShorthandPropertyAssignment
-            | Kind::SpreadAssignment
-    )
 }
 
 // utilities.go:151
@@ -538,7 +535,7 @@ pub fn is_optional_chain(node: P<Node>) -> bool {
     false
 }
 
-pub(crate) fn get_question_dot_token(node: P<Node>) -> Option<P<Node>> {
+fn get_question_dot_token(node: P<Node>) -> Option<P<Node>> {
     node.question_dot_token()
 }
 
@@ -581,7 +578,7 @@ pub fn is_assertion_expression(node: P<Node>) -> bool {
     kind == Kind::TypeAssertionExpression || kind == Kind::AsExpression
 }
 
-pub(crate) fn is_left_hand_side_expression_kind(kind: Kind) -> bool {
+fn is_left_hand_side_expression_kind(kind: Kind) -> bool {
     matches!(
         kind,
         Kind::PropertyAccessExpression
@@ -623,7 +620,7 @@ pub fn is_left_hand_side_expression(node: P<Node>) -> bool {
     is_left_hand_side_expression_kind(skip_partially_emitted_expressions(node).kind())
 }
 
-pub(crate) fn is_unary_expression_kind(kind: Kind) -> bool {
+fn is_unary_expression_kind(kind: Kind) -> bool {
     match kind {
         Kind::PrefixUnaryExpression
         | Kind::PostfixUnaryExpression
@@ -636,7 +633,7 @@ pub(crate) fn is_unary_expression_kind(kind: Kind) -> bool {
     }
 }
 
-pub(crate) fn is_expression_kind(kind: Kind) -> bool {
+fn is_expression_kind(kind: Kind) -> bool {
     match kind {
         Kind::ConditionalExpression
         | Kind::YieldExpression
@@ -685,7 +682,7 @@ pub fn is_access_expression(node: P<Node>) -> bool {
     node.kind() == Kind::PropertyAccessExpression || node.kind() == Kind::ElementAccessExpression
 }
 
-pub(crate) fn is_function_like_declaration_kind(kind: Kind) -> bool {
+fn is_function_like_declaration_kind(kind: Kind) -> bool {
     matches!(
         kind,
         Kind::FunctionDeclaration
@@ -843,7 +840,7 @@ pub fn is_jsx_attribute_like(node: P<Node>) -> bool {
     is_jsx_attribute(node) || is_jsx_spread_attribute(node)
 }
 
-pub(crate) fn is_declaration_statement_kind(kind: Kind) -> bool {
+fn is_declaration_statement_kind(kind: Kind) -> bool {
     matches!(
         kind,
         Kind::FunctionDeclaration
@@ -909,7 +906,7 @@ pub fn is_statement(node: P<Node>) -> bool {
 
 // Determines whether a node is a BlockStatement. If parents are available, this ensures the Block is
 // not part of a `try` statement, `catch` clause, or the Block-like body of a function
-pub(crate) fn is_block_statement(node: P<Node>) -> bool {
+fn is_block_statement(node: P<Node>) -> bool {
     if node.kind() != Kind::Block {
         return false;
     }
@@ -1130,29 +1127,6 @@ pub fn find_ancestor(
         node = n.parent();
     }
     None
-}
-
-pub fn find_many_ancestors(
-    node: impl Into<Option<P<Node>>>,
-    callbacks: &mut [&mut dyn FnMut(P<Node>) -> bool],
-) -> Vec<Option<P<Node>>> {
-    let mut node = node.into();
-    let mut ancestors: Vec<Option<P<Node>>> = vec![None; callbacks.len()];
-    let mut found = 0;
-    while let Some(n) = node {
-        for (i, callback) in callbacks.iter_mut().enumerate() {
-            if ancestors[i].is_none() && callback(n) {
-                ancestors[i] = Some(n);
-                found += 1;
-                if found == ancestors.len() {
-                    return ancestors;
-                }
-                break;
-            }
-        }
-        node = n.parent();
-    }
-    ancestors
 }
 
 // Walks up the parents of a node to find the ancestor that matches the kind
@@ -1672,10 +1646,7 @@ pub fn is_bindable_static_access_expression(node: P<Node>, exclude_this_keyword:
         || is_bindable_static_element_access_expression(node, exclude_this_keyword)
 }
 
-pub fn is_bindable_static_element_access_expression(
-    node: P<Node>,
-    exclude_this_keyword: bool,
-) -> bool {
+fn is_bindable_static_element_access_expression(node: P<Node>, exclude_this_keyword: bool) -> bool {
     is_literal_like_element_access(node)
         && ((!exclude_this_keyword && node.expression().unwrap().kind() == Kind::ThisKeyword)
             || is_entity_name_expression(node.expression().unwrap())
@@ -1694,7 +1665,7 @@ pub fn is_prototype_access(node: P<Node>) -> bool {
     false
 }
 
-pub fn is_literal_like_element_access(node: P<Node>) -> bool {
+fn is_literal_like_element_access(node: P<Node>) -> bool {
     is_element_access_expression(node)
         && is_string_or_numeric_literal_like(
             node.as_element_access_expression().argument_expression,
@@ -1842,35 +1813,4 @@ pub fn get_assigned_name(node: P<Node>) -> Option<P<Node>> {
 // utilities.go:80 (added for emit)
 pub fn range_is_synthesized(loc: tsrs_core::TextRange) -> bool {
     position_is_synthesized(loc.pos()) || position_is_synthesized(loc.end())
-}
-
-#[cfg(test)]
-mod id_generator_tests {
-    use super::*;
-
-    #[test]
-    fn block_ids_decode_without_colliding_with_ordinary_ids() {
-        let factory = NodeFactory::default();
-        let node = factory.new_token(Kind::EndOfFile);
-        let other_node = factory.new_token(Kind::EndOfFile);
-        let node_generator = NodeIdGenerator::default();
-        let block_node_id = node_generator.get_node_id(node);
-        let ordinary_node_id = get_node_id(other_node);
-        assert!(block_node_id.0 >= BLOCK_ID_OFFSET);
-        assert!(ordinary_node_id.0 < BLOCK_ID_OFFSET);
-        assert_eq!(node_generator.get_node_id(node), block_node_id);
-        assert_eq!(node_generator.get_node_id(other_node), ordinary_node_id);
-        assert_eq!(get_assigned_node_id(node), Some(block_node_id));
-
-        let symbol = Symbol::new(SymbolFlags::None, "");
-        let other_symbol = Symbol::new(SymbolFlags::None, "");
-        let symbol_generator = SymbolIdGenerator::default();
-        let block_symbol_id = symbol_generator.get_symbol_id(symbol);
-        let ordinary_symbol_id = get_symbol_id(other_symbol);
-        assert!(block_symbol_id.0 >= BLOCK_ID_OFFSET);
-        assert!(ordinary_symbol_id.0 < BLOCK_ID_OFFSET);
-        assert_eq!(symbol_generator.get_symbol_id(symbol), block_symbol_id);
-        assert_eq!(symbol_generator.get_symbol_id(other_symbol), ordinary_symbol_id);
-        assert_eq!(get_assigned_symbol_id(symbol), Some(block_symbol_id));
-    }
 }

@@ -8,9 +8,8 @@ main(() => {
     args("Check JavaScript and shell syntax and root package script paths.");
     const roots = [
         "tools",
-        "tasks/determinism",
+        "tasks",
         "bench",
-        "upstream/tools",
         ".github/scripts",
         "npm",
         "crates/tsrs_api_codec/gen",

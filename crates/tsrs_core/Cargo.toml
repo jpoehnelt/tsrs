@@ -1,10 +1,17 @@
 [package]
 name = "tsrs_core"
-version.workspace = true
+version = "7.1.0-beta.tsrs1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+categories.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+readme.workspace = true
+include = ["/src", "/build.rs", "/LICENSE", "/NOTICE"]
+description = "Core types and utilities for the tsrs TypeScript compiler"
 
 [lints]
 workspace = true
@@ -31,10 +38,11 @@ num-bigint.workspace = true
 num-traits.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [dev-dependencies]
 unicode-normalization.workspace = true
 
 [lib]
+test = false
 doctest = false

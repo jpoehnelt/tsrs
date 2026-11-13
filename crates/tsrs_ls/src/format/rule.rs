@@ -3,11 +3,11 @@ use tsrs_ast::Kind;
 use super::*;
 
 // rule.go:5
-pub struct RuleImpl {
-    pub(crate) debug_name: &'static str,
-    pub(crate) context: Vec<ContextPredicate>,
-    pub(crate) action: RuleAction,
-    pub(crate) flags: RuleFlags,
+pub(crate) struct RuleImpl {
+    debug_name: &'static str,
+    context: Vec<ContextPredicate>,
+    action: RuleAction,
+    flags: RuleFlags,
 }
 
 impl RuleImpl {
@@ -31,7 +31,7 @@ impl RuleImpl {
         dead_code,
         reason = "Go's String() makes ruleImpl a fmt.Stringer for debug output; no Go code calls it"
     )]
-    pub(crate) fn string(&self) -> &'static str {
+    fn string(&self) -> &'static str {
         self.debug_name
     }
 }
@@ -44,7 +44,7 @@ pub struct TokenRange {
 }
 
 // rule.go:33
-pub struct RuleSpec {
+pub(crate) struct RuleSpec {
     pub(crate) left_token_range: TokenRange,
     pub(crate) right_token_range: TokenRange,
     pub(crate) rule: &'static RuleImpl,
@@ -98,7 +98,7 @@ impl ToTokenRange for &TokenRange {
  * @param action a declaration of the expected whitespace
  * @param flags whether the rule deletes a line or not, defaults to no-op
  */
-pub fn rule(
+pub(crate) fn rule(
     debug_name: &'static str,
     left: impl ToTokenRange,
     right: impl ToTokenRange,
@@ -123,16 +123,16 @@ fn to_token_range(e: impl ToTokenRange) -> TokenRange {
 }
 
 // rule.go:83
-pub type ContextPredicate = &'static (dyn Fn(&FormattingContext) -> bool + Send + Sync);
+pub(crate) type ContextPredicate = &'static (dyn Fn(&FormattingContext) -> bool + Send + Sync);
 
 // rule.go:85
-pub fn any_context() -> Vec<ContextPredicate> {
+pub(crate) fn any_context() -> Vec<ContextPredicate> {
     Vec::new()
 }
 
 // rule.go:87
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct RuleAction(pub(crate) u32);
+pub struct RuleAction(u32);
 
 impl RuleAction {
     pub(crate) const NONE: RuleAction = RuleAction(0);
