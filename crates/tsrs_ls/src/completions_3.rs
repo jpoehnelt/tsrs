@@ -22,7 +22,7 @@ use crate::signaturehelp::get_immediately_containing_argument_info;
 use crate::utilities::{position_belongs_to_node, quote};
 
 // completions.go:3468
-pub fn get_contextual_type(
+pub(crate) fn get_contextual_type(
     previous_token: P<Node>,
     position: u32,
     file: P<SourceFile>,
@@ -126,14 +126,14 @@ pub fn get_contextual_type(
 }
 
 // completions.go:3557
-pub fn get_switched_type(case_clause: P<Node>, type_checker: &mut Checker) -> P<Type> {
+pub(crate) fn get_switched_type(case_clause: P<Node>, type_checker: &mut Checker) -> P<Type> {
     type_checker.get_editor_type_at_location(
         case_clause.parent().unwrap().parent().unwrap().expression().unwrap(),
     )
 }
 
 // completions.go:3561
-pub fn is_equality_operator_kind(kind: Kind) -> bool {
+pub(crate) fn is_equality_operator_kind(kind: Kind) -> bool {
     matches!(
         kind,
         Kind::EqualsEqualsEqualsToken
@@ -145,12 +145,12 @@ pub fn is_equality_operator_kind(kind: Kind) -> bool {
 
 // We disregard boolean literals for completion purposes.
 // completions.go:3572
-pub fn is_literal(t: P<Type>) -> bool {
+pub(crate) fn is_literal(t: P<Type>) -> bool {
     t.is_string_literal() || t.is_number_literal() || t.is_big_int_literal()
 }
 
 // completions.go:3576
-pub fn get_recommended_completion(
+pub(crate) fn get_recommended_completion(
     previous_token: P<Node>,
     contextual_type: P<Type>,
     type_checker: &mut Checker,
@@ -194,13 +194,13 @@ fn is_abstract_constructor_symbol(symbol: P<Symbol>) -> bool {
 }
 
 // completions.go:3607
-pub fn starts_with_quote(s: &str) -> bool {
+pub(crate) fn starts_with_quote(s: &str) -> bool {
     let r = s.chars().next().unwrap_or('\u{FFFD}');
     r == '"' || r == '\''
 }
 
 // completions.go:3612
-pub fn get_closest_symbol_declaration(
+pub(crate) fn get_closest_symbol_declaration(
     context_token: Option<P<Node>>,
     location: P<Node>,
 ) -> Option<P<Node>> {
@@ -251,7 +251,7 @@ fn is_arrow_function_body(node: P<Node>) -> bool {
 }
 
 // completions.go:3651
-pub fn is_in_type_parameter_default(context_token: Option<P<Node>>) -> bool {
+pub(crate) fn is_in_type_parameter_default(context_token: Option<P<Node>>) -> bool {
     let Some(context_token) = context_token else {
         return false;
     };
@@ -271,7 +271,7 @@ pub fn is_in_type_parameter_default(context_token: Option<P<Node>>) -> bool {
 }
 
 // completions.go:3669
-pub fn is_deprecated(symbol: P<Symbol>, type_checker: &mut Checker) -> bool {
+pub(crate) fn is_deprecated(symbol: P<Symbol>, type_checker: &mut Checker) -> bool {
     let declarations = checker::skip_alias(symbol, type_checker).declarations();
     !declarations.is_empty()
         && declarations.iter().all(|&decl| type_checker.is_deprecated_declaration(decl))
@@ -333,7 +333,7 @@ impl LanguageService {
 }
 
 // completions.go:3709
-pub fn quote_property_name(
+pub(crate) fn quote_property_name(
     file: P<SourceFile>,
     preferences: &UserPreferences,
     name: &str,
@@ -358,7 +358,7 @@ fn unicode_is_digit(r: char) -> bool {
 // is not reduced by the checker as a special case used for supporting string literal completions
 // for string type.
 // completions.go:3720
-pub fn is_string_and_empty_anonymous_object_intersection(
+pub(crate) fn is_string_and_empty_anonymous_object_intersection(
     type_checker: &mut Checker,
     t: P<Type>,
 ) -> bool {
@@ -388,17 +388,17 @@ fn are_intersected_types_avoiding_string_reduction(
 }
 
 // completions.go:3734
-pub fn escape_snippet_text(text: &str) -> String {
+pub(crate) fn escape_snippet_text(text: &str) -> String {
     text.replace('$', "\\$")
 }
 
 // completions.go:3738
-pub fn is_named_imports_or_exports(node: P<Node>) -> bool {
+pub(crate) fn is_named_imports_or_exports(node: P<Node>) -> bool {
     ast::is_named_imports(node) || ast::is_named_exports(node)
 }
 
 // completions.go:3742
-pub fn generate_identifier_for_arbitrary_string(text: &str) -> String {
+pub(crate) fn generate_identifier_for_arbitrary_string(text: &str) -> String {
     let mut needs_underscore = false;
     let mut identifier = String::new();
 
@@ -434,7 +434,7 @@ pub fn generate_identifier_for_arbitrary_string(text: &str) -> String {
 
 // Copied from vscode TS extension.
 // completions.go:3782
-pub fn get_completions_symbol_kind(kind: ScriptElementKind) -> lsproto::CompletionItemKind {
+fn get_completions_symbol_kind(kind: ScriptElementKind) -> lsproto::CompletionItemKind {
     match kind {
         ScriptElementKind::PrimitiveType | ScriptElementKind::Keyword => {
             lsproto::CompletionItemKind::KEYWORD
@@ -511,7 +511,7 @@ fn keyword_completions_cache() -> &'static Mutex<FxHashMap<u32, Vec<lsproto::Com
 }
 
 // completions.go:3848
-pub fn all_keyword_completions() -> &'static [lsproto::CompletionItem] {
+pub(crate) fn all_keyword_completions() -> &'static [lsproto::CompletionItem] {
     static ALL_KEYWORD_COMPLETIONS: OnceLock<Vec<lsproto::CompletionItem>> = OnceLock::new();
     ALL_KEYWORD_COMPLETIONS.get_or_init(|| {
         let mut result = Vec::with_capacity(
@@ -530,12 +530,12 @@ pub fn all_keyword_completions() -> &'static [lsproto::CompletionItem] {
 }
 
 // completions.go:3861
-pub fn clone_items(items: &[lsproto::CompletionItem]) -> Vec<CompletionItem> {
+pub(crate) fn clone_items(items: &[lsproto::CompletionItem]) -> Vec<CompletionItem> {
     items.iter().map(|item| CompletionItem::new(item.clone())).collect()
 }
 
 // completions.go:3873
-pub fn get_keyword_completions(
+pub(crate) fn get_keyword_completions(
     keyword_filter: KeywordCompletionFilters,
     filter_out_ts_only_keywords: bool,
 ) -> Vec<CompletionItem> {
@@ -651,7 +651,7 @@ fn is_function_like_body_keyword(kind: Kind) -> bool {
 }
 
 // completions.go:3977
-pub fn is_class_member_completion_keyword(kind: Kind) -> bool {
+fn is_class_member_completion_keyword(kind: Kind) -> bool {
     match kind {
         Kind::AbstractKeyword
         | Kind::AccessorKeyword
@@ -671,7 +671,7 @@ fn is_interface_or_type_literal_completion_keyword(kind: Kind) -> bool {
 }
 
 // completions.go:3991
-pub fn is_contextual_keyword_in_auto_importable_expression_space(keyword: &str) -> bool {
+pub(crate) fn is_contextual_keyword_in_auto_importable_expression_space(keyword: &str) -> bool {
     keyword == "abstract"
         || keyword == "async"
         || keyword == "await"
@@ -684,7 +684,7 @@ pub fn is_contextual_keyword_in_auto_importable_expression_space(keyword: &str) 
 }
 
 // completions.go:4003
-pub fn get_contextual_keywords(
+pub(crate) fn get_contextual_keywords(
     file: P<SourceFile>,
     context_token: Option<P<Node>>,
     position: u32,
@@ -777,14 +777,14 @@ impl LanguageService {
 }
 
 // completions.go:4069
-pub fn is_member_completion_kind(kind: CompletionKind) -> bool {
+pub(crate) fn is_member_completion_kind(kind: CompletionKind) -> bool {
     kind == CompletionKind::ObjectPropertyDeclaration
         || kind == CompletionKind::MemberLike
         || kind == CompletionKind::PropertyAccess
 }
 
 // completions.go:4075
-pub fn try_get_function_like_body_completion_container(
+pub(crate) fn try_get_function_like_body_completion_container(
     context_token: Option<P<Node>>,
 ) -> Option<P<Node>> {
     let context_token = context_token?;
@@ -803,7 +803,7 @@ pub fn try_get_function_like_body_completion_container(
 }
 
 // completions.go:4094
-pub fn compute_commit_characters_and_is_new_identifier(
+pub(crate) fn compute_commit_characters_and_is_new_identifier(
     context_token: Option<P<Node>>,
     file: P<SourceFile>,
     position: u32,
@@ -965,7 +965,7 @@ fn keyword_for_node(node: P<Node>) -> Kind {
 // Finds the first node that "embraces" the position, so that one may
 // accurately aggregate locals from the closest containing scope.
 // completions.go:4231
-pub fn get_scope_node(
+pub(crate) fn get_scope_node(
     initial_token: Option<P<Node>>,
     position: u32,
     file: P<SourceFile>,
@@ -982,7 +982,7 @@ pub fn get_scope_node(
 
 // Determines if a type is exactly the same type resolved by the global 'self', 'global', or 'globalThis'.
 // completions.go:4252
-pub fn is_probably_global_type(
+pub(crate) fn is_probably_global_type(
     t: P<Type>,
     file: P<SourceFile>,
     type_checker: &mut Checker,
@@ -1025,7 +1025,7 @@ pub fn is_probably_global_type(
 }
 
 // completions.go:4270
-pub fn try_get_type_literal_node(node: Option<P<Node>>) -> Option<P<Node>> {
+pub(crate) fn try_get_type_literal_node(node: Option<P<Node>>) -> Option<P<Node>> {
     let node = node?;
 
     let parent = node.parent().unwrap();
@@ -1048,7 +1048,7 @@ pub fn try_get_type_literal_node(node: Option<P<Node>>) -> Option<P<Node>> {
 }
 
 // completions.go:4290
-pub fn get_constraint_of_type_argument_property(
+pub(crate) fn get_constraint_of_type_argument_property(
     node: Option<P<Node>>,
     type_checker: &mut Checker,
 ) -> Option<P<Type>> {
@@ -1096,7 +1096,7 @@ pub fn get_constraint_of_type_argument_property(
 }
 
 // completions.go:4338
-pub fn try_get_object_like_completion_container(
+pub(crate) fn try_get_object_like_completion_container(
     context_token: Option<P<Node>>,
     position: u32,
     file: P<SourceFile>,
@@ -1177,7 +1177,7 @@ pub fn try_get_object_like_completion_container(
 }
 
 // completions.go:4396
-pub fn try_get_object_literal_contextual_type(
+pub(crate) fn try_get_object_literal_contextual_type(
     node: P<Node>,
     type_checker: &mut Checker,
 ) -> Option<P<Type>> {
@@ -1203,7 +1203,7 @@ pub fn try_get_object_literal_contextual_type(
 }
 
 // completions.go:4417
-pub fn get_properties_for_object_expression(
+pub(crate) fn get_properties_for_object_expression(
     contextual_type: P<Type>,
     completions_type: Option<P<Type>>,
     obj: P<Node>,
@@ -1288,7 +1288,7 @@ fn contains_non_public_properties(props: &[P<Symbol>]) -> bool {
 // Filters out members that are already declared in the object literal or binding pattern.
 // Also computes the set of existing members declared by spread assignment.
 // completions.go:4484
-pub fn filter_object_members_list(
+pub(crate) fn filter_object_members_list(
     contextual_member_symbols: &[P<Symbol>],
     existing_members: &[P<Node>],
     file: P<SourceFile>,
@@ -1359,7 +1359,7 @@ pub fn filter_object_members_list(
 }
 
 // completions.go:4545
-pub fn is_currently_editing_node(node: P<Node>, file: P<SourceFile>, position: u32) -> bool {
+pub(crate) fn is_currently_editing_node(node: P<Node>, file: P<SourceFile>, position: u32) -> bool {
     let start = astnav::get_start_of_node(node, file, false /*includeJSDoc*/);
     start <= position && position <= node.end().expect_source("parsed nodes have source positions")
 }
@@ -1388,7 +1388,7 @@ fn set_member_declared_by_spread_assignment(
 // Returns the immediate owning class declaration of a context token,
 // on the condition that one exists and that the context implies completion should be given.
 // completions.go:4568
-pub fn try_get_constructor_like_completion_container(
+pub(crate) fn try_get_constructor_like_completion_container(
     context_token: Option<P<Node>>,
 ) -> Option<P<Node>> {
     let context_token = context_token?;
@@ -1422,7 +1422,7 @@ fn is_constructor_parameter_completion(node: P<Node>) -> bool {
 // Returns the immediate owning class declaration of a context token,
 // on the condition that one exists and that the context implies completion should be given.
 // completions.go:4595
-pub fn try_get_object_type_declaration_completion_container(
+pub(crate) fn try_get_object_type_declaration_completion_container(
     file: P<SourceFile>,
     context_token: Option<P<Node>>,
     location: P<Node>,
@@ -1543,7 +1543,7 @@ pub fn try_get_object_type_declaration_completion_container(
 }
 
 // completions.go:4692
-pub fn is_from_object_type_declaration(node: P<Node>) -> bool {
+fn is_from_object_type_declaration(node: P<Node>) -> bool {
     node.parent().is_some_and(|parent| {
         ast::is_class_or_type_element(parent)
             && ast::is_object_type_declaration(parent.parent().unwrap())
@@ -1552,7 +1552,7 @@ pub fn is_from_object_type_declaration(node: P<Node>) -> bool {
 
 // Filters out completion suggestions for class elements.
 // completions.go:4697
-pub fn filter_class_members_list(
+pub(crate) fn filter_class_members_list(
     base_symbols: &[P<Symbol>],
     existing_members: &[P<Node>],
     class_element_modifier_flags: ModifierFlags,
@@ -1606,7 +1606,7 @@ pub fn filter_class_members_list(
 }
 
 // completions.go:4743
-pub fn try_get_containing_jsx_element(
+pub(crate) fn try_get_containing_jsx_element(
     context_token: Option<P<Node>>,
     file: P<SourceFile>,
 ) -> Option<P<Node>> {
@@ -1703,7 +1703,7 @@ pub fn try_get_containing_jsx_element(
 // @returns Symbols to be suggested in a JSX element, barring those whose attributes
 // do not occur at the current position and have not otherwise been typed.
 // completions.go:4807
-pub fn filter_jsx_attributes(
+pub(crate) fn filter_jsx_attributes(
     symbols: &[P<Symbol>],
     attributes: &[P<Node>],
     file: P<SourceFile>,
@@ -1736,7 +1736,7 @@ pub fn filter_jsx_attributes(
 }
 
 // completions.go:4833
-pub fn is_type_keyword_token_or_identifier(node: P<Node>) -> bool {
+pub(crate) fn is_type_keyword_token_or_identifier(node: P<Node>) -> bool {
     ast::is_type_keyword_token(node)
         || ast::is_identifier(node)
             && scanner::identifier_to_keyword_kind(node) == Kind::TypeKeyword
@@ -2118,7 +2118,7 @@ impl LanguageService {
 }
 
 // completions.go:5195
-pub fn is_completion_list_blocker(
+pub(crate) fn is_completion_list_blocker(
     context_token: P<Node>,
     previous_token: Option<P<Node>>,
     location: P<Node>,
@@ -2429,7 +2429,7 @@ fn is_in_jsx_text(context_token: P<Node>, location: P<Node>) -> bool {
 }
 
 // completions.go:5423
-pub fn client_supports_item_label_details(ctx: &Context) -> bool {
+pub(crate) fn client_supports_item_label_details(ctx: &Context) -> bool {
     lsproto::get_client_capabilities(ctx)
         .text_document
         .completion
@@ -2438,12 +2438,12 @@ pub fn client_supports_item_label_details(ctx: &Context) -> bool {
 }
 
 // completions.go:5427
-pub fn client_supports_item_snippet(ctx: &Context) -> bool {
+pub(crate) fn client_supports_item_snippet(ctx: &Context) -> bool {
     lsproto::get_client_capabilities(ctx).text_document.completion.completion_item.snippet_support
 }
 
 // completions.go:5431
-pub fn client_supports_item_commit_characters(ctx: &Context) -> bool {
+pub(crate) fn client_supports_item_commit_characters(ctx: &Context) -> bool {
     lsproto::get_client_capabilities(ctx)
         .text_document
         .completion
@@ -2452,7 +2452,7 @@ pub fn client_supports_item_commit_characters(ctx: &Context) -> bool {
 }
 
 // completions.go:5435
-pub fn client_supports_item_insert_replace(ctx: &Context) -> bool {
+pub(crate) fn client_supports_item_insert_replace(ctx: &Context) -> bool {
     lsproto::get_client_capabilities(ctx)
         .text_document
         .completion
@@ -2461,7 +2461,7 @@ pub fn client_supports_item_insert_replace(ctx: &Context) -> bool {
 }
 
 // completions.go:5439
-pub fn client_supports_default_commit_characters(ctx: &Context) -> bool {
+pub(crate) fn client_supports_default_commit_characters(ctx: &Context) -> bool {
     lsproto::get_client_capabilities(ctx)
         .text_document
         .completion
@@ -2472,7 +2472,7 @@ pub fn client_supports_default_commit_characters(ctx: &Context) -> bool {
 }
 
 // completions.go:5443
-pub fn client_supports_default_edit_range(ctx: &Context) -> bool {
+fn client_supports_default_edit_range(ctx: &Context) -> bool {
     lsproto::get_client_capabilities(ctx)
         .text_document
         .completion
@@ -2491,7 +2491,7 @@ pub struct ArgumentInfoForCompletions {
 }
 
 // completions.go:5453
-pub fn get_argument_info_for_completions(
+pub(crate) fn get_argument_info_for_completions(
     node: P<Node>,
     position: u32,
     file: P<SourceFile>,
@@ -2508,25 +2508,5 @@ pub fn get_argument_info_for_completions(
     })
 }
 
-// Special values for `CompletionInfo['source']` used to disambiguate
-// completion items with the same `name`. (Each completion item must
-// have a unique name/source combination, because those two fields
-// comprise `CompletionEntryIdentifier` in `getCompletionEntryDetails`.
-//
-// When the completion item is an auto-import suggestion, the source
-// is the module specifier of the suggestion. To avoid collisions,
-// the values here should not be a module specifier we would ever
-// generate for an auto-import.
-// completions.go:5474
-// Completions that require `this.` insertion text
-pub const SOURCE_THIS_PROPERTY: &str = "ThisProperty/";
-// Auto-import that comes attached to a class member snippet
-pub const SOURCE_CLASS_MEMBER_SNIPPET: &str = "ClassMemberSnippet/";
-// A type-only import that needs to be promoted in order to be used at the completion location
-pub const SOURCE_TYPE_ONLY_ALIAS: &str = "TypeOnlyAlias/";
-// Auto-import that comes attached to an object literal method snippet
-pub const SOURCE_OBJECT_LITERAL_METHOD_SNIPPET: &str = "ObjectLiteralMethodSnippet/";
 // Case completions for switch statements
-pub const SOURCE_SWITCH_CASES: &str = "SwitchCases/";
-// Completions for an object literal expression
-pub const SOURCE_OBJECT_LITERAL_MEMBER_WITH_COMMA: &str = "ObjectLiteralMemberWithComma/";
+pub(crate) const SOURCE_SWITCH_CASES: &str = "SwitchCases/";

@@ -1,5 +1,9 @@
 # perf-round2-followups: what is left after the 2026-10-04 performance round
 
+This is a dated decision log with later follow-ups. Defaults, workflow paths and unresolved items belong to
+the sections' recorded revisions. Use the [notes guide](README.md#reading-historical-results) for current
+defaults, tooling and acceptance policy, and the [complete catalog](README.md#complete-catalog) for later work.
+
 One list of the open ideas, decisions and loose ends from the round that landed #37, #40, #38, #41, #42, #49, #50,
 #51 and #55. Each stream's own note has the detail and the measurements; this file is the index, ordered by expected
 value. Numbers are from the 38k-file codebase on an 18-core Apple Silicon machine unless noted. The sections above
@@ -36,7 +40,7 @@ is type-checked, CI runs on pull requests, and the workspace is at 0.11.0. The i
 - **Resolver path scratch buffers** (`notes/perf-resolver-allocations.md`): reuse thread-local strings for
   extension and module-suffix probes. Allocation calls fall 3.7% / 12.7% in the corresponding probes;
   historical whole-project instructions fall 0.09% on xstate / 0.04% on VS Code. Retained for owner review;
-  below the usual landing thresholds, with deterministic Linux verification outstanding.
+  below the thresholds used in that review, with deterministic Linux verification outstanding at that point.
 
 ## Not verified yet
 
@@ -139,6 +143,34 @@ diagnostics identical (notes/spike-shared-graph.md sections 10-10.2). The featur
 with the switch off, which is why it is not in the default build.
 
 ## Measured and rejected (do not redo)
+
+Read each rejection's reason before retrying it. Under the
+[current policy](../AGENTS.md#performance-and-memory-changes), a missed historical percentage threshold alone
+does not prevent a new trial. Correctness defects, regressions and stated prerequisites still need new evidence
+or a changed constraint before revisiting the approach.
+
+- Collection redesign trials on `f9a7c8d6` (`notes/data-structure-redesigns.md`): papaya 0.2.5 and scc 3.8.8
+  adapters do not preserve vacant-insertion Clone-panic/lock-poisoning behavior. Papaya also regresses the
+  seven-project instruction/RSS screen. A poisoning-compatible parking_lot 0.12.5 adapter adds no consistent
+  benefit over lazy groups of std RwLocks in a direct comparison. Keep std locks and the existing hash table.
+  Persistent scoped/project maps (rpds 1.2.1), ThinVec NodeBuilderContext fields, inline-one/ThinVec multimap
+  values and consolidating SyncMap snapshot vectors show mixed or noisy results; the census finds little
+  inherited copying in the exercised LSP workloads. Declaration-queue VecDeque costs +0.110%, +1.768% and
+  +4.321% instructions at measured queue lengths of 512, 2,048 and 4,096. Revisit these specific designs with a
+  changed workload, an adapter preserving the required contract, or evidence isolating a new bottleneck.
+  The selected lazy shard allocation, smaller link chunks and Fx-hashed ordered watcher events are separate.
+
+- Additional collection trials on `5b0ebd42` (`notes/data-structure-followups.md`): four/eight-handle inference
+  buffers and sixteen-flag boolean SmallVec do not show a broad, repeatable instruction reduction in two
+  full-catalog batches. Seven-project screens also reject larger union-merge capacities, mixin flags, borrowed
+  resolver keys, inline file-include reasons, deferred type-argument lists and diagnostic collision lists.
+  The last two targets are cold in the allocation census. Revisit with a changed workload, allocation profile or
+  API benefit; see the note for the individual measurements and the selected alternatives.
+
+- Direct `hashbrown::HashMap` with Fx hashing for 20 private checker caches
+  (`notes/data-structure-review.md`, follow-up): three paired runs on 18 catalog projects increased median
+  single-threaded instructions on 12; none reduced instructions in every pair. Default RSS and wall time were
+  mixed. Original maps restored; revisit with a cache-specific API or workload benefit, not a map-type swap alone.
 
 - Unicode normalization library cleanup ([rust-stdlib-normalization.md](rust-stdlib-normalization.md)), applied at
   the user's request: unicode-normalization 0.1.25 matches the existing Unicode 17 NFD output. Five-pair Mac
@@ -503,6 +535,21 @@ with the switch off, which is why it is not in the default build.
   (55% of typeorm's `--noCheck` allocations are the transformer), never in the catalog's `--noEmit` full check
   (no `tsrs_declarations` frame in 713,672 sampled allocations of typeorm). Nothing to take for the catalog;
   revisit only for a `--noCheck` workload.
+- Around the union type-facts summary (notes/perf-union-type-facts.md, landed: `ObjectFlags::NonNullableUnion`,
+  Compiler-Unions -1.0% single-threaded instructions): a 32-bit OR of constituent flags per union (a word per
+  union, `UnionType` has no padding) and answering the `NE` masks from the summary (the walk resolves object
+  constituents' members for those, so the shortcut would skip resolution) were not built; the strict application
+  projects (typeorm, mui-docs) ask mostly for `NE` facts or of unions that really are nullable, so there is
+  nothing more to take there.
+- Front-end VFS probes and package.json lookups (notes/perf-vfs-probes.md, landed): `RootFor::with_root` lends a
+  probe the root's io/fs view (`DirFS`, `SubFS`, `HostRoot` borrowing the root) instead of boxing a copy, `split_path`
+  borrows an already normal path, `InfoCache::get` hashes `to_path_cow`'s text against the `Path` keys and
+  `get_package_json_info` joins `package.json` in the resolver's scratch string. Heap allocations -5.0% cal-diy,
+  -6.0% typeorm, -1.8% webpack (full check; -17.3% / -3.4% / -9.1% front end only), diagnostics identical,
+  instructions -0.09% to -0.17% medians inside a +-1.5% spread on a loaded machine, default-checker RSS noise.
+  Do not redo those sites. Left, with the reason, in the note: the joined path per probe (the system call needs
+  it), the lowercase key copy on case-insensitive hosts, and cal-diy's +3.9 MB single-threaded RSS (two more
+  mimalloc pages for identical live data; not purgeable).
 - From notes/perf-icount-alloc.md (exact VM counts, locality mode, a large private monorepo at 8 checkers): the
   arguments of a pending type alias held as a `Cow` (the alias's own list when unchanged, a pooled buffer when
   changed), together with pooled lists for template-literal instantiation: +0.20%, and +0.26% with the helpers out
@@ -510,6 +557,14 @@ with the switch off, which is why it is not in the default build.
   `getNamedMembers` into a pooled buffer, and object-literal all-properties tables presized: -0.012%, inside the
   spread. A pool's push and pop cost about what mimalloc's fast path does. Pooling paid for hash tables and for
   growth chains (realloc and copy), not for one short-lived Vec.
+- JSDoc lists on the parser's scratch buffers and one lazy JSDoc parser per thread (notes/perf-jsdoc-parser.md,
+  landed): the per-node comment ranges, tags, comment parts and `{@link}` text go through `*_space` buffers, the
+  per-node comment list and the nested lists of a tag build on `node_stack`, and `parse_jsdoc_for_node` reuses a
+  per-thread parser (`Parser::recycle`) instead of building one per node. Heap allocations webpack -4.5% full check
+  / -11.8% front end, typeorm -0.9%, mui-docs -0.1%; instructions webpack -0.33% (6 of 7 pairs), typeorm and
+  mui-docs flat; AST hashes identical on 202,810 files. Do not redo those sites. Left, with the reason, in the note:
+  the `Vec` the `ParseJSDocForNodeFn` signature returns per lazily parsed node (tsrs_ast, #772's territory) and
+  `parse_isolated_entity_name`'s parser per call (language service only).
   Relater round (notes/perf-icount-relater.md; another large private monorepo, DynamoRIO counts): an exact early exit
   from the deeply-nested walk (+0.04% single-threaded), `Relation::set` through hashbrown's `entry` (-0.005%, noise),
   a Bloom filter of names in `some_property_reduces_to_never`'s counts (+0.03%).

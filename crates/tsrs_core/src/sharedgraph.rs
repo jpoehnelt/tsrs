@@ -10,7 +10,6 @@
 //!
 //! Nothing here is used unless the switch is on: `ANY_FROZEN` stays false and every `OvCell` behaves as a `Cell`.
 
-use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -105,14 +104,6 @@ fn mark_dirty(addr: usize) {
 pub fn any_frozen() -> bool {
     // Relaxed: written before the threads that read it were spawned.
     COMPILED_IN && ANY_FROZEN.load(Ordering::Relaxed)
-}
-
-#[inline]
-pub fn is_frozen_addr(addr: usize) -> bool {
-    if !any_frozen() {
-        return false;
-    }
-    is_frozen_addr_slow(addr)
 }
 
 #[inline]
@@ -283,7 +274,6 @@ pub struct Overlay {
     cells: RefCell<FxHashMap<usize, [u64; 2]>>,
     /// One bit per 64 bytes of the frozen range: some cell in that line has an overlay value (skips the hash lookup).
     lines: RefCell<Vec<u64>>,
-    tables: RefCell<FxHashMap<usize, Box<dyn Any>>>,
     id_words: RefCell<Vec<Option<Box<[u64; ID_PAGE]>>>>,
 }
 
@@ -295,7 +285,7 @@ impl Overlay {
     }
 
     #[inline]
-    pub fn get_cell<T: Copy>(&self, addr: usize, v: T) -> T {
+    fn get_cell<T: Copy>(&self, addr: usize, v: T) -> T {
         let line = Self::line(addr);
         let has = self.lines.borrow().get(line >> 6).is_some_and(|w| w & (1 << (line & 63)) != 0);
         if !has {
@@ -304,7 +294,7 @@ impl Overlay {
         self.cells.borrow().get(&addr).map_or(v, |&b| decode(b))
     }
 
-    pub fn set_cell<T: Copy>(&self, addr: usize, v: T) {
+    fn set_cell<T: Copy>(&self, addr: usize, v: T) {
         let line = Self::line(addr);
         {
             let mut lines = self.lines.borrow_mut();
@@ -318,23 +308,6 @@ impl Overlay {
         mark_dirty(addr);
         self.cells.borrow_mut().insert(addr, encode(v));
     }
-
-    /// The private table keyed by `addr` (a frozen object), made by `make` on first use.
-    pub fn table<T: 'static>(&self, addr: usize, make: impl FnOnce() -> T) -> &'static T {
-        let mut tables = self.tables.borrow_mut();
-        let b = tables.entry(addr).or_insert_with(|| Box::new(make()));
-        let t: &T = b.downcast_ref::<T>().expect("shared graph: overlay table of another type");
-        // SAFETY: a table is never removed or replaced while the overlay lives, and the overlay lives as long as its
-        // checker; boxes do not move when the map grows.
-        unsafe { &*std::ptr::from_ref(t) }
-    }
-
-    pub fn try_table<T: 'static>(&self, addr: usize) -> Option<&'static T> {
-        let tables = self.tables.borrow();
-        let t: &T = tables.get(&addr)?.downcast_ref::<T>()?;
-        // SAFETY: as in `table`.
-        Some(unsafe { &*std::ptr::from_ref(t) })
-    }
 }
 
 thread_local! {
@@ -346,6 +319,11 @@ pub fn enter_overlay(overlay: &Overlay) {
     CURRENT.with(|c| c.set(std::ptr::from_ref(overlay)));
 }
 
+/// Forgets the overlay `enter_overlay` set, for a thread that outlives its checker (a reused checker thread).
+pub fn leave_overlay() {
+    CURRENT.with(|c| c.set(std::ptr::null()));
+}
+
 /// The overlay of the checker this thread runs, if any. Without one (the main thread sorting diagnostics after the
 /// pass), frozen objects read as the seed left them.
 #[inline]
@@ -355,7 +333,7 @@ pub fn try_current_overlay() -> Option<&'static Overlay> {
     (!p.is_null()).then(|| unsafe { &*p })
 }
 
-pub fn current_overlay() -> &'static Overlay {
+fn current_overlay() -> &'static Overlay {
     let p = CURRENT.with(Cell::get);
     assert!(
         !p.is_null(),
@@ -404,7 +382,7 @@ impl<T: Copy + std::fmt::Debug> std::fmt::Debug for OvCell<T> {
 
 impl<T: Copy + Default + PartialEq> OvCell<T> {
     #[inline]
-    pub const fn new(v: T) -> Self {
+    const fn new(v: T) -> Self {
         OvCell(Cell::new(v))
     }
 
@@ -436,18 +414,6 @@ impl<T: Copy + Default + PartialEq> OvCell<T> {
         }
         current_overlay().set_cell(addr, v);
         true
-    }
-
-    #[inline]
-    pub fn replace(&self, v: T) -> T {
-        let old = self.get();
-        self.set(v);
-        old
-    }
-
-    #[inline]
-    pub fn take(&self) -> T {
-        self.replace(T::default())
     }
 }
 
@@ -489,36 +455,12 @@ impl RawWord {
     }
 }
 
-/// `ThinSliceCell` whose writes to a frozen address go to the overlay.
-pub struct OvThinSliceCell<T: 'static>(OvCell<crate::ThinSlice<T>>);
-
-impl<T> OvThinSliceCell<T> {
-    #[inline]
-    pub fn new(s: &'static [T]) -> Self {
-        OvThinSliceCell(OvCell::new(crate::ThinSlice::new(s)))
-    }
-    #[inline]
-    pub fn get(&self) -> &'static [T] {
-        self.0.get().get()
-    }
-    #[inline]
-    pub fn set(&self, s: &'static [T]) {
-        self.0.set(crate::ThinSlice::new(s));
-    }
-}
-
-impl<T> Default for OvThinSliceCell<T> {
-    fn default() -> Self {
-        OvThinSliceCell::new(&[])
-    }
-}
-
 /// `OptionThinSliceCell` whose writes to a frozen address go to the overlay.
 pub struct OvOptionThinSliceCell<T: 'static>(OvCell<Option<crate::ThinSlice<T>>>);
 
 impl<T> OvOptionThinSliceCell<T> {
     #[inline]
-    pub fn new(s: Option<&'static [T]>) -> Self {
+    fn new(s: Option<&'static [T]>) -> Self {
         OvOptionThinSliceCell(OvCell::new(s.map(crate::ThinSlice::new)))
     }
     #[inline]
@@ -610,21 +552,10 @@ fn overlay_get_frozen<T: Copy>(addr: usize, v: T) -> T {
     try_current_overlay().map_or(v, |o| o.get_cell(addr, v))
 }
 
-/// Writes `v` to the current overlay if the cell at `cell` is frozen (returns true).
-#[inline]
-pub fn overlay_set_if_frozen<C, T: Copy>(cell: &C, v: T) -> bool {
-    let addr = std::ptr::from_ref(cell).addr();
-    if !is_frozen_addr_slow(addr) {
-        return false;
-    }
-    current_overlay().set_cell(addr, v);
-    true
-}
-
 /// `OwnedCell::set` on a frozen cell: kept in the overlay.
 #[cold]
 #[inline(never)]
-pub fn owned_set_if_frozen<C, T: Copy>(cell: &C, v: T) -> bool {
+pub(crate) fn owned_set_if_frozen<C, T: Copy>(cell: &C, v: T) -> bool {
     let addr = std::ptr::from_ref(cell).addr();
     if !is_frozen_addr_slow(addr) {
         return false;

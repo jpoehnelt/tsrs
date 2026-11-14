@@ -23,23 +23,11 @@ bitflags! {
 
 impl GeneratedIdentifierFlags {
     #[must_use]
-    pub fn kind(self) -> GeneratedIdentifierFlags {
+    pub(crate) fn kind(self) -> GeneratedIdentifierFlags {
         self & GeneratedIdentifierFlags::KindMask
     }
 
-    pub fn is_auto(self) -> bool {
-        self.kind() == GeneratedIdentifierFlags::Auto
-    }
-
-    pub fn is_loop(self) -> bool {
-        self.kind() == GeneratedIdentifierFlags::Loop
-    }
-
-    pub fn is_unique(self) -> bool {
-        self.kind() == GeneratedIdentifierFlags::Unique
-    }
-
-    pub fn is_node(self) -> bool {
+    pub(crate) fn is_node(self) -> bool {
         self.kind() == GeneratedIdentifierFlags::Node
     }
 

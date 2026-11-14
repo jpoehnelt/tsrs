@@ -26,7 +26,7 @@ pub enum CommandLineOptionKind {
 }
 
 impl CommandLineOptionKind {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             CommandLineOptionKind::String => "string",
             CommandLineOptionKind::Number => "number",
@@ -77,18 +77,14 @@ pub struct CommandLineOption {
     pub category: Option<&'static Message>,
 
     // What kind of extra validation `validateJsonOptionValue` should do
-    pub(crate) extra_validation: ExtraValidation,
+    pub extra_validation: ExtraValidation,
 
     // checks that option with number type has value >= minValue
-    pub(crate) min_value: i32,
+    pub min_value: i32,
 
     // true or undefined
     // used for configDirTemplateSubstitutionOptions
-    #[expect(
-        dead_code,
-        reason = "unused in Go too; kept so the option tables match declscompiler.go"
-    )]
-    pub(crate) allow_config_dir_template_substitution: bool,
+    pub allow_config_dir_template_substitution: bool,
 
     // used for filter in compilerrunner
     pub affects_declaration_path: bool,
@@ -100,19 +96,15 @@ pub struct CommandLineOption {
     pub affects_module_resolution: bool,
     pub affects_emit: bool,
 
-    pub(crate) allow_js_flag: bool,
-    pub(crate) strict_flag: bool,
+    pub allow_js_flag: bool,
+    pub strict_flag: bool,
 
     // used in transpileoptions worker
     // todo: revisit to see if this can be reduced to boolean
-    #[expect(
-        dead_code,
-        reason = "unused in Go too; kept so the option tables match declscompiler.go"
-    )]
-    pub(crate) transpile_option_value: Tristate,
+    pub transpile_option_value: Tristate,
 
     // used for CommandLineOptionTypeList
-    pub(crate) list_preserve_falsy_values: bool,
+    pub list_preserve_falsy_values: bool,
     // used for COMPILER_OPTIONS_DECLARATION
     pub element_options: Option<CommandLineOptionNameMap>,
 }
@@ -153,7 +145,7 @@ impl CommandLineOption {
         element_options: None,
     };
 
-    pub fn deprecated_keys(&self) -> Option<&'static FxHashSet<&'static str>> {
+    pub(crate) fn deprecated_keys(&self) -> Option<&'static FxHashSet<&'static str>> {
         if self.kind != CommandLineOptionKind::Enum {
             return None;
         }
@@ -179,13 +171,13 @@ impl CommandLineOption {
         COMMAND_LINE_OPTION_ELEMENTS.get(self.name)
     }
 
-    pub fn disallow_null_or_undefined(&self) -> bool {
+    pub(crate) fn disallow_null_or_undefined(&self) -> bool {
         self.name == "extends"
     }
 }
 
 // CommandLineOption.Elements()
-pub static COMMAND_LINE_OPTION_ELEMENTS: LazyLock<FxHashMap<&'static str, CommandLineOption>> =
+static COMMAND_LINE_OPTION_ELEMENTS: LazyLock<FxHashMap<&'static str, CommandLineOption>> =
     LazyLock::new(|| {
         let mut m = FxHashMap::default();
         m.insert(
@@ -309,7 +301,7 @@ pub static COMMAND_LINE_OPTION_ELEMENTS: LazyLock<FxHashMap<&'static str, Comman
     });
 
 // CommandLineOption.EnumMap()
-pub static COMMAND_LINE_OPTION_ENUM_MAP: LazyLock<
+static COMMAND_LINE_OPTION_ENUM_MAP: LazyLock<
     FxHashMap<&'static str, &'static LazyLock<OrderedMap<&'static str, CompilerOptionsValue>>>,
 > = LazyLock::new(|| {
     let mut m: FxHashMap<
@@ -327,15 +319,14 @@ pub static COMMAND_LINE_OPTION_ENUM_MAP: LazyLock<
 });
 
 // CommandLineOption.DeprecatedKeys()
-pub static COMMAND_LINE_OPTION_DEPRECATED: LazyLock<
-    FxHashMap<&'static str, FxHashSet<&'static str>>,
-> = LazyLock::new(|| {
-    let mut m = FxHashMap::default();
-    m.insert("module", ["none", "amd", "system", "umd"].into_iter().collect());
-    m.insert("moduleResolution", ["node", "classic", "node10"].into_iter().collect());
-    m.insert("target", std::iter::once("es5").collect());
-    m
-});
+static COMMAND_LINE_OPTION_DEPRECATED: LazyLock<FxHashMap<&'static str, FxHashSet<&'static str>>> =
+    LazyLock::new(|| {
+        let mut m = FxHashMap::default();
+        m.insert("module", ["none", "amd", "system", "umd"].into_iter().collect());
+        m.insert("moduleResolution", ["node", "classic", "node10"].into_iter().collect());
+        m.insert("target", std::iter::once("es5").collect());
+        m
+    });
 
 // Go `any` as used for option values: JSON values produced from the tsconfig AST (float64 numbers,
 // []any arrays, *OrderedMap objects), command-line values (int numbers, []string lists) and the
@@ -396,7 +387,9 @@ impl CompilerOptionsValue {
         }
     }
 
-    pub fn as_object_mut(&mut self) -> Option<&mut OrderedMap<String, CompilerOptionsValue>> {
+    pub(crate) fn as_object_mut(
+        &mut self,
+    ) -> Option<&mut OrderedMap<String, CompilerOptionsValue>> {
         match self {
             CompilerOptionsValue::Object(m) => Some(m),
             _ => None,

@@ -1,15 +1,15 @@
-mod api;
-mod context;
-mod indent;
-mod rule;
-mod rulecontext;
-mod rules;
-mod rulesmap;
-mod scanner;
-mod span;
-mod util;
+pub mod api;
+pub(crate) mod context;
+pub mod indent;
+pub mod rule;
+pub(crate) mod rulecontext;
+pub(crate) mod rules;
+pub mod rulesmap;
+pub mod scanner;
+pub mod span;
+pub mod util;
 pub use api::*;
-pub use context::*;
+pub(crate) use context::*;
 pub use indent::*;
 pub(crate) use rule::*;
 pub(crate) use rulecontext::*;
@@ -18,16 +18,3 @@ pub use rulesmap::*;
 pub use scanner::*;
 pub use span::*;
 pub use util::*;
-
-#[cfg(test)]
-mod api_test;
-#[cfg(test)]
-mod comment_test;
-#[cfg(test)]
-mod format_test;
-#[cfg(test)]
-mod indent_getindentation_test;
-#[cfg(test)]
-mod indent_test;
-#[cfg(test)]
-mod oracle_test;

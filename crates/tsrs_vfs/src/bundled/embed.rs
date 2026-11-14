@@ -1,20 +1,33 @@
+#[cfg(not(feature = "compressed-stdlib"))]
 use std::sync::LazyLock;
 use std::time::SystemTime;
 
+#[cfg(not(feature = "compressed-stdlib"))]
 use rustc_hash::FxHashMap;
 
+#[cfg(not(feature = "compressed-stdlib"))]
 use super::embed_generated::EMBEDDED_CONTENTS;
 use super::libs_generated::LIB_NAMES;
 use crate::{Entries, FS, FileInfo, FileMode};
 
 const SCHEME: &str = "bundled:///";
 
+#[cfg(not(feature = "compressed-stdlib"))]
 static EMBEDDED_CONTENTS_MAP: LazyLock<FxHashMap<&'static str, &'static str>> =
     LazyLock::new(|| EMBEDDED_CONTENTS.iter().copied().collect());
 
+#[cfg(not(feature = "compressed-stdlib"))]
 fn embedded_contents(rest: &str) -> Option<&'static str> {
     EMBEDDED_CONTENTS_MAP.get(rest).copied()
 }
+
+#[cfg(not(feature = "compressed-stdlib"))]
+fn embedded_length(rest: &str) -> Option<usize> {
+    EMBEDDED_CONTENTS_MAP.get(rest).map(|text| text.len())
+}
+
+#[cfg(feature = "compressed-stdlib")]
+use super::compressed::{contents as embedded_contents, length as embedded_length};
 
 fn split_path(path: &str) -> Option<&str> {
     path.strip_prefix(SCHEME)
@@ -29,8 +42,8 @@ pub fn is_bundled(path: &str) -> bool {
 }
 
 // wrappedFS is implemented directly rather than going through an io/fs layer.
-// Our vfs.FS works with file contents in terms of strings, and that's
-// what include_str! gives us.
+// Our vfs.FS works with file contents in terms of strings; both embedding
+// representations retain immutable UTF-8 strings.
 
 pub struct WrappedFS<T: FS> {
     fs: T,
@@ -41,22 +54,16 @@ pub fn wrap_fs<T: FS>(fs: T) -> WrappedFS<T> {
 }
 
 impl<T: FS> WrappedFS<T> {
-    pub fn inner(&self) -> &T {
-        &self.fs
-    }
-
     // ReadFile without copying the embedded contents.
-    pub fn read_embedded_file(path: &str) -> Option<&'static str> {
-        embedded_file(path)
-    }
 }
 
-/// The embedded text of a `bundled:///` path (the lib files `include_str!` put in the binary), without a copy; `None`
+/// The embedded text of a `bundled:///` path, without a copy; `None`
 /// for any other path.
 ///
 /// tsrs-only: the compiler host parses this text in place instead of reading a heap copy through
 /// `FS::read_file` and leaking it (lib.dom.d.ts alone is 2.3 MB).
-pub fn embedded_file(path: &str) -> Option<&'static str> {
+#[cfg(not(feature = "noembed"))]
+pub(crate) fn embedded_file(path: &str) -> Option<&'static str> {
     split_path(path).and_then(embedded_contents)
 }
 
@@ -67,7 +74,7 @@ impl<T: FS> FS for WrappedFS<T> {
 
     fn file_exists(&self, path: &str) -> bool {
         if let Some(rest) = split_path(path) {
-            return embedded_contents(rest).is_some();
+            return embedded_length(rest).is_some();
         }
         self.fs.file_exists(path)
     }
@@ -109,11 +116,11 @@ impl<T: FS> FS for WrappedFS<T> {
                     mod_time: None,
                 });
             }
-            if let Some(lib) = embedded_contents(rest) {
+            if let Some(length) = embedded_length(rest) {
                 let lib_name = rest.strip_prefix("libs/").unwrap_or(rest);
                 return Some(FileInfo {
                     name: lib_name.to_string(),
-                    size: lib.len() as i64,
+                    size: length as i64,
                     mode: FileMode::None,
                     mod_time: None,
                 });

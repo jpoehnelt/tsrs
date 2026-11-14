@@ -193,12 +193,12 @@ pub struct UserPreferences {
 // Source12's Go parser is generated from the preference schema. This Rust table retains the same raw/config
 // field names and accessors; decoding it matches the generated parser without Go's code generator.
 pub struct FieldTag {
-    pub(crate) name: &'static str,
-    pub(crate) raw: &'static str,
-    pub(crate) config: &'static str,
-    pub(crate) fallback_config: &'static str,
-    pub(crate) get: for<'a> fn(&'a UserPreferences) -> FieldRef<'a>,
-    pub(crate) get_mut: for<'a> fn(&'a mut UserPreferences) -> FieldMut<'a>,
+    pub name: &'static str,
+    raw: &'static str,
+    config: &'static str,
+    fallback_config: &'static str,
+    pub get: for<'a> fn(&'a UserPreferences) -> FieldRef<'a>,
+    pub get_mut: for<'a> fn(&'a mut UserPreferences) -> FieldMut<'a>,
 }
 
 // Field types determine the parsers and serializers for each preference.
@@ -759,7 +759,7 @@ pub enum QuotePreference {
 }
 
 impl QuotePreference {
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             QuotePreference::Unknown => "",
             QuotePreference::Auto => "auto",
@@ -772,10 +772,10 @@ impl QuotePreference {
 // userpreferences.go:232
 // Go `type WorkspaceSymbolsScope string`; source12's generated parser accepts the two protocol values.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
-pub struct WorkspaceSymbolsScope(pub Cow<'static, str>);
+pub struct WorkspaceSymbolsScope(Cow<'static, str>);
 
 impl WorkspaceSymbolsScope {
-    pub const ALL_OPEN_PROJECTS: WorkspaceSymbolsScope =
+    const ALL_OPEN_PROJECTS: WorkspaceSymbolsScope =
         WorkspaceSymbolsScope(Cow::Borrowed("allOpenProjects"));
     pub const CURRENT_PROJECT: WorkspaceSymbolsScope =
         WorkspaceSymbolsScope(Cow::Borrowed("currentProject"));
@@ -792,7 +792,7 @@ pub enum JsxAttributeCompletionStyle {
 }
 
 impl JsxAttributeCompletionStyle {
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             JsxAttributeCompletionStyle::Unknown => "",
             JsxAttributeCompletionStyle::Auto => "auto",
@@ -812,7 +812,7 @@ pub enum IncludeInlayParameterNameHints {
 }
 
 impl IncludeInlayParameterNameHints {
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             IncludeInlayParameterNameHints::None => "",
             IncludeInlayParameterNameHints::All => "all",
@@ -867,7 +867,7 @@ pub enum OrganizeImportsTypeOrder {
 
 // userpreferences.go:300
 // typeParsers: one function per entry of Go's map, in Go's order; setFieldFromValue dispatches on the field type.
-pub fn parse_tristate_value(val: &Value) -> Tristate {
+fn parse_tristate_value(val: &Value) -> Tristate {
     if let Value::Bool(b) = val {
         if *b {
             return Tristate::True;
@@ -877,7 +877,7 @@ pub fn parse_tristate_value(val: &Value) -> Tristate {
     Tristate::Unknown
 }
 
-pub fn parse_quote_preference(val: &Value) -> QuotePreference {
+fn parse_quote_preference(val: &Value) -> QuotePreference {
     if let Value::String(s) = val {
         match s.to_lowercase().as_str() {
             "auto" => return QuotePreference::Auto,
@@ -889,7 +889,7 @@ pub fn parse_quote_preference(val: &Value) -> QuotePreference {
     QuotePreference::Unknown
 }
 
-pub fn parse_jsx_attribute_completion_style(val: &Value) -> JsxAttributeCompletionStyle {
+fn parse_jsx_attribute_completion_style(val: &Value) -> JsxAttributeCompletionStyle {
     if let Value::String(s) = val {
         match s.to_lowercase().as_str() {
             "braces" => return JsxAttributeCompletionStyle::Braces,
@@ -900,7 +900,7 @@ pub fn parse_jsx_attribute_completion_style(val: &Value) -> JsxAttributeCompleti
     JsxAttributeCompletionStyle::Auto
 }
 
-pub fn parse_include_inlay_parameter_name_hints(val: &Value) -> IncludeInlayParameterNameHints {
+fn parse_include_inlay_parameter_name_hints(val: &Value) -> IncludeInlayParameterNameHints {
     if let Value::String(s) = val {
         match s.to_lowercase().as_str() {
             "all" => return IncludeInlayParameterNameHints::All,
@@ -911,7 +911,7 @@ pub fn parse_include_inlay_parameter_name_hints(val: &Value) -> IncludeInlayPara
     IncludeInlayParameterNameHints::None
 }
 
-pub fn parse_organize_imports_sort(val: &Value) -> OrganizeImportsSort {
+fn parse_organize_imports_sort(val: &Value) -> OrganizeImportsSort {
     if let Value::String(s) = val {
         match s.to_lowercase().as_str() {
             "ordinal" => return OrganizeImportsSort::Ordinal,
@@ -924,7 +924,7 @@ pub fn parse_organize_imports_sort(val: &Value) -> OrganizeImportsSort {
     OrganizeImportsSort::Auto
 }
 
-pub fn parse_organize_imports_collation(val: &Value) -> OrganizeImportsCollation {
+fn parse_organize_imports_collation(val: &Value) -> OrganizeImportsCollation {
     if let Value::String(s) = val
         && s.to_lowercase() == "unicode"
     {
@@ -933,7 +933,7 @@ pub fn parse_organize_imports_collation(val: &Value) -> OrganizeImportsCollation
     OrganizeImportsCollation::Ordinal
 }
 
-pub fn parse_organize_imports_case_first(val: &Value) -> OrganizeImportsCaseFirst {
+fn parse_organize_imports_case_first(val: &Value) -> OrganizeImportsCaseFirst {
     if let Value::String(s) = val {
         match s.to_lowercase().as_str() {
             "lower" => return OrganizeImportsCaseFirst::Lower,
@@ -944,7 +944,7 @@ pub fn parse_organize_imports_case_first(val: &Value) -> OrganizeImportsCaseFirs
     OrganizeImportsCaseFirst::False
 }
 
-pub fn parse_organize_imports_type_order(val: &Value) -> OrganizeImportsTypeOrder {
+fn parse_organize_imports_type_order(val: &Value) -> OrganizeImportsTypeOrder {
     if let Value::String(s) = val {
         match s.to_lowercase().as_str() {
             "last" => return OrganizeImportsTypeOrder::Last,
@@ -956,7 +956,7 @@ pub fn parse_organize_imports_type_order(val: &Value) -> OrganizeImportsTypeOrde
     OrganizeImportsTypeOrder::Auto
 }
 
-pub fn parse_import_module_specifier_preference(val: &Value) -> ImportModuleSpecifierPreference {
+fn parse_import_module_specifier_preference(val: &Value) -> ImportModuleSpecifierPreference {
     if let Value::String(s) = val {
         match s.to_lowercase().as_str() {
             "project-relative" => return ImportModuleSpecifierPreference::ProjectRelative,
@@ -968,7 +968,7 @@ pub fn parse_import_module_specifier_preference(val: &Value) -> ImportModuleSpec
     ImportModuleSpecifierPreference::Shortest
 }
 
-pub fn parse_import_module_specifier_ending_preference(
+fn parse_import_module_specifier_ending_preference(
     val: &Value,
 ) -> ImportModuleSpecifierEndingPreference {
     if let Value::String(s) = val {
@@ -982,7 +982,7 @@ pub fn parse_import_module_specifier_ending_preference(
     ImportModuleSpecifierEndingPreference::Auto
 }
 
-pub fn parse_workspace_symbols_scope(val: &Value) -> WorkspaceSymbolsScope {
+fn parse_workspace_symbols_scope(val: &Value) -> WorkspaceSymbolsScope {
     if let Value::String(s) = val {
         match s.to_lowercase().as_str() {
             "allopenprojects" => return WorkspaceSymbolsScope::ALL_OPEN_PROJECTS,
@@ -1001,7 +1001,7 @@ pub fn parse_workspace_symbols_scope(val: &Value) -> WorkspaceSymbolsScope {
     clippy::option_option,
     reason = "Distinguishes no matching serializer or field from a matching nil value, as in Go."
 )]
-pub fn type_serializers(field: &FieldRef<'_>) -> Option<Option<Value>> {
+fn type_serializers(field: &FieldRef<'_>) -> Option<Option<Value>> {
     Some(match field {
         FieldRef::Tristate(v) => match **v {
             Tristate::True => Some(Value::Bool(true)),
@@ -1086,7 +1086,7 @@ pub fn type_serializers(field: &FieldRef<'_>) -> Option<Option<Value>> {
 // userpreferences.go:525
 // configPathParsers provides field-specific config value parsers that override the default
 // type-based parser when the VS Code config value format differs from the Go field type.
-pub fn config_path_parsers(path: &str) -> Option<fn(&Value) -> Tristate> {
+fn config_path_parsers(path: &str) -> Option<fn(&Value) -> Tristate> {
     match path {
         // VS Code sends caseSensitivity as a string ("auto"/"caseSensitive"/"caseInsensitive"),
         // but OrganizeImportsIgnoreCase is a core.Tristate.
@@ -1112,19 +1112,19 @@ pub fn config_path_parsers(path: &str) -> Option<fn(&Value) -> Tristate> {
 
 // userpreferences.go:547
 pub struct FieldInfo {
-    pub(crate) raw_name: &'static str, // raw name for unstable section lookup (e.g., "quotePreference")
-    pub(crate) config_path: &'static str, // dotted path for config (e.g., "preferences.quoteStyle")
-    pub(crate) fallback_config_paths: Vec<ConfigPathInfo>,
-    pub(crate) field: &'static FieldTag, // Go: fieldPath, the index path to the field in the struct
-    pub(crate) raw_invert: bool,         // whether to invert boolean values for raw name
-    pub(crate) config_invert: bool,      // whether to invert boolean values for config path
+    pub raw_name: &'static str, // raw name for unstable section lookup (e.g., "quotePreference")
+    config_path: &'static str,  // dotted path for config (e.g., "preferences.quoteStyle")
+    fallback_config_paths: Vec<ConfigPathInfo>,
+    field: &'static FieldTag, // Go: fieldPath, the index path to the field in the struct
+    raw_invert: bool,         // whether to invert boolean values for raw name
+    config_invert: bool,      // whether to invert boolean values for config path
 }
 
 // userpreferences.go:556
 #[derive(Clone, Copy)]
 pub struct ConfigPathInfo {
-    pub(crate) path: &'static str,
-    pub(crate) invert: bool,
+    path: &'static str,
+    invert: bool,
 }
 
 // userpreferences.go:561
@@ -1148,7 +1148,7 @@ pub fn unstable_name_index() -> &'static FxHashMap<&'static str, usize> {
 }
 
 // userpreferences.go:577
-pub fn collect_field_infos(fields: &'static [FieldTag]) -> Vec<FieldInfo> {
+fn collect_field_infos(fields: &'static [FieldTag]) -> Vec<FieldInfo> {
     let mut infos = Vec::new();
     for field in fields {
         let raw_tag = field.raw;
@@ -1199,7 +1199,7 @@ pub fn collect_field_infos(fields: &'static [FieldTag]) -> Vec<FieldInfo> {
 }
 
 // userpreferences.go:628
-pub fn parse_config_path_tag(tag: &'static str) -> ConfigPathInfo {
+fn parse_config_path_tag(tag: &'static str) -> ConfigPathInfo {
     let mut parts = tag.split(',');
     let mut info = ConfigPathInfo { path: parts.next().unwrap(), invert: false };
     for part in parts {
@@ -1211,7 +1211,7 @@ pub fn parse_config_path_tag(tag: &'static str) -> ConfigPathInfo {
 }
 
 // userpreferences.go:639
-pub fn get_nested_value<'a>(config: &'a JsonMap, path: &str) -> Option<&'a Value> {
+fn get_nested_value<'a>(config: &'a JsonMap, path: &str) -> Option<&'a Value> {
     let mut parts = path.split('.');
     let mut current = config.get(parts.next().unwrap())?;
     current = parts.try_fold(current, |current, part| {
@@ -1224,7 +1224,7 @@ pub fn get_nested_value<'a>(config: &'a JsonMap, path: &str) -> Option<&'a Value
 }
 
 // userpreferences.go:655
-pub fn set_nested_value(config: &mut JsonMap, path: &str, value: Value) {
+fn set_nested_value(config: &mut JsonMap, path: &str, value: Value) {
     let parts: Vec<&str> = path.split('.').collect();
     let mut current = config;
     current = parts[..parts.len() - 1].iter().fold(current, |mut current, part| {
@@ -1240,11 +1240,7 @@ pub fn set_nested_value(config: &mut JsonMap, path: &str, value: Value) {
 }
 
 // userpreferences.go:669
-pub fn set_raw_fields_from_config(
-    p: &mut UserPreferences,
-    infos: &[FieldInfo],
-    settings: &JsonMap,
-) {
+fn set_raw_fields_from_config(p: &mut UserPreferences, infos: &[FieldInfo], settings: &JsonMap) {
     let index = unstable_name_index();
     for (name, value) in settings {
         if let Some(&idx) = index.get(name) {
@@ -1265,7 +1261,8 @@ pub fn set_raw_fields_from_config(
 
 impl UserPreferences {
     // userpreferences.go:685
-    pub(crate) fn with_config(mut self, config: &JsonMap) -> UserPreferences {
+    #[must_use]
+    pub fn with_config(mut self, config: &JsonMap) -> UserPreferences {
         let p = &mut self;
         let infos = field_info_cache();
 
@@ -1337,7 +1334,7 @@ impl UserPreferences {
 }
 
 // userpreferences.go:753
-pub fn set_field_from_value(field: FieldMut<'_>, val: &Value) {
+fn set_field_from_value(field: FieldMut<'_>, val: &Value) {
     if matches!(val, Value::Null) {
         return;
     }
@@ -1443,7 +1440,7 @@ fn sort_object_keys(v: &mut Value) {
 }
 
 // userpreferences.go:826
-pub fn serialize_field(field: FieldRef<'_>) -> Option<Value> {
+fn serialize_field(field: FieldRef<'_>) -> Option<Value> {
     // Check custom serializers first (for types like Tristate, enums, etc.)
     if let Some(serialized) = type_serializers(&field) {
         return serialized;
@@ -1519,7 +1516,7 @@ impl UserPreferences {
     }
 
     // userpreferences.go:885
-    pub fn parsed_auto_import_file_exclude_patterns(
+    pub(crate) fn parsed_auto_import_file_exclude_patterns(
         &self,
         use_case_sensitive_file_names: bool,
     ) -> Option<vfsmatch::SpecMatcher> {
@@ -1528,14 +1525,6 @@ impl UserPreferences {
             "",
             vfsmatch::Usage::Exclude,
             use_case_sensitive_file_names,
-        )
-    }
-
-    // userpreferences.go:889
-    pub fn is_module_specifier_excluded(&self, module_specifier: &str) -> bool {
-        tsrs_modulespecifiers::is_excluded_by_regex(
-            module_specifier,
-            self.auto_import_specifier_exclude_regexes.as_deref().unwrap_or(&[]),
         )
     }
 }
@@ -1579,7 +1568,3 @@ pub fn parse_user_preferences(items: &JsonMap) -> UserPreferences {
 pub fn parse_api_user_preferences(config: &JsonMap) -> UserPreferences {
     new_default_user_preferences().with_config(config)
 }
-
-#[cfg(test)]
-#[path = "userpreferences_test.rs"]
-mod userpreferences_test;

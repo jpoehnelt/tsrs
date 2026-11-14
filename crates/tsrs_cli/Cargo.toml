@@ -1,10 +1,17 @@
 [package]
 name = "tsrs_cli"
-version.workspace = true
+version = "7.1.0-beta.tsrs1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+categories.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+readme.workspace = true
+include = ["/src", "/build.rs", "/LICENSE", "/NOTICE"]
+description = "TypeScript compiler and language server written in Rust"
 
 [lints]
 workspace = true
@@ -16,9 +23,11 @@ tsrs_compiler.workspace = true
 tsrs_lsp.workspace = true
 tsrs_api.workspace = true
 tsrs_api_transport.workspace = true
-tsrs_execute = { path = "../tsrs_execute" }
+tsrs_execute.workspace = true
+tsrs_contentmapper.workspace = true
+tsrs_lint.workspace = true
 mimalloc-safe.workspace = true
-libc = "0.2"
+libc.workspace = true
 
 [features]
 noembed = ["tsrs_vfs/noembed"]
@@ -26,6 +35,11 @@ noembed = ["tsrs_vfs/noembed"]
 # blocks; mimalloc's memory looks like one long-lived region to them).
 system-alloc = []
 
+[lib]
+test = false
+doctest = false
+
 [[bin]]
 name = "tsrs"
 path = "src/main.rs"
+test = false

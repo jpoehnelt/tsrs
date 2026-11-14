@@ -1,10 +1,17 @@
 [package]
 name = "tsrs_lsp"
-version.workspace = true
+version = "7.1.0-beta.tsrs1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+categories.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+readme.workspace = true
+include = ["/src", "/build.rs", "/LICENSE", "/NOTICE"]
+description = "TypeScript language server for tsrs"
 
 [lints]
 workspace = true
@@ -17,12 +24,14 @@ tsrs_compiler.workspace = true
 tsrs_lsproto.workspace = true
 tsrs_ls.workspace = true
 tsrs_project.workspace = true
+tsrs_contentmapper.workspace = true
+tsrs_ipc.workspace = true
 tsrs_tsoptions.workspace = true
 tsrs_api.workspace = true
 tsrs_api_transport.workspace = true
-tsrs_fswatch = { path = "../tsrs_fswatch" }
+tsrs_fswatch.workspace = true
 rustc-hash.workspace = true
-indexmap.workspace = true
 
 [lib]
+test = false
 doctest = false

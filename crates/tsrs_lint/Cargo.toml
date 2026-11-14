@@ -1,0 +1,44 @@
+[package]
+name = "tsrs_lint"
+version = "7.1.0-beta.tsrs1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+categories.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+readme.workspace = true
+include = ["/src", "/build.rs", "/LICENSE", "/NOTICE"]
+description = "Type-aware JavaScript and TypeScript linting with tsrs"
+
+[lints]
+workspace = true
+
+[dependencies]
+tsrs_core.workspace = true
+tsrs_api_transport.workspace = true
+tsrs_ast.workspace = true
+tsrs_binder.workspace = true
+tsrs_checker.workspace = true
+tsrs_compiler.workspace = true
+tsrs_contentmapper.workspace = true
+tsrs_diagnostics.workspace = true
+tsrs_scanner.workspace = true
+tsrs_spanmap.workspace = true
+tsrs_tsoptions.workspace = true
+tsrs_vfs.workspace = true
+rustc-hash.workspace = true
+regex = "1"
+regress = "0.12.0"
+mimalloc-safe.workspace = true
+
+[[bin]]
+name = "tsrs-lint"
+path = "src/main.rs"
+test = false
+
+[lib]
+test = false
+doctest = false

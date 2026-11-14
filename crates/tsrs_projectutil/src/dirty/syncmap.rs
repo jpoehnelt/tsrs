@@ -79,8 +79,7 @@ impl<K: Hash + Eq + Clone + Send + Sync, T: Cloneable + Clone> SyncMapEntry<K, T
         self.key.clone()
     }
 
-    #[cfg(test)]
-    pub(crate) fn proxy_for(&self) -> Option<Arc<SyncMapEntry<K, T>>> {
+    pub fn proxy_for(&self) -> Option<Arc<SyncMapEntry<K, T>>> {
         self.mu.lock().unwrap().proxy_for.clone()
     }
 
@@ -93,12 +92,12 @@ impl<K: Hash + Eq + Clone + Send + Sync, T: Cloneable + Clone> SyncMapEntry<K, T
         st.e.value()
     }
 
-    pub fn original(&self) -> Option<Shared<T>> {
+    fn original(&self) -> Option<Shared<T>> {
         self.mu.lock().unwrap().e.original()
     }
 
     // syncmap.go:74
-    pub fn dirty(self: &Arc<Self>) -> bool {
+    fn dirty(self: &Arc<Self>) -> bool {
         let st = self.mu.lock().unwrap();
         if let Some(proxy_for) = &st.proxy_for {
             return proxy_for.dirty();
@@ -392,16 +391,6 @@ impl<K: Hash + Eq + Clone + Send + Sync, T: Cloneable + Clone> SyncMap<K, T> {
         (Some(entry), loaded)
     }
 
-    // syncmap.go:262
-    pub fn delete(&self, key: &K) {
-        let new_entry =
-            self.new_entry(key.clone(), self.inner.base.get(key).cloned(), None, false, true);
-        let (entry, loaded) = self.inner.dirty.load_or_store(key.clone(), new_entry);
-        if loaded {
-            entry.delete();
-        }
-    }
-
     // syncmap.go:274
     pub fn range(&self, mut f: impl FnMut(&Arc<SyncMapEntry<K, T>>) -> bool) {
         let mut seen_in_dirty: FxHashSet<K> = FxHashSet::default();
@@ -484,7 +473,3 @@ impl<K: Hash + Eq + Clone + Send + Sync, T: Cloneable + Clone> SyncMap<K, T> {
         self.finalize_with_hooks(hooks)
     }
 }
-
-#[cfg(test)]
-#[path = "syncmap_test.rs"]
-mod syncmap_test;

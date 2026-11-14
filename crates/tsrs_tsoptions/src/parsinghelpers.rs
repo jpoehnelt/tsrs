@@ -20,7 +20,7 @@ use crate::namemap::BUILD_NAME_MAP;
 use crate::tsconfigparsing::{COMMAND_LINE_COMPILER_OPTIONS_MAP, CommandLineOptionNameMap};
 use tsrs_ast::new_compiler_diagnostic;
 
-pub fn parse_tristate(value: &CompilerOptionsValue) -> Tristate {
+fn parse_tristate(value: &CompilerOptionsValue) -> Tristate {
     match value {
         CompilerOptionsValue::Null => Tristate::Unknown,
         CompilerOptionsValue::Tristate(v) => *v,
@@ -29,7 +29,7 @@ pub fn parse_tristate(value: &CompilerOptionsValue) -> Tristate {
     }
 }
 
-pub fn parse_string_array(value: &CompilerOptionsValue) -> Option<Vec<String>> {
+fn parse_string_array(value: &CompilerOptionsValue) -> Option<Vec<String>> {
     if let CompilerOptionsValue::Array(arr) = value {
         let mut result = Vec::with_capacity(arr.len());
         result.extend(arr.iter().filter_map(|v| {
@@ -40,7 +40,7 @@ pub fn parse_string_array(value: &CompilerOptionsValue) -> Option<Vec<String>> {
     None
 }
 
-pub fn parse_string_map(
+fn parse_string_map(
     value: &CompilerOptionsValue,
 ) -> Option<OrderedMap<String, Option<Vec<String>>>> {
     if let CompilerOptionsValue::Object(m) = value {
@@ -51,7 +51,7 @@ pub fn parse_string_map(
     None
 }
 
-pub fn parse_string(value: &CompilerOptionsValue) -> String {
+fn parse_string(value: &CompilerOptionsValue) -> String {
     if let CompilerOptionsValue::String(str) = value {
         return str.clone();
     }
@@ -59,7 +59,7 @@ pub fn parse_string(value: &CompilerOptionsValue) -> String {
 }
 
 // parseNumber into a Go `*int` (64-bit) option.
-pub fn parse_number_int(value: &CompilerOptionsValue) -> Option<i64> {
+fn parse_number_int(value: &CompilerOptionsValue) -> Option<i64> {
     match value {
         CompilerOptionsValue::Int(num) => Some(*num),
         CompilerOptionsValue::Float(num) => Some(*num as i64),
@@ -67,7 +67,7 @@ pub fn parse_number_int(value: &CompilerOptionsValue) -> Option<i64> {
     }
 }
 
-pub struct ProjectReferenceParseResult {
+pub(crate) struct ProjectReferenceParseResult {
     pub(crate) reference: ProjectReference,
     pub(crate) has_path: bool,
     pub(crate) path_valid: bool,
@@ -75,7 +75,9 @@ pub struct ProjectReferenceParseResult {
     pub(crate) circular_valid: bool,
 }
 
-pub fn parse_project_reference(json: &CompilerOptionsValue) -> Option<ProjectReferenceParseResult> {
+pub(crate) fn parse_project_reference(
+    json: &CompilerOptionsValue,
+) -> Option<ProjectReferenceParseResult> {
     if let CompilerOptionsValue::Object(v) = json {
         let mut result = ProjectReferenceParseResult {
             reference: ProjectReference::default(),
@@ -103,7 +105,9 @@ pub fn parse_project_reference(json: &CompilerOptionsValue) -> Option<ProjectRef
     None
 }
 
-pub fn parse_content_mapper(value: &CompilerOptionsValue) -> (Option<Mapper>, Vec<P<Diagnostic>>) {
+pub(crate) fn parse_content_mapper(
+    value: &CompilerOptionsValue,
+) -> (Option<Mapper>, Vec<P<Diagnostic>>) {
     let CompilerOptionsValue::Object(v) = value else {
         return (None, Vec::new());
     };
@@ -187,7 +191,7 @@ fn parse_string_string_map_strict(
 
 // parseStringArrayStrict returns the string slice and true only if value is an array whose
 // elements are all strings. A missing element or wrong element type yields false.
-pub fn parse_string_array_strict(value: &CompilerOptionsValue) -> Option<Vec<String>> {
+fn parse_string_array_strict(value: &CompilerOptionsValue) -> Option<Vec<String>> {
     let CompilerOptionsValue::Array(arr) = value else {
         return None;
     };
@@ -203,7 +207,7 @@ pub fn parse_string_array_strict(value: &CompilerOptionsValue) -> Option<Vec<Str
     Some(result)
 }
 
-pub fn parse_json_to_string_key(
+pub(crate) fn parse_json_to_string_key(
     json: &CompilerOptionsValue,
 ) -> OrderedMap<String, CompilerOptionsValue> {
     let mut result = OrderedMap::with_capacity_and_hasher(6, rustc_hash::FxBuildHasher);
@@ -439,7 +443,7 @@ pub fn parse_compiler_options_worker(
         }
         "outFile" => all_options.out_file = parse_string(value),
         "noResolve" => all_options.no_resolve = parse_tristate(value),
-        "paths" => all_options.paths = parse_string_map(value),
+        "paths" => all_options.paths = parse_string_map(value).map(std::sync::Arc::new),
         "plugins" => {
             // Native TypeScript does not load plugins; retain them only so tools can report the incompatibility.
             if matches!(value, CompilerOptionsValue::NilArray) {
@@ -580,7 +584,7 @@ float_or_int32_to_flag!(
 float_or_int32_to_flag!(float_or_int32_to_script_target, ScriptTarget, TARGET_OPTION_MAP);
 float_or_int32_to_flag!(float_or_int32_to_new_line_kind, NewLineKind, NEW_LINE_OPTION_MAP);
 
-pub fn parse_type_acquisition(
+pub(crate) fn parse_type_acquisition(
     key: &str,
     value: &CompilerOptionsValue,
     all_options: &mut TypeAcquisition,
@@ -600,7 +604,7 @@ pub fn parse_type_acquisition(
     Vec::new()
 }
 
-pub fn parse_build_options(
+fn parse_build_options(
     key: &str,
     value: &CompilerOptionsValue,
     all_options: &mut BuildOptions,
@@ -674,6 +678,7 @@ impl_is_zero_for_enum!(
 );
 
 // Every exported field of core.CompilerOptions in declaration order, with its JSON name.
+#[macro_export]
 macro_rules! for_each_compiler_options_field {
     ($m:ident) => {
         $m! {
@@ -813,7 +818,7 @@ macro_rules! for_each_compiler_options_field {
     };
 }
 
-pub(crate) use for_each_compiler_options_field;
+pub use crate::for_each_compiler_options_field;
 
 // A field of core.CompilerOptions seen through reflection (Go reflect.Value): IsZero and Interface.
 pub trait OptionFieldValue {
@@ -874,6 +879,24 @@ impl ToOptionsValue for Option<i32> {
 }
 
 impl ToOptionsValue for Option<OrderedMap<String, Option<Vec<String>>>> {
+    fn to_options_value(&self) -> CompilerOptionsValue {
+        match self {
+            Some(m) => CompilerOptionsValue::Object(
+                m.iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            CompilerOptionsValue::StringArray(v.clone().unwrap_or_default()),
+                        )
+                    })
+                    .collect(),
+            ),
+            None => CompilerOptionsValue::Null,
+        }
+    }
+}
+
+impl ToOptionsValue for Option<std::sync::Arc<OrderedMap<String, Option<Vec<String>>>>> {
     fn to_options_value(&self) -> CompilerOptionsValue {
         match self {
             Some(m) => CompilerOptionsValue::Object(
@@ -958,7 +981,7 @@ pub fn for_each_compiler_option_value(
 // with optional awareness of explicitly set null values in the raw JSON.
 // Fields in the source options will overwrite the corresponding fields in the target options,
 // including when they are explicitly set to null in the raw configuration (if rawSource is provided).
-pub fn merge_compiler_options(
+pub(crate) fn merge_compiler_options(
     target_options: &mut CompilerOptions,
     source_options: Option<&CompilerOptions>,
     raw_source: Option<&CompilerOptionsValue>,
@@ -997,7 +1020,7 @@ pub fn merge_compiler_options(
     for_each_compiler_options_field!(merge_fields);
 }
 
-pub fn convert_to_options_with_absolute_paths(
+pub(crate) fn convert_to_options_with_absolute_paths(
     mut options_base: OrderedMap<String, CompilerOptionsValue>,
     option_map: &CommandLineOptionNameMap,
     cwd: &str,

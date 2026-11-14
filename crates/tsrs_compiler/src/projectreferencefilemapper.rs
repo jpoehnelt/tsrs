@@ -22,7 +22,7 @@ pub struct ProjectReferenceFileMapper {
     pub(crate) output_dts_to_project_reference: FxHashMap<Path, P<SourceOutputAndProjectReference>>,
 
     // Store all the realpath from dts in node_modules to source file from project reference needed during parsing so it can be used later
-    pub(crate) realpath_dts_to_source: SyncMap<Path, Option<P<SourceOutputAndProjectReference>>>,
+    realpath_dts_to_source: SyncMap<Path, Option<P<SourceOutputAndProjectReference>>>,
 
     // Go builds a new dts-faking host on every `resolutionHost` call; the mapper is immutable once built, so the
     // host is built once (its caches only memoize file system queries).
@@ -33,7 +33,7 @@ pub struct ProjectReferenceFileMapper {
     pub(crate) loader_host: Option<&'static dyn ResolutionHost>,
 }
 
-pub struct ProjectReferenceFileMapperBuilder {
+pub(crate) struct ProjectReferenceFileMapperBuilder {
     pub(crate) mapper: &'static ProjectReferenceFileMapper,
     pub(crate) host: &'static dyn ResolutionHost,
 }
@@ -54,14 +54,14 @@ pub fn resolution_host_for(host: Arc<dyn CompilerHost>) -> &'static dyn Resoluti
     Box::leak(Box::new(CompilerResolutionHost(host)))
 }
 
-pub fn as_resolved_project_reference(
+pub(crate) fn as_resolved_project_reference(
     config: P<ParsedCommandLine>,
 ) -> &'static dyn ResolvedProjectReference {
     config.get()
 }
 
 impl ProjectReferenceFileMapper {
-    pub(crate) fn new(
+    pub fn new(
         config: P<ParsedCommandLine>,
         use_source_of_project_reference: bool,
     ) -> ProjectReferenceFileMapper {
@@ -182,7 +182,7 @@ impl ProjectReferenceFileMapper {
     }
 
     // projectreferencefilemapper.go:99
-    pub(crate) fn get_redirect_for_resolution(
+    fn get_redirect_for_resolution(
         &self,
         file_name: &str,
         path: &Path,
@@ -212,17 +212,6 @@ impl ProjectReferenceFileMapper {
         }
 
         self.realpath_dts_to_source.load(path).flatten()
-    }
-
-    // projectreferencefilemapper.go:119
-    pub(crate) fn get_resolved_reference_for(
-        &self,
-        path: &Path,
-    ) -> (Option<P<ParsedCommandLine>>, bool) {
-        match self.config_to_project_reference.get(path) {
-            Some(config) => (*config, true),
-            None => (None, false),
-        }
     }
 
     // projectreferencefilemapper.go:124

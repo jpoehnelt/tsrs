@@ -1,6 +1,6 @@
 # Embedded WASM sessions
 
-This fork is pinned to upstream `8f135f106a637cf76f0395f146d0417f5287046e`.
+This fork is pinned to upstream `2903e168561c7f709cc7825c7ca91705d2e2316d`.
 The reactor exports `tsrs_input`, `tsrs_session_request`, `tsrs_output`, and `tsrs_output_len`.
 `npm/tsrs-wasm/core.js` exposes synchronous and asynchronous transports. Browser hosts must
 instantiate asynchronously under normal Chrome WASM policy.

@@ -70,7 +70,7 @@ impl CodeAction {
     // codeactions.go:49
     // Compare defines a total ordering for CodeAction values, comparing description
     // then text edits lexicographically. Used with slices.BinarySearchFunc.
-    pub fn compare(&self, b: &CodeAction) -> Ordering {
+    fn compare(&self, b: &CodeAction) -> Ordering {
         let c = go_compare(&self.description, &b.description);
         if c != Ordering::Equal {
             return c;

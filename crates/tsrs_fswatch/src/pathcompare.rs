@@ -7,7 +7,7 @@ use crate::watcher::{is_in_directory_or_self, join_path_suffix, rebase_path};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct BytePathComparer {
-    pub(crate) ignore_case: bool,
+    pub ignore_case: bool,
 }
 
 // Watch roots are prepared before publication and are immutable thereafter.
@@ -30,7 +30,7 @@ impl ComparisonPath<'_> {
     }
 
     // pathcompare.go:34
-    pub(crate) fn fold(&mut self) -> String {
+    fn fold(&mut self) -> String {
         if !self.ready {
             if let Some(cache) = self.cache
                 && let Some(folded) = cache.lock().unwrap().get(&self.path)
@@ -61,8 +61,7 @@ impl BytePathComparer {
 
     // pathcompare.go:56
     // suffix returns the part of path below root, respecting directory boundaries.
-    #[cfg(test)] // only contains and tests call it, in Go too
-    pub(crate) fn suffix(self, root: &str, path: &str) -> Option<String> {
+    pub fn suffix(self, root: &str, path: &str) -> Option<String> {
         let mut p = ComparisonPath::new(path);
         self.suffix_prepared(&ComparisonPath::new(root), &mut p)
     }
@@ -87,10 +86,7 @@ impl BytePathComparer {
     }
 
     // pathcompare.go:75
-    pub(crate) fn suffix_unicode(
-        root: &ComparisonPath,
-        path: &mut ComparisonPath,
-    ) -> Option<String> {
+    fn suffix_unicode(root: &ComparisonPath, path: &mut ComparisonPath) -> Option<String> {
         if !NATIVE_PATH_FOLDING {
             return path_suffix_fold_unicode(&root.path, &path.path);
         }
@@ -128,13 +124,12 @@ impl BytePathComparer {
     }
 
     // pathcompare.go:166
-    #[cfg(test)] // only tests call it, in Go too
-    pub(crate) fn contains(self, root: &str, path: &str) -> bool {
+    pub fn contains(self, root: &str, path: &str) -> bool {
         self.suffix(root, path).is_some()
     }
 
     // pathcompare.go:171
-    pub(crate) fn rebase(self, path: &str, from: &str, to: &str) -> Option<String> {
+    pub fn rebase(self, path: &str, from: &str, to: &str) -> Option<String> {
         let mut p = ComparisonPath::new(path);
         self.rebase_prepared(&mut p, &ComparisonPath::new(from), to)
     }

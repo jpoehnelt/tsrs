@@ -128,7 +128,7 @@ static KEYWORD_TABLE: [u8; 256] = {
 
 /// Go `textToKeyword[s]` (zero value `KindUnknown` when absent).
 #[inline]
-pub fn text_to_keyword(s: &str) -> Kind {
+pub(crate) fn text_to_keyword(s: &str) -> Kind {
     let b = s.as_bytes();
     if b.len() < 2 {
         return Kind::Unknown;
@@ -309,13 +309,13 @@ fn text_to_token() -> &'static FxHashMap<&'static str, Kind> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ScannerState {
     pub(crate) pos: u32, // Current position in text (and ending position of current token)
-    pub(crate) full_start_pos: u32, // Starting position of current token including preceding whitespace
-    pub(crate) token_start: u32,    // Starting position of non-whitespace part of current token
-    pub(crate) token: Kind,         // Kind of current token
+    full_start_pos: u32, // Starting position of current token including preceding whitespace
+    pub(crate) token_start: u32, // Starting position of non-whitespace part of current token
+    token: Kind,         // Kind of current token
     pub(crate) token_value: &'static str, // Parsed value of current token
-    pub(crate) token_flags: TokenFlags, // Flags for current token
-    pub(crate) comment_directives_len: usize, // Snapshot of the number of comment directives collected so far
-    pub(crate) skip_jsdoc_leading_asterisks: u32, // Leading asterisks to skip when scanning types inside JSDoc. Should be 0 outside JSDoc
+    token_flags: TokenFlags, // Flags for current token
+    comment_directives_len: usize, // Snapshot of the number of comment directives collected so far
+    skip_jsdoc_leading_asterisks: u32, // Leading asterisks to skip when scanning types inside JSDoc. Should be 0 outside JSDoc
 }
 
 /// An owning snapshot for temporary text changes, unlike a `mark()` snapshot.
@@ -328,7 +328,7 @@ pub struct SavedScannerState {
 #[derive(Default)]
 pub struct Scanner {
     pub(crate) text: &'static str,
-    pub(crate) end: u32,
+    end: u32,
     language_variant: LanguageVariant,
     script_target: ScriptTarget,
     on_error: bool,
@@ -392,7 +392,7 @@ static BYTE_HANDLERS: [ByteHandler; 256] = {
     table
 };
 
-pub const RUNE_SELF: Rune = 0x80;
+const RUNE_SELF: Rune = 0x80;
 
 /// `[A-Za-z0-9_$]` by byte.
 static ASCII_IDENTIFIER_PART: [bool; 256] = {
@@ -417,7 +417,7 @@ static ASCII_JSDOC_COMMENT_TEXT: [[bool; 256]; 2] = {
     }
     tables
 };
-pub const RUNE_ERROR: Rune = 0xFFFD;
+pub(crate) const RUNE_ERROR: Rune = 0xFFFD;
 
 static STRING_LITERAL_END: [[bool; 256]; 2] = {
     let mut table = [[false; 256]; 2];
@@ -436,7 +436,7 @@ static STRING_LITERAL_END: [[bool; 256]; 2] = {
 /// Go `utf8.DecodeRuneInString` over raw bytes: `(RuneError, 0)` for empty input,
 /// `(RuneError, 1)` for an invalid encoding.
 #[inline]
-pub fn decode_rune(b: &[u8]) -> (Rune, usize) {
+pub(crate) fn decode_rune(b: &[u8]) -> (Rune, usize) {
     let Some(&b0) = b.first() else {
         return (RUNE_ERROR, 0);
     };
@@ -491,7 +491,7 @@ fn decode_rune_slow(b: &[u8]) -> (Rune, usize) {
 }
 
 /// Go `utf8.DecodeLastRuneInString`.
-pub fn decode_last_rune(b: &[u8]) -> (Rune, usize) {
+fn decode_last_rune(b: &[u8]) -> (Rune, usize) {
     let end = b.len();
     if end == 0 {
         return (RUNE_ERROR, 0);
@@ -517,12 +517,12 @@ pub fn decode_last_rune(b: &[u8]) -> (Rune, usize) {
 
 /// Go `string(r)`: invalid code points (surrogates, out of range) become U+FFFD.
 #[inline]
-pub fn rune_to_char(r: Rune) -> char {
+fn rune_to_char(r: Rune) -> char {
     char::from_u32(r).unwrap_or('\u{FFFD}')
 }
 
 #[inline]
-pub fn rune_string(r: Rune) -> String {
+pub(crate) fn rune_string(r: Rune) -> String {
     rune_to_char(r).to_string()
 }
 
@@ -747,7 +747,7 @@ impl Scanner {
         self.script_target
     }
 
-    pub(crate) fn error(&mut self, diagnostic: &'static Message) {
+    fn error(&mut self, diagnostic: &'static Message) {
         self.error_at(diagnostic, self.state.pos, 0, &[]);
     }
 
@@ -786,7 +786,7 @@ impl Scanner {
     }
 
     #[inline]
-    pub(crate) fn char_and_size(&self) -> (Rune, u32) {
+    fn char_and_size(&self) -> (Rune, u32) {
         // Fast path: a single ASCII byte.
         if self.state.pos < self.end {
             let b = self.text.as_bytes()[self.state.pos as usize];
@@ -1973,7 +1973,7 @@ impl Scanner {
         self.scan_jsx_token_ex(true /*allowMultilineJsxText*/)
     }
 
-    pub fn scan_jsx_token_ex(&mut self, allow_multiline_jsx_text: bool) -> Kind {
+    fn scan_jsx_token_ex(&mut self, allow_multiline_jsx_text: bool) -> Kind {
         self.state.full_start_pos = self.state.pos;
         self.state.token_start = self.state.pos;
         let Some(ch) = self.char() else {
@@ -2717,10 +2717,7 @@ impl Scanner {
     }
 
     // Known to be at \u
-    pub(crate) fn scan_unicode_escape(
-        &mut self,
-        should_emit_invalid_escape_error: bool,
-    ) -> Option<u32> {
+    fn scan_unicode_escape(&mut self, should_emit_invalid_escape_error: bool) -> Option<u32> {
         self.state.pos += 2;
         let start = self.state.pos;
         let extended = self.char() == Some(b'{');
@@ -3050,7 +3047,7 @@ impl Scanner {
         (self.slice(start, self.state.pos), is_octal)
     }
 
-    pub(crate) fn scan_hex_digits(
+    fn scan_hex_digits(
         &mut self,
         min_count: u32,
         scan_as_many_as_possible: bool,
@@ -3284,7 +3281,7 @@ pub fn is_valid_identifier(s: &str) -> bool {
 }
 
 // Section 6.1.4
-pub fn is_word_character(ch: Rune) -> bool {
+pub(crate) fn is_word_character(ch: Rune) -> bool {
     stringutil::is_ascii_letter(ch) || stringutil::is_digit(ch) || ch == '_' as Rune
 }
 
@@ -3302,7 +3299,7 @@ pub fn is_identifier_part(ch: Rune) -> bool {
 }
 
 #[inline]
-pub fn is_identifier_part_ex(ch: Rune, language_variant: LanguageVariant) -> bool {
+pub(crate) fn is_identifier_part_ex(ch: Rune, language_variant: LanguageVariant) -> bool {
     is_word_character(ch)
         || ch == '$' as Rune
         || ch >= RUNE_SELF && stringutil::is_unicode_identifier_part(ch)
@@ -3449,7 +3446,7 @@ pub fn skip_trivia_ex(text: &str, pos: u32, options: Option<&SkipTriviaOptions>)
 const MERGE_CONFLICT_MARKER_LENGTH: u32 = "<<<<<<<".len() as u32;
 const MAX_ASCII_CHARACTER: u8 = 127;
 
-pub fn is_conflict_marker_trivia(text: &str, pos: u32) -> bool {
+fn is_conflict_marker_trivia(text: &str, pos: u32) -> bool {
     let bytes = text.as_bytes();
     let len = bytes.len() as u32;
 
@@ -3482,7 +3479,7 @@ pub fn is_conflict_marker_trivia(text: &str, pos: u32) -> bool {
     false
 }
 
-pub fn scan_conflict_marker_trivia(
+fn scan_conflict_marker_trivia(
     text: &str,
     pos: u32,
     report_error: Option<&mut dyn FnMut(&'static Message, u32, u32)>,
@@ -3527,7 +3524,7 @@ pub fn scan_conflict_marker_trivia(
     pos
 }
 
-pub fn is_shebang_trivia(text: &str, pos: u32) -> bool {
+fn is_shebang_trivia(text: &str, pos: u32) -> bool {
     let bytes = text.as_bytes();
     if bytes.len() < 2 {
         return false;
@@ -3536,7 +3533,7 @@ pub fn is_shebang_trivia(text: &str, pos: u32) -> bool {
     bytes[0] == b'#' && bytes[1] == b'!'
 }
 
-pub fn scan_shebang_trivia(text: &str, pos: u32) -> u32 {
+fn scan_shebang_trivia(text: &str, pos: u32) -> u32 {
     let bytes = text.as_bytes();
     let mut pos = pos + 2;
     while (pos as usize) < bytes.len() {
@@ -3867,20 +3864,6 @@ pub fn get_ecma_end_line_position(source_file: P<SourceFile>, line: usize) -> Op
 // GetECMAPositionOfLineAndUTF16Character converts a 0-based line number and UTF-16
 // code unit character offset back to an absolute byte position in the source text.
 // Uses ECMAScript line separators.
-pub fn get_ecma_position_of_line_and_utf16_character(
-    source_file: &(impl SourceFileLike + ?Sized),
-    line: usize,
-    character: UTF16Offset,
-) -> u32 {
-    let line_starts = get_ecma_line_starts(source_file);
-    compute_position_of_line_and_utf16_character(
-        line_starts,
-        line,
-        character,
-        source_file.text(),
-        false,
-    )
-}
 
 // GetECMAPositionOfLineAndByteOffset converts a 0-based line number and byte offset
 // from line start back to an absolute byte position in the source text.
@@ -3895,7 +3878,7 @@ pub fn get_ecma_position_of_line_and_byte_offset(
 
 // ComputePositionOfLineAndByteOffset computes a byte position from a line and
 // raw byte offset from the line start. This is a simple addition with validation.
-pub fn compute_position_of_line_and_byte_offset(
+fn compute_position_of_line_and_byte_offset(
     line_starts: &[u32],
     line: usize,
     byte_offset: u32,

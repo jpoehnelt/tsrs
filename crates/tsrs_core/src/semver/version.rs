@@ -3,26 +3,26 @@ use std::fmt;
 use std::sync::LazyLock;
 
 // Go's `(?i)[a-z]` also matches U+017F (folds to 's') and U+212A (folds to 'k').
-pub fn is_letter_fold(c: char) -> bool {
+pub(super) fn is_letter_fold(c: char) -> bool {
     c.is_ascii_alphabetic() || c == '\u{17F}' || c == '\u{212A}'
 }
 
-pub fn is_digit(c: char) -> bool {
+pub(super) fn is_digit(c: char) -> bool {
     c.is_ascii_digit()
 }
 
 // [a-z0-9-.] with (?i)
-pub fn is_identifier_or_dot_char(c: char) -> bool {
+fn is_identifier_or_dot_char(c: char) -> bool {
     is_letter_fold(c) || is_digit(c) || c == '-' || c == '.'
 }
 
 // Length in bytes of the longest prefix of `text` whose chars all satisfy `f`.
-pub fn span(text: &str, f: impl Fn(char) -> bool) -> usize {
+pub(super) fn span(text: &str, f: impl Fn(char) -> bool) -> usize {
     text.char_indices().find(|&(_, c)| !f(c)).map_or(text.len(), |(i, _)| i)
 }
 
 // 0|[1-9]\d*
-pub fn match_numeric_component(text: &str) -> Option<usize> {
+pub(super) fn match_numeric_component(text: &str) -> Option<usize> {
     let b = text.as_bytes();
     match b.first() {
         Some(b'0') => Some(1),
@@ -36,7 +36,7 @@ pub fn match_numeric_component(text: &str) -> Option<usize> {
 // Every group is deterministic and anything a skipped optional group would have consumed
 // must then be matched by `$`, so a greedy parse followed by an end check is equivalent.
 // Non-participating groups are "", as in Go's FindStringSubmatch.
-pub fn find_version_like_submatch(
+pub(super) fn find_version_like_submatch(
     text: &str,
     component: fn(&str) -> Option<usize>,
 ) -> Option<[&str; 6]> {
@@ -81,7 +81,7 @@ pub fn find_version_like_submatch(
 // NOTE: We differ here in that we allow X and X.Y, with missing parts having the default
 // value of `0`.
 // (?i)^(0|[1-9]\d*)(?:\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*)(?:-([a-z0-9-.]+))?(?:\+([a-z0-9-.]+))?)?)?$
-pub fn version_regexp_find_string_submatch(text: &str) -> Option<[&str; 6]> {
+fn version_regexp_find_string_submatch(text: &str) -> Option<[&str; 6]> {
     find_version_like_submatch(text, match_numeric_component)
 }
 
@@ -106,7 +106,7 @@ fn is_prerelease_part(part: &str) -> bool {
 // > alphanumerics and hyphen [0-9A-Za-z-]. Identifiers MUST NOT be empty. Numeric identifiers
 // > MUST NOT include leading zeroes.
 // (?i)^(?:0|[1-9]\d*|[a-z-][a-z0-9-]*)(?:\.(?:0|[1-9]\d*|[a-zA-Z-][a-zA-Z0-9-]*))*$
-pub fn prerelease_regexp_match_string(text: &str) -> bool {
+fn prerelease_regexp_match_string(text: &str) -> bool {
     text.split('.').all(is_prerelease_part)
 }
 
@@ -120,27 +120,27 @@ fn is_build_part(part: &str) -> bool {
 // > identifiers immediately following the patch or pre-release version. Identifiers MUST
 // > comprise only ASCII alphanumerics and hyphen [0-9A-Za-z-]. Identifiers MUST NOT be empty.
 // (?i)^[a-z0-9-]+(?:\.[a-z0-9-]+)*$
-pub fn build_reg_exp_match_string(text: &str) -> bool {
+fn build_reg_exp_match_string(text: &str) -> bool {
     text.split('.').all(is_build_part)
 }
 
 // https://semver.org/#spec-item-9
 // > Numeric identifiers MUST NOT include leading zeroes.
 // ^(?:0|[1-9]\d*)$
-pub fn numeric_identifier_reg_exp_match_string(text: &str) -> bool {
+fn numeric_identifier_reg_exp_match_string(text: &str) -> bool {
     match_numeric_component(text) == Some(text.len())
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Version {
-    pub(crate) major: u32,
-    pub(crate) minor: u32,
-    pub(crate) patch: u32,
-    pub(crate) prerelease: Vec<String>,
-    pub(crate) build: Vec<String>,
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+    pub prerelease: Vec<String>,
+    pub build: Vec<String>,
 }
 
-pub static VERSION_ZERO: LazyLock<Version> =
+pub(super) static VERSION_ZERO: LazyLock<Version> =
     LazyLock::new(|| Version { prerelease: vec!["0".to_string()], ..Default::default() });
 
 impl Version {
@@ -208,7 +208,7 @@ impl Version {
     }
 }
 
-pub fn compare_pre_release_identifiers(left: &[String], right: &[String]) -> Ordering {
+fn compare_pre_release_identifiers(left: &[String], right: &[String]) -> Ordering {
     // https://semver.org/#spec-item-11
     // > When major, minor, and patch are equal, a pre-release version has lower precedence
     // > than a normal version.
@@ -238,7 +238,7 @@ pub fn compare_pre_release_identifiers(left: &[String], right: &[String]) -> Ord
     cmp_compare(left.len(), right.len())
 }
 
-pub fn compare_pre_release_identifier(left: &str, right: &str) -> Ordering {
+fn compare_pre_release_identifier(left: &str, right: &str) -> Ordering {
     // https://semver.org/#spec-item-11
     // > Precedence for two pre-release versions with the same major, minor, and patch version
     // > MUST be determined by comparing each dot separated identifier from left to right until
@@ -364,169 +364,4 @@ pub fn get_uint_component(text: &str) -> Result<u32, String> {
     }
     text.parse::<u32>()
         .map_err(|_| format!("strconv.ParseUint: parsing {text:?}: value out of range"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decimal_components_keep_syntax_and_range_errors() {
-        assert_eq!(get_uint_component("4294967295"), Ok(u32::MAX));
-        assert_eq!(get_uint_component("00042"), Ok(42));
-        for text in ["", "+1", "-1", "1_0", "١", "999999999999x"] {
-            assert_eq!(
-                get_uint_component(text),
-                Err(format!("strconv.ParseUint: parsing {text:?}: invalid syntax"))
-            );
-        }
-        assert_eq!(
-            get_uint_component("4294967296"),
-            Err("strconv.ParseUint: parsing \"4294967296\": value out of range".to_string())
-        );
-    }
-
-    fn v(major: u32, minor: u32, patch: u32, prerelease: &[&str], build: &[&str]) -> Version {
-        Version {
-            major,
-            minor,
-            patch,
-            prerelease: prerelease.iter().map(std::string::ToString::to_string).collect(),
-            build: build.iter().map(std::string::ToString::to_string).collect(),
-        }
-    }
-
-    #[test]
-    fn test_try_parse_semver() {
-        let tests = [
-            ("1.2.3-pre.4+build.5", v(1, 2, 3, &["pre", "4"], &["build", "5"])),
-            ("1.2.3-pre.4", v(1, 2, 3, &["pre", "4"], &[])),
-            ("1.2.3+build.4", v(1, 2, 3, &[], &["build", "4"])),
-            ("1.2.3", v(1, 2, 3, &[], &[])),
-        ];
-
-        for (input, out) in tests {
-            let got = try_parse_version(input).unwrap();
-            assert_version(&got, &out);
-        }
-    }
-
-    #[test]
-    fn test_version_string() {
-        let tests = [
-            (v(1, 2, 3, &["pre", "4"], &["build", "5"]), "1.2.3-pre.4+build.5"),
-            (v(1, 2, 3, &["pre", "4"], &["build"]), "1.2.3-pre.4+build"),
-            (v(1, 2, 3, &[], &["build"]), "1.2.3+build"),
-            (v(1, 2, 3, &["pre", "4"], &[]), "1.2.3-pre.4"),
-            (v(1, 2, 3, &[], &["build", "4"]), "1.2.3+build.4"),
-            (v(1, 2, 3, &[], &[]), "1.2.3"),
-        ];
-
-        for (input, out) in tests {
-            assert_eq!(input.string(), out);
-            assert_eq!(input.to_string(), out);
-        }
-    }
-
-    #[test]
-    fn test_version_compare() {
-        let tests = [
-            // https://semver.org/#spec-item-11
-            // > Precedence is determined by the first difference when comparing each of these
-            // > identifiers from left to right as follows: Major, minor, and patch versions are
-            // > always compared numerically.
-            ("1.0.0", "2.0.0", COMPARISON_LESS_THAN),
-            ("1.0.0", "1.1.0", COMPARISON_LESS_THAN),
-            ("1.0.0", "1.0.1", COMPARISON_LESS_THAN),
-            ("2.0.0", "1.0.0", COMPARISON_GREATER_THAN),
-            ("1.1.0", "1.0.0", COMPARISON_GREATER_THAN),
-            ("1.0.1", "1.0.0", COMPARISON_GREATER_THAN),
-            ("1.0.0", "1.0.0", COMPARISON_EQUAL_TO),
-            // https://semver.org/#spec-item-11
-            // > When major, minor, and patch are equal, a pre-release version has lower
-            // > precedence than a normal version.
-            ("1.0.0", "1.0.0-pre", COMPARISON_GREATER_THAN),
-            ("1.0.1-pre", "1.0.0", COMPARISON_GREATER_THAN),
-            ("1.0.0-pre", "1.0.0", COMPARISON_LESS_THAN),
-            // https://semver.org/#spec-item-11
-            // > identifiers consisting of only digits are compared numerically
-            ("1.0.0-0", "1.0.0-1", COMPARISON_LESS_THAN),
-            ("1.0.0-1", "1.0.0-0", COMPARISON_GREATER_THAN),
-            ("1.0.0-2", "1.0.0-10", COMPARISON_LESS_THAN),
-            ("1.0.0-10", "1.0.0-2", COMPARISON_GREATER_THAN),
-            ("1.0.0-0", "1.0.0-0", COMPARISON_EQUAL_TO),
-            // https://semver.org/#spec-item-11
-            // > identifiers with letters or hyphens are compared lexically in ASCII sort order.
-            ("1.0.0-a", "1.0.0-b", COMPARISON_LESS_THAN),
-            ("1.0.0-a-2", "1.0.0-a-10", COMPARISON_GREATER_THAN),
-            ("1.0.0-b", "1.0.0-a", COMPARISON_GREATER_THAN),
-            ("1.0.0-a", "1.0.0-a", COMPARISON_EQUAL_TO),
-            ("1.0.0-A", "1.0.0-a", COMPARISON_LESS_THAN),
-            // https://semver.org/#spec-item-11
-            // > Numeric identifiers always have lower precedence than non-numeric identifiers.
-            ("1.0.0-0", "1.0.0-alpha", COMPARISON_LESS_THAN),
-            ("1.0.0-alpha", "1.0.0-0", COMPARISON_GREATER_THAN),
-            ("1.0.0-0", "1.0.0-0", COMPARISON_EQUAL_TO),
-            ("1.0.0-alpha", "1.0.0-alpha", COMPARISON_EQUAL_TO),
-            // https://semver.org/#spec-item-11
-            // > A larger set of pre-release fields has a higher precedence than a smaller set, if all
-            // > of the preceding identifiers are equal.
-            ("1.0.0-alpha", "1.0.0-alpha.0", COMPARISON_LESS_THAN),
-            ("1.0.0-alpha.0", "1.0.0-alpha", COMPARISON_GREATER_THAN),
-            // https://semver.org/#spec-item-11
-            // > Precedence for two pre-release versions with the same major, minor, and patch version
-            // > MUST be determined by comparing each dot separated identifier from left to right until
-            // > a difference is found [...]
-            ("1.0.0-a.0.b.1", "1.0.0-a.0.b.2", COMPARISON_LESS_THAN),
-            ("1.0.0-a.0.b.1", "1.0.0-b.0.a.1", COMPARISON_LESS_THAN),
-            ("1.0.0-a.0.b.2", "1.0.0-a.0.b.1", COMPARISON_GREATER_THAN),
-            ("1.0.0-b.0.a.1", "1.0.0-a.0.b.1", COMPARISON_GREATER_THAN),
-            // https://semver.org/#spec-item-11
-            // > Build metadata does not figure into precedence
-            ("1.0.0+build", "1.0.0", COMPARISON_EQUAL_TO),
-            ("1.0.0+build.stuff", "1.0.0", COMPARISON_EQUAL_TO),
-            ("1.0.0", "1.0.0+build", COMPARISON_EQUAL_TO),
-            ("1.0.0+build", "1.0.0+stuff", COMPARISON_EQUAL_TO),
-            // https://semver.org/#spec-item-11
-            // Edge cases for numeric and lexical comparison of prerelease identifiers.
-            ("1.0.0-alpha.99999", "1.0.0-alpha.100000", COMPARISON_LESS_THAN),
-            ("1.0.0-alpha.beta", "1.0.0-alpha.alpha", COMPARISON_GREATER_THAN),
-        ];
-
-        for (s1, s2, want) in tests {
-            let v1 = try_parse_version(s1).unwrap_or_else(|e| panic!("{s1}: {e}"));
-            let v2 = try_parse_version(s2).unwrap_or_else(|e| panic!("{s2}: {e}"));
-            assert_eq!(v1.compare(&v2), want, "{s1} <=> {s2}");
-        }
-    }
-
-    #[test]
-    fn test_parse_errors() {
-        assert_eq!(
-            try_parse_version("1.02").unwrap_err(),
-            "Could not parse version string from \"1.02\""
-        );
-        assert_eq!(
-            try_parse_version("1.2.3-").unwrap_err(),
-            "Could not parse version string from \"1.2.3-\""
-        );
-        assert_eq!(
-            try_parse_version("1.2.3-a..b").unwrap_err(),
-            "Could not parse version string from \"1.2.3-a..b\""
-        );
-        assert_eq!(
-            try_parse_version("99999999999").unwrap_err(),
-            "strconv.ParseUint: parsing \"99999999999\": value out of range"
-        );
-        assert_eq!(try_parse_version("1.2").unwrap(), v(1, 2, 0, &[], &[]));
-        assert_eq!(try_parse_version("1.2.3-\u{212A}").unwrap(), v(1, 2, 3, &["\u{212A}"], &[]));
-    }
-
-    fn assert_version(a: &Version, b: &Version) {
-        assert_eq!(a.major, b.major);
-        assert_eq!(a.minor, b.minor);
-        assert_eq!(a.patch, b.patch);
-        assert_eq!(a.prerelease, b.prerelease);
-        assert_eq!(a.build, b.build);
-    }
 }

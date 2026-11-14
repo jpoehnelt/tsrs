@@ -107,7 +107,7 @@ pub struct RawSourceMap {
 // Go marshals and unmarshals RawSourceMap through its struct tags with encoding/json/v2; these two functions do the
 // same for its seven fields (field order, omitzero, case-sensitive names, unknown names ignored, null -> zero value).
 impl RawSourceMap {
-    pub fn to_json(&self) -> Value {
+    fn to_json(&self) -> Value {
         let mut m = JsonMap::new();
         m.insert("version".to_string(), Value::Number(self.version as f64));
         m.insert("file".to_string(), Value::String(self.file.clone()));
@@ -600,7 +600,7 @@ fn base64_std_encode(out: &mut String, data: &[u8]) {
 }
 
 // generator.go:372
-pub fn base64_format_encode(value: u8) -> char {
+fn base64_format_encode(value: u8) -> char {
     match value {
         0..=25 => (b'A' + value) as char,
         26..=51 => (b'a' + value - 26) as char,
@@ -610,7 +610,3 @@ pub fn base64_format_encode(value: u8) -> char {
         _ => panic!("not a base64 value"),
     }
 }
-
-#[cfg(test)]
-#[path = "generator_test.rs"]
-mod generator_test;

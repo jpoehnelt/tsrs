@@ -5,13 +5,13 @@
 #
 # <dist dir> holds tsrs, tsrs-test and fourslash_server from the final PGO build, linked with -Wl,--emit-relocs. Each
 # binary is instrumented (llvm-bolt -instrument), runs its part of the PGO training workload (pgo-train.sh: tsrs on
-# xstate-main and webpack, tsrs-test on the conformance suite, fourslash_server driven by the Go suite), and is
-# rewritten with the profile. The BOLT-optimized tsrs-test and fourslash_server then run the conformance and fourslash
+# xstate-main and webpack in default mode and with --fast, tsrs-test on the conformance suite, fourslash_server driven
+# by the Go suite), and is rewritten with the profile. The BOLT-optimized tsrs-test and fourslash_server then run the conformance and fourslash
 # gates, and the BOLT-optimized tsrs must print byte-identical output to the input tsrs on both bench projects
 # (one and four checkers). Only then is <dist dir>/tsrs replaced; the input is kept as tsrs.prebolt.
 #
-# Needs llvm-bolt and merge-fdata (LLVM release matching rustc's LLVM) on PATH, Go, Node.js 24+, ts-ref/tsc, and the bench
-# projects pgo-train.sh set up in <bench work dir>.
+# Needs llvm-bolt and merge-fdata (LLVM release matching rustc's LLVM) on PATH, Cargo, Go, Node.js 24+, ts-ref/tsc, and
+# the bench projects pgo-train.sh set up in <bench work dir>.
 #
 # BOLT_TSRS_ONLY=1: only tsrs, whose BOLT training and byte comparison are the same as
 # above; <dist dir> then needs no tsrs-test or fourslash_server, and the suite gates (release.yml's job) are not run.
@@ -45,6 +45,9 @@ for p in xstate-main webpack; do
   (cd "$bench/solutions/$p" && "$work/tsrs.inst" -p . --noEmit --incremental false --pretty false \
     > /dev/null 2>> "$work/tsrs-train-stderr.log") && status=0 || status=$?
   check_exit "$status" "instrumented tsrs -p $p"
+  (cd "$bench/solutions/$p" && "$work/tsrs.inst" -p . --noEmit --incremental false --pretty false --fast \
+    > /dev/null 2>> "$work/tsrs-train-stderr.log") && status=0 || status=$?
+  check_exit "$status" "instrumented tsrs -p $p --fast"
 done
 if [ ${#bins[@]} -gt 1 ]; then
   TSRS_TEST_RESULTS="$work/train-test-results" "$work/tsrs-test.inst" run --suite all --timeout 300 > /dev/null \
@@ -64,9 +67,8 @@ done
 
 # All compiler baselines on the BOLT-optimized binaries, in both checker histories.
 if [ ${#bins[@]} -gt 1 ]; then
-  TSRS_TEST="$work/tsrs-test.bolt" TSRS_TEST_RESULTS="$work/test-results" .github/scripts/conformance-gate.sh | tail -1
-  TS_TEST_PROGRAM_SINGLE_THREADED=false TSRS_HISTORY=canonical TSRS_TEST="$work/tsrs-test.bolt" \
-    TSRS_TEST_RESULTS="$work/test-results-default" .github/scripts/conformance-gate.sh | tail -1
+  cargo run --profile dev --locked -q -p tsrs_determinism -- conformance --tsrs-test "$work/tsrs-test.bolt" \
+    --out-dir "$work/test-results" | tail -1
   TSRS_FOURSLASH_SERVER="$work/fourslash_server.bolt" TSRS_GO_FOURSLASH_WORK="$work/go-fourslash" \
     .github/scripts/go-fourslash-gate.sh | tail -1
 fi

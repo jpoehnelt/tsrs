@@ -10,7 +10,7 @@ use crate::baseline::NO_CONTENT;
 use crate::harnessutil::{HarnessOptions, TestFile};
 use crate::tsbaseline::remove_test_path_prefixes;
 
-pub struct SourceMapCompilationResult<'a> {
+pub(crate) struct SourceMapCompilationResult<'a> {
     // result.Maps (in the harness's output order)
     pub(crate) maps: &'a [TestFile],
     // result.DTS.Size()
@@ -31,7 +31,7 @@ pub struct SourceMapCompilationResult<'a> {
 
 // js_emit_baseline.go:149
 // TODO(emit/core): shared with the `.js` baseline (js_emit_baseline.go); keep one copy once both have landed.
-pub fn file_output(file: &TestFile, settings: &HarnessOptions) -> String {
+fn file_output(file: &TestFile, settings: &HarnessOptions) -> String {
     let file_name = if settings.full_emit_paths {
         remove_test_path_prefixes(&file.unit_name, false /*retainTrailingDirectorySeparator*/)
     } else {
@@ -43,7 +43,7 @@ pub fn file_output(file: &TestFile, settings: &HarnessOptions) -> String {
 // sourcemap_baseline.go:18
 // Returns the baseline path and content to compare, `Ok(None)` when Go returns without a baseline, and `Err` for
 // Go's `t.Fatal`.
-pub fn do_sourcemap_baseline(
+pub(crate) fn do_sourcemap_baseline(
     baseline_path: &str,
     options: &CompilerOptions,
     result: &SourceMapCompilationResult,
@@ -104,7 +104,7 @@ pub fn do_sourcemap_baseline(
 }
 
 // sourcemap_baseline.go:72
-pub fn create_source_map_preview_link(
+fn create_source_map_preview_link(
     source_map: &TestFile,
     result: &SourceMapCompilationResult,
 ) -> String {
@@ -169,7 +169,7 @@ fn base64_encode_chunk(s: &str) -> String {
 }
 
 // Go net/url QueryEscape (encodeQueryComponent mode).
-fn query_escape(s: &str) -> String {
+pub fn query_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &c in s.as_bytes() {
         if c.is_ascii_alphanumeric() || c == b'-' || c == b'_' || c == b'.' || c == b'~' {
@@ -185,7 +185,7 @@ fn query_escape(s: &str) -> String {
 }
 
 // Go net/url QueryUnescape.
-fn query_unescape(s: &str) -> Result<Vec<u8>, String> {
+pub fn query_unescape(s: &str) -> Result<Vec<u8>, String> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -236,7 +236,7 @@ fn base64_std_encode(data: &[u8]) -> String {
 
 // sourcemap_record_baseline.go:12
 // Returns the baseline path and content to compare.
-pub fn do_sourcemap_record_baseline(
+pub(crate) fn do_sourcemap_record_baseline(
     baseline_path: &str,
     options: &CompilerOptions,
     result: &SourceMapCompilationResult,
@@ -266,16 +266,4 @@ pub fn do_sourcemap_record_baseline(
     }
 
     (baseline_path, actual)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn query_round_trip_is_identity() {
-        for s in ["a b+c%d", "héllo\r\n\t~", ""] {
-            assert_eq!(query_unescape(&query_escape(s)).unwrap(), s.as_bytes());
-        }
-    }
 }

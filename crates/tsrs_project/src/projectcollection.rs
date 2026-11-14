@@ -13,7 +13,7 @@ use crate::project::{ConfiguredProjectID, ID, Project, SyntheticProjectID};
 
 #[derive(Clone)]
 pub struct ProjectCollection {
-    pub(crate) to_path: ToPath,
+    to_path: ToPath,
     pub(crate) config_file_registry: Arc<ConfigFileRegistry>,
     // fileDefaultProjects is a map of file paths to the ID of the default project
     // for that file. This map
@@ -36,7 +36,7 @@ pub struct ProjectCollection {
     pub(crate) api_state: APIState,
 
     // Go: openConfiguredProjectsOnce + openConfiguredProjects (not copied by clone()).
-    pub(crate) open_configured_projects: Arc<OnceLock<Arc<Set<ConfiguredProjectID>>>>,
+    open_configured_projects: Arc<OnceLock<Arc<Set<ConfiguredProjectID>>>>,
 }
 
 // APIState tracks the projects and files that API clients have explicitly opened.
@@ -72,7 +72,7 @@ pub struct ApiOpenedFile {
     pub(crate) ref_count: usize,
 }
 
-pub fn new_project_collection(to_path: ToPath, open_files: Set<Path>) -> ProjectCollection {
+pub(crate) fn new_project_collection(to_path: ToPath, open_files: Set<Path>) -> ProjectCollection {
     ProjectCollection {
         to_path,
         config_file_registry: Arc::default(),
@@ -113,7 +113,7 @@ impl ProjectCollection {
 
     // projectcollection.go:92
     // ConfiguredProjects returns all configured projects in a stable order.
-    pub fn configured_projects(&self) -> Vec<Shared<Project>> {
+    fn configured_projects(&self) -> Vec<Shared<Project>> {
         let mut projects = Vec::with_capacity(self.configured_projects.len());
         self.fill_configured_projects(&mut projects);
         projects
@@ -124,7 +124,7 @@ impl ProjectCollection {
         let start = projects.len();
         // collected, then sorted by unique project id as in Go
         projects.extend(self.configured_projects.values().map(std::clone::Clone::clone));
-        projects[start..].sort_by_key(|a| a.id());
+        projects[start..].sort_by(|a, b| a.id_ref().cmp(b.id_ref()));
     }
 
     // projectcollection.go:108
@@ -132,7 +132,7 @@ impl ProjectCollection {
     pub fn synthetic_projects(&self) -> Vec<Shared<Project>> {
         let mut projects: Vec<Shared<Project>> =
             self.synthetic_projects.values().cloned().collect();
-        projects.sort_by_key(|a| a.id());
+        projects.sort_by(|a, b| a.id_ref().cmp(b.id_ref()));
         projects
     }
 
@@ -184,7 +184,7 @@ impl ProjectCollection {
     // projectcollection.go:165
     // GetLanguageServiceProjectsContainingFile does not consider synthetic projects
     // (ones created by API via createProgram)
-    pub fn get_language_service_projects_containing_file(
+    pub(crate) fn get_language_service_projects_containing_file(
         &self,
         path: &Path,
     ) -> Vec<Arc<dyn ls::Project>> {
@@ -208,7 +208,7 @@ impl ProjectCollection {
 
     // projectcollection.go:179
     // GetOpenConfiguredProjects returns configured projects containing at least one open file.
-    pub fn get_open_configured_projects(&self) -> Arc<Set<ConfiguredProjectID>> {
+    pub(crate) fn get_open_configured_projects(&self) -> Arc<Set<ConfiguredProjectID>> {
         Arc::clone(self.open_configured_projects.get_or_init(|| {
             let mut open_projects = new_set_with_size_hint(self.configured_projects.len());
             #[expect(
@@ -398,7 +398,7 @@ impl ProjectCollection {
 }
 
 // projectcollection.go:202
-pub fn open_file_paths(overlays: &OverlayMap) -> Set<Path> {
+pub(crate) fn open_file_paths(overlays: &OverlayMap) -> Set<Path> {
     let mut open_files = new_set_with_size_hint(overlays.len());
     // pure set insert; Go ranges the map too
     open_files.m.extend(overlays.keys().map(std::clone::Clone::clone));
@@ -412,7 +412,7 @@ pub fn open_file_paths(overlays: &OverlayMap) -> Set<Path> {
 // Along with the resulting project path, a boolean is returned indicating whether there were multiple
 // direct inclusions of the file in different projects, indicating that the caller may want to perform
 // additional logic to determine the best project.
-pub fn find_default_configured_project_from_program_inclusion(
+pub(crate) fn find_default_configured_project_from_program_inclusion(
     _file_name: &str,
     path: &Path,
     project_paths: &[Path],

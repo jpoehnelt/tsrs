@@ -1,27 +1,6 @@
 #[global_allocator]
 static GLOBAL: mimalloc_safe::MiMalloc = mimalloc_safe::MiMalloc;
 
-mod baseline;
-mod compile;
-mod compiler_runner;
-mod compiler_test_filter;
-mod diagnosticwriter;
-mod emit_harness;
-mod harnessutil;
-mod materialize;
-mod options;
-#[cfg(test)]
-mod oracle_tests;
-mod pool;
-mod report;
-mod sourcemap_baseline;
-mod sourcemap_recorder;
-mod test_case_parser;
-mod tsbaseline;
-mod type_symbol_baseline;
-mod types_dump;
-mod worker;
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -29,13 +8,15 @@ use regex::Regex;
 use rustc_hash::FxHashSet;
 use tsrs_core::tspath;
 
-use crate::baseline::Class;
-use crate::compiler_runner::{SUITES, TestItem};
-use crate::harnessutil::OptionTable;
+use tsrs_testrunner::baseline::Class;
+use tsrs_testrunner::compiler_runner::{SUITES, TestItem};
+use tsrs_testrunner::harnessutil::OptionTable;
+use tsrs_testrunner::*;
 
 const USAGE: &str = "usage:
   tsrs-test run [--suite compiler|conformance|all] [--filter <substr|regex>] [--list <file>]
-                [--jobs N] [--timeout S] [--recycle N] [--mem-limit MB] [--json <path>] [--panic-summary]
+                [--jobs N] [--checkers N] [--timeout S] [--recycle N] [--mem-limit MB] [--json <path>] [--panic-summary]
+                                      --checkers: override the program's checker count (1..256), with parallel programs
                 [--baselines all|types,symbols,js,jsmap,sourcemap | --types --symbols --js]
                                       all: compare errors, types, symbols, JavaScript/declarations and source maps
                   (js: emit through Go's pre-/post-emit programs, docs/EMIT.md section 8)
@@ -54,22 +35,6 @@ const USAGE: &str = "usage:
                                       (single-threaded, like tools/oracle/project-types): <out>/manifest.<kind>
                                       (hash, lines, path per file) and <out>/<kind>/<path>.<kind>; --sample walks only
                                       the listed files (e.g. from tools/project-types-sample.mjs), in program order";
-
-// Which extra baselines to generate and compare besides `.errors.txt` (bit set of EXTRA_TYPES / EXTRA_SYMBOLS).
-// Asking for either runs both walks (Go runs the type walk before the symbol walk in the same program).
-pub static EXTRA_BASELINES: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-pub const EXTRA_TYPES: u8 = 1;
-pub const EXTRA_SYMBOLS: u8 = 2;
-// `.js` emit baselines (docs/EMIT.md section 8). Asking for them switches the compilation to Go's pre-/post-emit
-// programs, so the error and `.types`/`.symbols` baselines then come from the post-emit program as in Go.
-pub const EXTRA_JS: u8 = 4;
-// `.js.map` and `.sourcemap.txt` baselines (docs/EMIT.md section 8); they need the same emitting compilation.
-pub const EXTRA_JSMAP: u8 = 8;
-pub const EXTRA_SOURCEMAP: u8 = 16;
-
-pub fn extra_baselines() -> u8 {
-    EXTRA_BASELINES.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 fn parse_baselines(v: &str) -> u8 {
     let mut bits = 0;
@@ -110,7 +75,15 @@ fn worker_args() -> Vec<String> {
             },
         ),
     );
-    if kinds.is_empty() { Vec::new() } else { vec!["--baselines".to_string(), kinds.join(",")] }
+    let mut args = if kinds.is_empty() {
+        Vec::new()
+    } else {
+        vec!["--baselines".to_string(), kinds.join(",")]
+    };
+    if let Some(count) = test_checkers() {
+        args.extend(["--checkers".to_string(), count.to_string()]);
+    }
+    args
 }
 
 struct Args {
@@ -528,6 +501,13 @@ fn main() {
     }
     let cmd = argv.remove(0);
     let mut args = Args { rest: argv };
+    if let Some(count) = args.num("--checkers") {
+        let Ok(count @ 1..=256) = u16::try_from(count) else {
+            eprintln!("--checkers: expected a number from 1 to 256");
+            std::process::exit(2);
+        };
+        TEST_CHECKERS.set(i64::from(count)).unwrap();
+    }
     for arg in &args.rest {
         if matches!(arg.split('=').next(), Some("--oracle" | "--options" | "--syntax-only")) {
             eprintln!(

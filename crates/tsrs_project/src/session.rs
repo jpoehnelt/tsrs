@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
 use tsrs_ast::Diagnostic;
+use tsrs_contentmapper as contentmapper;
 use tsrs_core::collections::{OrderedMap, Set, SyncSet, diff_ordered_maps};
 use tsrs_core::context::{CancelFunc, Context, has_locale, with_locale};
 use tsrs_core::tspath::{self, Path};
@@ -59,7 +60,7 @@ pub enum UpdateReason {
 
 // ErrNoProjectForUnknownScriptKind identifies requests for otherwise unsupported files.
 // (Go `errors.New`; errors wrapping it carry this message as their prefix, see `is_err_no_project_for_unknown_script_kind`.)
-pub const ERR_NO_PROJECT_FOR_UNKNOWN_SCRIPT_KIND: &str = "no project for unknown script kind";
+const ERR_NO_PROJECT_FOR_UNKNOWN_SCRIPT_KIND: &str = "no project for unknown script kind";
 
 // Go `errors.Is(err, ErrNoProjectForUnknownScriptKind)`.
 pub fn is_err_no_project_for_unknown_script_kind(err: &lsproto::Error) -> bool {
@@ -95,8 +96,7 @@ pub struct SessionOptions {
     pub checker_pool_options: CheckerPoolOptions,
 }
 
-// (Content mappers and ATA are not ported: Go's `Spawner` and `ContentMapperLogger` are omitted, and an
-// `NpmExecutor` never starts a typings installer.)
+// (ATA is not ported: an `NpmExecutor` never starts a typings installer.)
 pub struct SessionInit {
     pub background_ctx: Context,
     pub options: Arc<SessionOptions>,
@@ -104,6 +104,9 @@ pub struct SessionInit {
     pub client: Option<Arc<dyn Client>>,
     pub logger: Option<Arc<dyn Logger>>,
     pub npm_executor: Option<Arc<dyn ata::NpmExecutor>>,
+    // Spawner launches content mapper processes. It is nil when the host cannot spawn processes.
+    pub spawner: Option<Arc<dyn contentmapper::Spawner>>,
+    pub content_mapper_logger: Option<contentmapper::Logger>,
     pub parse_cache: Option<Arc<ParseCache>>,
     pub content_mapped_parse_cache: Option<Arc<ContentMappedParseCache>>,
 }
@@ -164,6 +167,9 @@ pub struct Session {
     start_time: Instant,
     npm_executor: Option<Arc<dyn ata::NpmExecutor>>,
     fs: Arc<OverlayFS>,
+    // contentMapperTimings is the cumulative host snapshot at the most recent session snapshot adoption.
+    // Go: contentMapperTimings + contentMapperTimingsMu.
+    content_mapper_timings: Mutex<contentmapper::Timings>,
 
     // registeredContentMapperSnapshotID is the ID of the newest snapshot whose registration has been
     // applied. Registration runs from background tasks that may finish out of order, so
@@ -192,7 +198,7 @@ pub struct Session {
     // pendingFileChanges are accumulated from textDocument/* events delivered
     // by the LSP server through DidOpenFile(), DidChangeFile(), etc. They are
     // applied to the next snapshot update.
-    pub(crate) pending_file_changes: Mutex<Vec<FileChange>>,
+    pub pending_file_changes: Mutex<Vec<FileChange>>,
 
     // pendingATAChanges are produced by Automatic Type Acquisition (ATA)
     // installations and applied to the next snapshot update.
@@ -237,6 +243,26 @@ pub struct Session {
     self_ref: Weak<Session>,
 }
 
+// session.go:199
+// newContentMapperHost creates the session's shared content mapper host when the workspace is trusted and
+// a spawner is available; otherwise it returns nil, and configured content mappers are rejected by the
+// config-file gate.
+pub(crate) fn new_content_mapper_host(init: &SessionInit) -> Option<Arc<dyn contentmapper::Host>> {
+    if !init.options.run_external_code {
+        return None;
+    }
+    let spawner = init.spawner.as_ref()?;
+    let mut diagnostic_locale = tsrs_core::Locale::DEFAULT;
+    if let Some(client) = &init.client {
+        diagnostic_locale = client.get_locale();
+    }
+    Some(contentmapper::new_host_with_options(
+        Arc::clone(spawner),
+        diagnostic_locale,
+        contentmapper::HostOptions { logger: init.content_mapper_logger.clone() },
+    ))
+}
+
 // session.go:210
 pub fn new_session(init: &SessionInit) -> Arc<Session> {
     let snapshot_host = new_snapshot_host(init);
@@ -248,7 +274,13 @@ pub fn new_session(init: &SessionInit) -> Arc<Session> {
     let snapshot = snapshot_host.new_root_snapshot_with(0, relative_pattern_support);
     let (background_ctx, background_cancel) = init.background_ctx.with_cancel();
     // (ATA is not ported: Go creates a typings installer here when TypingsLocation and NpmExecutor are set.)
+    let content_mapper_timings = snapshot_host
+        .content_mapper_host
+        .as_ref()
+        .map(|content_mapper_host| content_mapper_host.timings())
+        .unwrap_or_default();
     Arc::new_cyclic(|self_ref| Session {
+        content_mapper_timings: Mutex::new(content_mapper_timings),
         options: Arc::clone(&init.options),
         logger: session_logger,
         background_ctx,
@@ -301,9 +333,6 @@ impl Session {
 
     // session.go:251
     // FS implements module.ResolutionHost
-    pub fn fs(&self) -> &dyn FS {
-        &*self.fs
-    }
 
     /// `fs` as a shared handle (a Go `vfs.FS` is a reference), for an LSP-attached API session.
     pub fn shared_fs(&self) -> Arc<dyn FS> {
@@ -312,9 +341,6 @@ impl Session {
 
     // session.go:256
     // GetCurrentDirectory implements module.ResolutionHost
-    pub fn get_current_directory(&self) -> &str {
-        &self.options.current_directory
-    }
 
     // session.go:260
     pub fn default_library_path(&self) -> &str {
@@ -352,8 +378,14 @@ impl Session {
         if !config.locale.is_empty()
             && let Some(client) = &self.client
         {
-            // (Content mappers are not ported: Go forwards a changed locale to the content mapper host.)
+            let old_locale = client.get_locale();
             client.set_locale(&config.locale);
+            let new_locale = client.get_locale();
+            if old_locale.string() != new_locale.string()
+                && let Some(content_mapper_host) = &self.snapshot_host.content_mapper_host
+            {
+                content_mapper_host.set_locale(new_locale);
+            }
         }
 
         // Tell the client to re-request certain commands depending on user preference changes.
@@ -382,7 +414,7 @@ impl Session {
         self.cancel_warm_auto_import_cache();
         self.schedule_idle_cache_clean();
         self.cancel_scheduled_snapshot_update();
-        let _update = self.snapshot_update_mu.lock().unwrap();
+        let _update = tsrs_core::runslots::blocking(|| self.snapshot_update_mu.lock().unwrap());
         let mut pending = self.pending_file_changes.lock().unwrap();
         pending.push(FileChange {
             kind: FileChangeKind::Open,
@@ -419,7 +451,7 @@ impl Session {
             return;
         }
         self.cancel_scheduled_snapshot_update();
-        let _update = self.snapshot_update_mu.lock().unwrap();
+        let _update = tsrs_core::runslots::blocking(|| self.snapshot_update_mu.lock().unwrap());
         let mut pending = self.pending_file_changes.lock().unwrap();
         let (changes, overlays) = self.flush_changes_locked(ctx, &mut pending);
         drop(pending);
@@ -603,7 +635,7 @@ impl Session {
     }
 
     // session.go:507
-    pub fn schedule_diagnostics_refresh(&self) {
+    fn schedule_diagnostics_refresh(&self) {
         self.schedule_diagnostics_refresh_with_delay(self.options.debounce_delay);
     }
 
@@ -675,7 +707,7 @@ impl Session {
     }
 
     // session.go:577
-    pub fn schedule_snapshot_update(&self, reason: UpdateReason) {
+    fn schedule_snapshot_update(&self, reason: UpdateReason) {
         let mut st = self.scheduled_snapshot_update.lock().unwrap();
 
         // Cancel any existing scheduled snapshot update
@@ -717,7 +749,7 @@ impl Session {
                 s.logger.log("Running scheduled snapshot update");
             }
 
-            let _update = s.snapshot_update_mu.lock().unwrap();
+            let _update = tsrs_core::runslots::blocking(|| s.snapshot_update_mu.lock().unwrap());
 
             let (file_changes, overlays, ata_changes, new_config) = s.flush_changes(ctx);
             if file_changes.is_empty() && ata_changes.is_empty() && new_config.is_none() {
@@ -790,7 +822,7 @@ impl Session {
                 }
             }
 
-            let _update = s.snapshot_update_mu.lock().unwrap();
+            let _update = tsrs_core::runslots::blocking(|| s.snapshot_update_mu.lock().unwrap());
             if s.background_ctx.is_canceled() {
                 return;
             }
@@ -883,7 +915,17 @@ impl Session {
         request: ResourceRequest,
         caller_ref: bool,
     ) -> Arc<Snapshot> {
-        let _update = self.snapshot_update_mu.lock().unwrap();
+        self.get_snapshot_with_cached_project_lookup(ctx, request, caller_ref, None)
+    }
+
+    fn get_snapshot_with_cached_project_lookup(
+        &self,
+        ctx: &Context,
+        request: ResourceRequest,
+        caller_ref: bool,
+        cached_snapshot_id: Option<u64>,
+    ) -> Arc<Snapshot> {
+        let _update = tsrs_core::runslots::blocking(|| self.snapshot_update_mu.lock().unwrap());
         self.cancel_scheduled_snapshot_update();
 
         let (file_changes, overlays, ata_changes, new_config) = self.flush_changes(ctx);
@@ -911,6 +953,14 @@ impl Session {
         // If there are no pending file changes, we can try to use the current snapshot.
         let guard = self.snapshot.read().unwrap();
         let snapshot = Arc::clone(guard.as_ref().expect("session is closed"));
+        // A cached lookup may skip a closed-file update only after pending changes have been handled with
+        // the original URI-bearing request: configuration invalidation can force fresh project discovery.
+        if cached_snapshot_id == Some(snapshot.id()) {
+            if caller_ref {
+                snapshot.ref_();
+            }
+            return snapshot;
+        }
         let mut update_reason = UpdateReason::Unknown;
         if !request.projects.is_empty() {
             update_reason = UpdateReason::RequestedLanguageServiceProjectDirty;
@@ -1028,6 +1078,39 @@ impl Session {
         // !!! TODO: sheetal:  Get other projects that contain the file with symlink
         let all_projects = snapshot.get_language_service_projects_containing_file(uri);
         Ok((project, default_ls, all_projects))
+    }
+
+    // Reuse membership only while the snapshot that produced it is current. Tree discovery and pending edits
+    // can add projects containing another declaration of a merged symbol during the same request.
+    pub fn get_projects_for_file_cached(
+        &self,
+        ctx: &Context,
+        uri: &lsproto::DocumentUri,
+        cache: &mut ProjectLookupCache,
+    ) -> Vec<Arc<dyn tsrs_ls::Project>> {
+        let cached_snapshot_id =
+            if cache.projects.contains_key(uri) { cache.snapshot_id } else { None };
+        let snapshot = self.get_snapshot_with_cached_project_lookup(
+            ctx,
+            ResourceRequest {
+                configured_project_documents: vec![uri.clone()],
+                ..Default::default()
+            },
+            false,
+            cached_snapshot_id,
+        );
+        if cache.snapshot_id == Some(snapshot.id())
+            && let Some(projects) = cache.projects.get(uri)
+        {
+            return projects.clone();
+        }
+        let projects = snapshot.get_language_service_projects_containing_file(uri);
+        if cache.snapshot_id != Some(snapshot.id()) {
+            cache.projects.clear();
+            cache.snapshot_id = Some(snapshot.id());
+        }
+        cache.projects.insert(uri.clone(), projects.clone());
+        projects
     }
 
     // session.go:1136
@@ -1161,30 +1244,6 @@ impl Session {
     // LanguageService for the default project. Use this only outside of request handling
     // (e.g. cache warming). For request handlers, use GetLanguageServiceWithAutoImports
     // with the request-level snapshot instead.
-    pub fn get_current_language_service_with_auto_imports(
-        &self,
-        ctx: &Context,
-        uri: &lsproto::DocumentUri,
-    ) -> Result<Arc<LanguageService>, lsproto::Error> {
-        let snapshot = self.get_snapshot(
-            ctx,
-            ResourceRequest {
-                documents: vec![uri.clone()],
-                auto_imports: uri.clone(),
-                ..Default::default()
-            },
-            false, /*callerRef*/
-        );
-        let Some(project) = snapshot.get_default_project(uri) else {
-            return Err(lsproto::Error::new(format!("no project found for URI {uri}")));
-        };
-        Ok(Arc::new(new_language_service(
-            ProjectID(project.id().0),
-            project.get_program().unwrap(),
-            snapshot,
-            &uri.file_name(),
-        )))
-    }
 
     // session.go:1257
     // WithLanguageServiceAndSnapshot synchronously acquires a ref'd snapshot and
@@ -1289,7 +1348,7 @@ impl Session {
         api_file_changes: &FileChangeSummary,
         api_request: Option<Arc<APISnapshotRequest>>,
     ) -> Result<Arc<Snapshot>, lsproto::Error> {
-        let _update = self.snapshot_update_mu.lock().unwrap();
+        let _update = tsrs_core::runslots::blocking(|| self.snapshot_update_mu.lock().unwrap());
         self.cancel_scheduled_snapshot_update();
 
         let (host_file_changes, overlays, ata_changes, _) = self.flush_changes(ctx);
@@ -1366,6 +1425,7 @@ impl Session {
             // ref is transferred to become the session's ref for its current snapshot.
             *guard = Some(Arc::clone(new_snapshot));
             old_snapshot.deref();
+            let content_mapper_timings = self.take_content_mapper_timing_delta();
             drop(guard);
             if self.options.logging_enabled {
                 self.logger.logf(format_args!(
@@ -1375,6 +1435,7 @@ impl Session {
                 if !new_snapshot.builder_logs.is_nil() {
                     self.logger.log(&new_snapshot.builder_logs.string());
                 }
+                self.log_content_mapper_timings(&content_mapper_timings);
             }
         } else {
             // Session has moved on to a newer snapshot; discard this one.
@@ -1406,7 +1467,7 @@ impl Session {
     }
 
     // session.go:1344
-    pub fn update_snapshot(&self, ctx: &Context, overlays: OverlayMap, change: SnapshotChange) {
+    fn update_snapshot(&self, ctx: &Context, overlays: OverlayMap, change: SnapshotChange) {
         self.update_snapshot_with(ctx, overlays, change, false);
     }
 
@@ -1415,7 +1476,7 @@ impl Session {
     // with an extra reference for the caller. The ref is taken atomically with
     // the snapshot assignment under snapshotMu, so the snapshot is guaranteed
     // to be alive when returned. The caller must call snapshot.Deref() when done.
-    pub(crate) fn update_snapshot_ref(
+    fn update_snapshot_ref(
         &self,
         ctx: &Context,
         overlays: OverlayMap,
@@ -1459,12 +1520,14 @@ impl Session {
         if caller_ref {
             new_snapshot.ref_();
         }
+        let mut content_mapper_timings = contentmapper::Timings::default();
         if !Arc::ptr_eq(&new_snapshot, &old_snapshot) {
             // Release the session's reference to the old snapshot. The new snapshot's
             // clone ref (1) is transferred to become the session's ref for its current
             // snapshot. Other holders (e.g. active handlers) keep the old snapshot alive
             // via their own refs until they complete.
             old_snapshot.deref();
+            content_mapper_timings = self.take_content_mapper_timing_delta();
         }
         drop(guard);
 
@@ -1486,6 +1549,7 @@ impl Session {
                     s.logger.log(&new_snapshot.builder_logs.string());
                 }
                 s.log_project_changes(&old_snapshot, &new_snapshot);
+                s.log_content_mapper_timings(&content_mapper_timings);
                 s.logger.log("");
             }
             if s.options.watch_enabled
@@ -1501,6 +1565,64 @@ impl Session {
         });
 
         Some(new_snapshot)
+    }
+
+    // session.go:1447
+    fn take_content_mapper_timing_delta(&self) -> contentmapper::Timings {
+        let Some(content_mapper_host) = &self.snapshot_host.content_mapper_host else {
+            return contentmapper::Timings::default();
+        };
+        let current = content_mapper_host.timings();
+        let mut timings = self.content_mapper_timings.lock().unwrap();
+        let delta = current.since(&timings);
+        *timings = current;
+        delta
+    }
+
+    // session.go:1459
+    fn log_content_mapper_timings(&self, timings: &contentmapper::Timings) {
+        if timings.request_wait.is_zero() && !has_content_mapper_operation_timings(&timings.mappers)
+        {
+            return;
+        }
+        self.logger.log("Content mapper timings since previous snapshot adoption:");
+        if !timings.request_wait.is_zero() {
+            self.logger.logf(format_args!("  Request wait time: {:?}", timings.request_wait));
+        }
+        let mut identities: Vec<&String> = timings.mappers.keys().collect();
+        identities.sort();
+        for identity in identities {
+            let mapper = &timings.mappers[identity];
+            if !has_content_mapper_operation_timing(mapper) {
+                continue;
+            }
+            self.logger.logf(format_args!("  {identity}:"));
+            if mapper.spawn.count != 0 {
+                self.logger.logf(format_args!(
+                    "    Initializations: {} ({:?})",
+                    mapper.spawn.count,
+                    mapper.spawn.duration + mapper.initialize.duration
+                ));
+            }
+            if mapper.open_project.count != 0 {
+                self.logger.logf(format_args!(
+                    "    openProject requests: {} ({:?})",
+                    mapper.open_project.count, mapper.open_project.duration
+                ));
+            }
+            if mapper.close_project.count != 0 {
+                self.logger.logf(format_args!(
+                    "    closeProject requests: {} ({:?})",
+                    mapper.close_project.count, mapper.close_project.duration
+                ));
+            }
+            if mapper.transform.count != 0 {
+                self.logger.logf(format_args!(
+                    "    Transforms: {} ({:?})",
+                    mapper.transform.count, mapper.transform.duration
+                ));
+            }
+        }
     }
 
     // session.go:1476
@@ -1839,7 +1961,7 @@ impl Session {
         self.background_cancel.call();
         self.background_queue.close();
 
-        let _update = self.snapshot_update_mu.lock().unwrap();
+        let _update = tsrs_core::runslots::blocking(|| self.snapshot_update_mu.lock().unwrap());
         let snapshot = self.snapshot.write().unwrap().take();
         if let Some(snapshot) = snapshot {
             snapshot.deref();
@@ -2037,7 +2159,7 @@ impl Session {
         }
     }
 
-    // session.go:1827
+    // Preserve the SessionInit npm executor hook for embedding hosts.
     pub fn npm_install(&self, cwd: &str, npm_install_args: &[String]) -> Result<Vec<u8>, String> {
         self.npm_executor.as_ref().expect("no npm executor").npm_install(cwd, npm_install_args)
     }
@@ -2404,6 +2526,21 @@ impl WarmChange {
     }
 }
 
+// session.go:1488
+fn has_content_mapper_operation_timings(
+    timings: &OrderedMap<String, contentmapper::MapperTimings>,
+) -> bool {
+    timings.values().any(has_content_mapper_operation_timing)
+}
+
+// session.go:1497
+fn has_content_mapper_operation_timing(timing: &contentmapper::MapperTimings) -> bool {
+    timing.spawn.count != 0
+        || timing.open_project.count != 0
+        || timing.close_project.count != 0
+        || timing.transform.count != 0
+}
+
 // session.go:1937
 fn should_publish_program_diagnostics(p: &Project, snapshot_id: u64) -> bool {
     if p.kind != Kind::Configured || p.program.is_none() || p.program_last_update != snapshot_id {
@@ -2437,4 +2574,11 @@ impl Drop for DerefOnDrop<'_> {
 
 fn tsrs_overlays(fs: &OverlayFS) -> OverlayMap {
     crate::overlayfs::LayeredFileSystem::overlays(fs)
+}
+
+/// Membership from one snapshot, owned by one request in one session. Snapshot IDs are session-local.
+#[derive(Default)]
+pub struct ProjectLookupCache {
+    snapshot_id: Option<u64>,
+    projects: FxHashMap<lsproto::DocumentUri, Vec<Arc<dyn tsrs_ls::Project>>>,
 }

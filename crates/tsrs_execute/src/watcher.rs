@@ -163,8 +163,8 @@ pub struct Watcher {
     program_ready: bool,
 
     // Test-only observability of which build path was taken.
-    pub fast_path_builds: usize,
-    pub full_builds: usize,
+    fast_path_builds: usize,
+    full_builds: usize,
 }
 
 impl tsc::Watcher for Watcher {
@@ -473,7 +473,7 @@ impl Watcher {
     }
 
     /// Go `DoCycle`.
-    pub fn do_cycle(&mut self) {
+    fn do_cycle(&mut self) {
         let wm = Arc::clone(&self.wm);
         let mut state = wm.lock();
 
@@ -809,7 +809,6 @@ impl Watcher {
         // Each cycle replaces the program; its checkers' regions are freed with it (`install_program`), and what the
         // file loader allocates with the data the programs updated from it share.
         program_options.checker_regions = true;
-        // `full_build_files` keeps the parents of the synthetic imports the reused programs keep.
         program_options.reuse_synthetic_imports = true;
         // The harness reads diagnostics of programs that are freed (`install_program`).
         program_options.checker_diagnostic_regions = self.testing.is_none();

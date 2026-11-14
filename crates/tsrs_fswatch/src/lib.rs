@@ -3,13 +3,13 @@
 // same fallback Go takes on kernels without fanotify), `windows.go` (Windows builds get an unavailable watcher),
 // `walkDirGeneric` (only used where the unix walker does not exist).
 
-mod canonicalize;
-mod debounce;
-mod event;
+pub mod canonicalize;
+pub mod debounce;
+pub mod event;
 #[cfg(target_os = "macos")]
-mod fsevents_darwin;
+pub mod fsevents_darwin;
 #[cfg(target_os = "macos")]
-mod fsevents_darwin_ffi;
+pub mod fsevents_darwin_ffi;
 #[cfg(target_os = "linux")]
 mod inotify_linux;
 #[cfg(any(
@@ -19,26 +19,17 @@ mod inotify_linux;
     target_os = "netbsd",
     target_os = "dragonfly"
 ))]
-mod kqueue;
-mod pathcompare;
-mod pathkey;
+pub mod kqueue;
+pub mod pathcompare;
+pub mod pathkey;
 #[cfg(unix)]
 mod walkdir_unix;
-mod watcher;
+pub mod watcher;
 
-#[cfg(test)]
-mod eventlist_test;
-#[cfg(test)]
-mod testutil_test;
-#[cfg(test)]
-mod watcher_test;
-
-pub use canonicalize::path_comparer_for_path;
 pub use event::{Event, EventKind};
-pub use pathkey::{NATIVE_PATH_COMPARISON_AVAILABLE, PathComparer};
+pub use pathkey::PathComparer;
 pub use watcher::{
-    ERR_FILESYSTEM_UNSUPPORTED, ERR_OVERFLOW, ERR_UNAVAILABLE, ERR_WATCH_TERMINATED, Error,
-    IgnoreFunc, Sentinel, Watch, WatchCallback, WatchDirectoryRequest, WatchOption, Watcher,
-    all_watchers, default, fanotify, fsevents, inotify, kqueue, set_write_settling, windows,
-    with_ignore, with_recursive,
+    ERR_OVERFLOW, ERR_UNAVAILABLE, ERR_WATCH_TERMINATED, Error, IgnoreFunc, Sentinel, Watch,
+    WatchCallback, WatchDirectoryRequest, WatchOption, Watcher, all_watchers, default, fsevents,
+    inotify, kqueue, set_write_settling, with_ignore, with_recursive,
 };

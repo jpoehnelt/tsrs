@@ -3,7 +3,7 @@
 // Go marshals these types with encoding/json/v2 (`omitzero` fields, custom MarshalJSON for the tuple shapes).
 // Rust builds the same `json::Value` tree by hand, field by field in Go's declaration order, so that
 // `json::marshal` produces Go's exact bytes in Go-compatible history. Unmarshaling follows the Go
-// `UnmarshalJSON` fallbacks; default history adds an optional tsrs canonical-cache proof.
+// `UnmarshalJSON` fallbacks; opt-in modes add a performance-policy marker and canonical-cache proof.
 
 use rustc_hash::FxHashMap;
 use tsrs_ast::RepopulateDiagnosticKind;
@@ -48,7 +48,7 @@ impl BuildInfoRoot {
     }
 
     // buildInfo.go:48
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfoRoot, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfoRoot, String> {
         if let Some(start_and_end) = as_uint_tuple::<2>(data) {
             return Ok(BuildInfoRoot {
                 start: start_and_end[0],
@@ -68,10 +68,10 @@ impl BuildInfoRoot {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildInfoFileInfoNoSignature {
-    pub version: String,
-    pub no_signature: bool,
-    pub affects_global_scope: bool,
-    pub implied_node_format: ResolutionMode,
+    version: String,
+    no_signature: bool,
+    affects_global_scope: bool,
+    implied_node_format: ResolutionMode,
 }
 
 //	 Signature is
@@ -79,10 +79,10 @@ pub struct BuildInfoFileInfoNoSignature {
 //		 - string actual signature
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildInfoFileInfoWithSignature {
-    pub version: String,
-    pub signature: String,
-    pub affects_global_scope: bool,
-    pub implied_node_format: ResolutionMode,
+    version: String,
+    signature: String,
+    affects_global_scope: bool,
+    implied_node_format: ResolutionMode,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -137,6 +137,7 @@ impl BuildInfoFileInfo {
                 signature: self.signature.clone(),
                 affects_global_scope: false,
                 implied_node_format: ModuleKind::COMMON_JS,
+                declares_interface: None,
             };
         }
         if let Some(no_signature) = &self.no_signature {
@@ -145,6 +146,7 @@ impl BuildInfoFileInfo {
                 signature: String::new(),
                 affects_global_scope: no_signature.affects_global_scope,
                 implied_node_format: no_signature.implied_node_format,
+                declares_interface: None,
             };
         }
         let file_info = self.file_info.as_ref().unwrap();
@@ -157,6 +159,7 @@ impl BuildInfoFileInfo {
             },
             affects_global_scope: file_info.affects_global_scope,
             implied_node_format: file_info.implied_node_format,
+            declares_interface: None,
         }
     }
 
@@ -188,7 +191,7 @@ impl BuildInfoFileInfo {
     }
 
     // buildInfo.go:162
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfoFileInfo, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfoFileInfo, String> {
         if let Value::String(v_signature) = data {
             return Ok(BuildInfoFileInfo { signature: v_signature.clone(), ..Default::default() });
         }
@@ -230,12 +233,12 @@ pub struct BuildInfoReferenceMapEntry {
 
 impl BuildInfoReferenceMapEntry {
     // buildInfo.go:186
-    pub fn marshal_json(&self) -> Value {
+    fn marshal_json(&self) -> Value {
         Value::Array(vec![num(self.file_id), num(self.file_id_list_id)])
     }
 
     // buildInfo.go:190
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfoReferenceMapEntry, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfoReferenceMapEntry, String> {
         let v = as_uint_tuple::<2>(data)
             .ok_or_else(|| format!("invalid BuildInfoReferenceMapEntry: {}", show(data)))?;
         Ok(BuildInfoReferenceMapEntry { file_id: v[0], file_id_list_id: v[1] })
@@ -287,7 +290,7 @@ impl Default for BuildInfoDiagnostic {
 }
 
 impl BuildInfoDiagnostic {
-    pub fn marshal_json(&self) -> Value {
+    fn marshal_json(&self) -> Value {
         let mut o = Obj::default();
         o.uint("file", self.file);
         o.bool("noFile", self.no_file);
@@ -332,7 +335,7 @@ impl BuildInfoDiagnostic {
         o.done()
     }
 
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfoDiagnostic, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfoDiagnostic, String> {
         let o = as_object(data)?;
         Ok(BuildInfoDiagnostic {
             file: get_uint(o, "file")?,
@@ -404,7 +407,7 @@ pub struct BuildInfoDiagnosticsOfFile {
 
 impl BuildInfoDiagnosticsOfFile {
     // buildInfo.go:234
-    pub fn marshal_json(&self) -> Value {
+    fn marshal_json(&self) -> Value {
         // Go marshals a nil []*BuildInfoDiagnostic inside []any as null.
         Value::Array(vec![
             num(self.file_id),
@@ -413,7 +416,7 @@ impl BuildInfoDiagnosticsOfFile {
     }
 
     // buildInfo.go:241
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfoDiagnosticsOfFile, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfoDiagnosticsOfFile, String> {
         let Value::Array(file_id_and_diagnostics) = data else {
             return Err(format!("invalid BuildInfoDiagnosticsOfFile: {}", show(data)));
         };
@@ -444,7 +447,7 @@ pub struct BuildInfoSemanticDiagnostic {
 
 impl BuildInfoSemanticDiagnostic {
     // buildInfo.go:271
-    pub fn marshal_json(&self) -> Value {
+    fn marshal_json(&self) -> Value {
         if self.file_id != 0 {
             return num(self.file_id);
         }
@@ -455,7 +458,7 @@ impl BuildInfoSemanticDiagnostic {
     }
 
     // buildInfo.go:278
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfoSemanticDiagnostic, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfoSemanticDiagnostic, String> {
         if let Some(file_id) = as_uint(data) {
             return Ok(BuildInfoSemanticDiagnostic { file_id, diagnostics: None });
         }
@@ -487,7 +490,7 @@ impl BuildInfoFilePendingEmit {
     }
 
     // buildInfo.go:316
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfoFilePendingEmit, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfoFilePendingEmit, String> {
         if let Some(file_id) = as_uint(data) {
             return Ok(BuildInfoFilePendingEmit { file_id, emit_kind: FileEmitKind::None });
         }
@@ -521,12 +524,12 @@ pub struct BuildInfoEmitSignature {
 
 impl BuildInfoEmitSignature {
     // buildInfo.go:353
-    pub fn no_emit_signature(&self) -> bool {
+    pub(crate) fn no_emit_signature(&self) -> bool {
         self.signature.is_empty() && !self.differs_only_in_dts_map && !self.differs_in_options
     }
 
     // buildInfo.go:357
-    pub fn to_emit_signature(
+    pub(crate) fn to_emit_signature(
         &self,
         path: &Path,
         emit_signatures: &FxHashMap<Path, EmitSignature>,
@@ -560,7 +563,7 @@ impl BuildInfoEmitSignature {
     }
 
     // buildInfo.go:395
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfoEmitSignature, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfoEmitSignature, String> {
         if let Some(file_id) = as_uint(data) {
             return Ok(BuildInfoEmitSignature { file_id, ..Default::default() });
         }
@@ -620,12 +623,12 @@ pub struct BuildInfoResolvedRoot {
 
 impl BuildInfoResolvedRoot {
     // buildInfo.go:453
-    pub fn marshal_json(&self) -> Value {
+    fn marshal_json(&self) -> Value {
         Value::Array(vec![num(self.resolved), num(self.root)])
     }
 
     // buildInfo.go:457
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfoResolvedRoot, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfoResolvedRoot, String> {
         let v = as_uint_tuple::<2>(data)
             .ok_or_else(|| format!("invalid BuildInfoResolvedRoot: {}", show(data)))?;
         Ok(BuildInfoResolvedRoot { resolved: v[0], root: v[1] })
@@ -643,8 +646,12 @@ pub struct BuildInfo {
     pub package_jsons: Option<Vec<String>>,
     pub missing_package_jsons: Option<Vec<String>>,
     pub content_mapper_identities: Option<Vec<String>>,
-    // Default-history cache proof; Go-compatible history leaves it empty and omits it.
+    // Fast-history cache proof; Go-compatible history leaves it empty and omits it.
     pub tsrs_canonical_check_signature: String,
+    // Omitted with TypeScript defaults. Also covers non-incremental build caches and lazy-member overrides.
+    pub tsrs_performance: String,
+    // Canonical history: the ids of the files whose text declares an interface. Omitted when any file is unknown.
+    pub tsrs_interface_files: Option<Vec<BuildInfoFileId>>,
 
     // IncrementalProgram info
     pub file_names: Vec<String>,
@@ -667,6 +674,15 @@ pub struct BuildInfo {
 }
 
 impl BuildInfo {
+    pub(crate) fn performance_mode(canonical: bool) -> &'static str {
+        match (canonical, tsrs_core::lazymembers::enabled()) {
+            (false, false) => "",
+            (false, true) => "lazy",
+            (true, false) => "canonical",
+            (true, true) => "canonical,lazy",
+        }
+    }
+
     // Go `json.Marshal(buildInfo)`.
     pub fn marshal_json(&self) -> Value {
         let mut o = Obj::default();
@@ -678,6 +694,10 @@ impl BuildInfo {
         o.opt_strings("missingPackageJsons", self.missing_package_jsons.as_deref());
         o.opt_strings("contentMapperIdentities", self.content_mapper_identities.as_deref());
         o.str("tsrsCanonicalCheckSignature", &self.tsrs_canonical_check_signature);
+        o.str("tsrsPerformance", &self.tsrs_performance);
+        if let Some(ids) = &self.tsrs_interface_files {
+            o.set("tsrsInterfaceFiles", Value::Array(ids.iter().map(|&id| num(id)).collect()));
+        }
         if !self.file_names.is_empty() {
             o.set("fileNames", strings(&self.file_names));
         }
@@ -719,7 +739,7 @@ impl BuildInfo {
     }
 
     // Go `json.Unmarshal(data, &buildInfo)`.
-    pub fn unmarshal_json(data: &Value) -> Result<BuildInfo, String> {
+    fn unmarshal_json(data: &Value) -> Result<BuildInfo, String> {
         Self::unmarshal_json_with_canonical_diagnostics(data, true)
     }
 
@@ -728,15 +748,17 @@ impl BuildInfo {
         canonical_diagnostics: bool,
     ) -> Result<BuildInfo, String> {
         let o = as_object(data)?;
-        // tsrs-only: tagged CLI diagnostics cannot be reused by API or Go history, even with a malformed proof.
-        if (!canonical_diagnostics || tsrs_core::compat::go_compatible_history())
-            && o.contains_key("tsrsCanonicalCheckSignature")
+        // Both directions require a fresh check: canonical diagnostics cannot be reused by Go/API history,
+        // and a fast invocation must not reuse diagnostics computed with the TypeScript defaults.
+        let canonical = canonical_diagnostics && !tsrs_core::compat::go_compatible_history();
+        let tsrs_performance = get_string(o, "tsrsPerformance")?;
+        if tsrs_performance != Self::performance_mode(canonical)
+            || !canonical && o.contains_key("tsrsCanonicalCheckSignature")
         {
-            return Err(
-                "canonical build info cannot be reused with this diagnostic policy".to_string()
-            );
+            return Err("build info cannot be reused with this diagnostic policy".to_string());
         }
         Ok(BuildInfo {
+            tsrs_performance,
             version: get_string(o, "version")?,
             errors: get_bool(o, "errors")?,
             check_pending: get_bool(o, "checkPending")?,
@@ -756,6 +778,10 @@ impl BuildInfo {
                     signature.clone()
                 }
                 _ => String::new(),
+            },
+            tsrs_interface_files: match o.get("tsrsInterfaceFiles") {
+                Some(ids @ Value::Array(_)) => as_uint_list(ids),
+                _ => None,
             },
             file_names: get_string_array(o, "fileNames")?,
             file_infos: get_array(o, "fileInfos", BuildInfoFileInfo::unmarshal_json)?,
@@ -817,6 +843,13 @@ impl BuildInfo {
         w.opt_strings("missingPackageJsons", self.missing_package_jsons.as_deref());
         w.opt_strings("contentMapperIdentities", self.content_mapper_identities.as_deref());
         w.str("tsrsCanonicalCheckSignature", &self.tsrs_canonical_check_signature);
+        w.str("tsrsPerformance", &self.tsrs_performance);
+        if let Some(ids) = &self.tsrs_interface_files {
+            w.key("tsrsInterfaceFiles");
+            write_array(w.out, ids, |out, &id| {
+                tsrs_core::json::write_compact_int(out, id as i64);
+            });
+        }
         if !self.file_names.is_empty() {
             w.strings("fileNames", &self.file_names);
         }
@@ -905,7 +938,7 @@ impl BuildInfo {
     }
 
     // buildInfo.go:527
-    pub fn file_name(&self, file_id: BuildInfoFileId) -> &str {
+    fn file_name(&self, file_id: BuildInfoFileId) -> &str {
         if file_id == 0 || file_id as usize > self.file_names.len() {
             return "";
         }
@@ -913,7 +946,7 @@ impl BuildInfo {
     }
 
     // buildInfo.go:534
-    pub fn file_info(&self, file_id: BuildInfoFileId) -> Option<&BuildInfoFileInfo> {
+    fn file_info(&self, file_id: BuildInfoFileId) -> Option<&BuildInfoFileInfo> {
         if file_id == 0 || file_id as usize > self.file_infos.len() {
             return None;
         }
@@ -1335,7 +1368,7 @@ pub fn category_to_i32(c: Category) -> i32 {
     }
 }
 
-pub fn category_from_i32(c: i32) -> Category {
+fn category_from_i32(c: i32) -> Category {
     match c {
         1 => Category::Error,
         2 => Category::Suggestion,
@@ -1344,7 +1377,7 @@ pub fn category_from_i32(c: i32) -> Category {
     }
 }
 
-pub fn module_kind_from_i32(v: i32) -> ModuleKind {
+fn module_kind_from_i32(v: i32) -> ModuleKind {
     match v {
         1 => ModuleKind::COMMON_JS,
         2 => ModuleKind::AMD,
@@ -1364,7 +1397,7 @@ pub fn module_kind_from_i32(v: i32) -> ModuleKind {
 }
 
 // A JSON value decoded into Go `any` (float64 numbers, []any arrays, map objects).
-pub fn json_to_option_value(v: &Value) -> CompilerOptionsValue {
+fn json_to_option_value(v: &Value) -> CompilerOptionsValue {
     match v {
         Value::Null => CompilerOptionsValue::Null,
         Value::Bool(b) => CompilerOptionsValue::Bool(*b),
@@ -1377,113 +1410,5 @@ pub fn json_to_option_value(v: &Value) -> CompilerOptionsValue {
         Value::Object(m) => CompilerOptionsValue::Object(
             m.iter().map(|(k, v)| (k.to_string(), json_to_option_value(v))).collect(),
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // `marshal` streams what `marshal_json` builds; a field written in the wrong place, or omitted or kept against
-    // `marshal_json`'s rules, would change the tsbuildinfo bytes.
-    #[test]
-    fn marshal_streams_the_marshal_json_document() {
-        let info = |version: &str,
-                    signature: &str,
-                    affects_global_scope: bool,
-                    implied_node_format: ModuleKind| {
-            new_build_info_file_info(&FileInfo {
-                version: version.into(),
-                signature: signature.into(),
-                affects_global_scope,
-                implied_node_format,
-            })
-        };
-        let diagnostic = BuildInfoDiagnostic {
-            file: 2,
-            pos: 3,
-            end: 9,
-            code: 2322,
-            message_text: "Type \"a\\b\"\n is not \u{1}assignable.".into(),
-            message_key: "k".into(),
-            message_args: vec!["x".into()],
-            message_chain: vec![BuildInfoDiagnostic {
-                code: 1,
-                message_text: "chain".into(),
-                ..Default::default()
-            }],
-            reports_unnecessary: true,
-            ..Default::default()
-        };
-        let mut options = JsonMap::new();
-        options.insert("strict".to_string(), Value::Bool(true));
-        options.insert("target".to_string(), Value::Number(99.0));
-        options
-            .insert("lib".to_string(), Value::Array(vec![Value::String("lib.es2022.d.ts".into())]));
-        let full = BuildInfo {
-            version: "7.1.0".into(),
-            errors: true,
-            check_pending: true,
-            root: vec![
-                BuildInfoRoot { start: 1, end: 3, ..Default::default() },
-                BuildInfoRoot { start: 5, end: 5, ..Default::default() },
-            ],
-            package_jsons: Some(vec!["../package.json".into()]),
-            missing_package_jsons: Some(vec![]),
-            content_mapper_identities: None,
-            tsrs_canonical_check_signature: "go4-v1:0123456789abcdef0123456789abcdef".into(),
-            file_names: vec!["lib.d.ts".into(), "../src/a.ts".into(), "../src/ü \"q\".ts".into()],
-            file_infos: vec![
-                info("v1", "v1", false, ModuleKind::COMMON_JS),
-                info("v2", "", true, ModuleKind::ES_NEXT),
-                info("v3", "s3", false, ModuleKind::ES_NEXT),
-            ],
-            file_infos_non_nil: true,
-            file_ids_list: vec![vec![1, 2], vec![3], vec![1, 2, 3, 123_456_789]],
-            options: Some(options),
-            referenced_map: vec![
-                BuildInfoReferenceMapEntry { file_id: 2, file_id_list_id: 1 },
-                BuildInfoReferenceMapEntry { file_id: 3, file_id_list_id: 3 },
-            ],
-            semantic_diagnostics_per_file: vec![
-                BuildInfoSemanticDiagnostic { file_id: 1, diagnostics: None },
-                BuildInfoSemanticDiagnostic {
-                    file_id: 0,
-                    diagnostics: Some(BuildInfoDiagnosticsOfFile {
-                        file_id: 2,
-                        diagnostics: vec![diagnostic.clone()],
-                    }),
-                },
-            ],
-            emit_diagnostics_per_file: vec![BuildInfoDiagnosticsOfFile {
-                file_id: 3,
-                diagnostics: vec![diagnostic],
-            }],
-            change_file_set: vec![2, 3],
-            affected_files_pending_emit: vec![BuildInfoFilePendingEmit {
-                file_id: 2,
-                emit_kind: FileEmitKind::Js,
-            }],
-            latest_changed_dts_file: "../out/a.d.ts".into(),
-            emit_signatures: vec![BuildInfoEmitSignature {
-                file_id: 2,
-                signature: "s".into(),
-                differs_only_in_dts_map: false,
-                differs_in_options: true,
-            }],
-            resolved_root: vec![BuildInfoResolvedRoot { resolved: 2, root: 1 }],
-            semantic_errors: true,
-        };
-        let empty =
-            BuildInfo { version: "7.1.0".into(), file_infos_non_nil: true, ..Default::default() };
-        let bare = BuildInfo { version: "7.1.0".into(), ..Default::default() };
-        for build_info in [full, empty, bare] {
-            let expected = tsrs_core::json::marshal(&build_info.marshal_json()).unwrap();
-            assert_eq!(build_info.marshal(), expected);
-            assert_eq!(
-                BuildInfo::unmarshal(&expected).unwrap().tsrs_canonical_check_signature,
-                build_info.tsrs_canonical_check_signature
-            );
-        }
     }
 }

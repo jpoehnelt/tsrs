@@ -10,12 +10,12 @@ use crate::*;
 
 // TODO: Memoize once per checker to retain threadsafety
 // printer.go:13
-pub fn create_printer_with_defaults(emit_context: P<EmitContext>) -> Printer {
+fn create_printer_with_defaults(emit_context: P<EmitContext>) -> Printer {
     new_printer(PrinterOptions::default(), PrintHandlers::default(), Some(emit_context))
 }
 
 // printer.go:17
-pub fn create_printer_with_remove_comments(emit_context: P<EmitContext>) -> Printer {
+fn create_printer_with_remove_comments(emit_context: P<EmitContext>) -> Printer {
     new_printer(
         PrinterOptions { remove_comments: true, ..Default::default() },
         PrintHandlers::default(),
@@ -24,7 +24,7 @@ pub fn create_printer_with_remove_comments(emit_context: P<EmitContext>) -> Prin
 }
 
 // printer.go:21
-pub fn create_printer_with_remove_comments_omit_trailing_semicolon(
+fn create_printer_with_remove_comments_omit_trailing_semicolon(
     emit_context: P<EmitContext>,
 ) -> Printer {
     new_printer(
@@ -39,7 +39,7 @@ pub fn create_printer_with_remove_comments_omit_trailing_semicolon(
 }
 
 // printer.go:28
-pub fn create_printer_with_remove_comments_omit_trailing_semicolon_never_ascii_escape(
+fn create_printer_with_remove_comments_omit_trailing_semicolon_never_ascii_escape(
     emit_context: P<EmitContext>,
 ) -> Printer {
     new_printer(
@@ -60,6 +60,25 @@ impl Checker {
         self.type_to_string(t, None)
     }
 
+    /// Preserves Go's byte truncation, including a possible incomplete UTF-8 character.
+    pub fn type_to_string_bytes_exported(&mut self, t: P<Type>) -> Vec<u8> {
+        self.type_to_string_ex_with(
+            t,
+            None,
+            TypeFormatFlags::AllowUniqueESSymbolType
+                | TypeFormatFlags::UseAliasDefinedOutsideCurrentScope,
+            None,
+            |result, cut| {
+                let mut bytes = result.into_bytes();
+                if let Some(cut) = cut {
+                    bytes.truncate(cut);
+                    bytes.extend_from_slice(b"...");
+                }
+                bytes
+            },
+        )
+    }
+
     // printer.go:47
     pub(crate) fn type_to_string(
         &mut self,
@@ -77,7 +96,7 @@ impl Checker {
 }
 
 // printer.go:51
-pub fn to_node_builder_flags(flags: TypeFormatFlags) -> Flags {
+fn to_node_builder_flags(flags: TypeFormatFlags) -> Flags {
     Flags::from_bits_retain((flags & TypeFormatFlags::NodeBuilderFlagsMask).bits())
 }
 
@@ -101,11 +120,28 @@ impl Checker {
         flags: TypeFormatFlags,
         vc: Option<P<VerbosityContext>>,
     ) -> String {
+        self.type_to_string_ex_with(t, enclosing_declaration, flags, vc, |result, cut| {
+            if let Some(cut) = cut {
+                tsrs_core::utf8::from_utf8_lossy(&result.as_bytes()[..cut]).into_owned() + "..."
+            } else {
+                result
+            }
+        })
+    }
+
+    fn type_to_string_ex_with<R>(
+        &mut self,
+        t: P<Type>,
+        enclosing_declaration: Option<P<Node>>,
+        flags: TypeFormatFlags,
+        vc: Option<P<VerbosityContext>>,
+        finish: impl FnOnce(String, Option<usize>) -> R,
+    ) -> R {
         // Serialization of types can lead to (lazy) resolution of members, which can cause diagnostics that again require
         // serialization of types. This can potentially result in infinite recursion and stack overflows. To prevent that,
         // after a certain number of recursive invocations the function simply returns "?".
         if self.serialization_level >= MAX_SERIALIZATION_LEVEL {
-            return "?".to_string();
+            return finish("?".to_string(), None);
         }
         let mut new_line = "";
         if flags.intersects(TypeFormatFlags::MultilineObjectLiterals) {
@@ -165,11 +201,9 @@ impl Checker {
             if let Some(vc) = vc {
                 vc.truncated.set(true);
             }
-            // Go slices bytes; a cut inside a multi-byte character yields U+FFFD here instead of the raw bytes.
-            let cut = &result.as_bytes()[0..max_length - "...".len()];
-            return tsrs_core::utf8::from_utf8_lossy(cut).into_owned() + "...";
+            return finish(result, Some(max_length - "...".len()));
         }
-        result
+        finish(result, None)
     }
 
     // printer.go:120
@@ -273,17 +307,6 @@ impl Checker {
         self.signature_to_string_ex(signature, None, TypeFormatFlags::None, None)
     }
 
-    // printer.go:183
-    pub fn signature_to_string_ex_exported(
-        &mut self,
-        signature: P<Signature>,
-        enclosing_declaration: Option<P<Node>>,
-        flags: TypeFormatFlags,
-        vc: Option<P<VerbosityContext>>,
-    ) -> String {
-        self.signature_to_string_ex(signature, enclosing_declaration, flags, vc)
-    }
-
     // printer.go:187
     pub fn signature_to_string_ex(
         &mut self,
@@ -350,7 +373,7 @@ impl Checker {
     }
 
     // printer.go:233
-    pub(crate) fn type_predicate_to_string_ex(
+    fn type_predicate_to_string_ex(
         &mut self,
         type_predicate: P<TypePredicate>,
         enclosing_declaration: Option<P<Node>>,
@@ -581,7 +604,7 @@ impl Checker {
 
 impl Checker {
     // symbolaccessibility.go:11
-    pub fn is_type_symbol_accessible(
+    pub(crate) fn is_type_symbol_accessible(
         &mut self,
         type_symbol: P<Symbol>,
         enclosing_declaration: Option<P<Node>>,
@@ -597,7 +620,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:16
-    pub fn is_value_symbol_accessible(
+    pub(crate) fn is_value_symbol_accessible(
         &mut self,
         symbol: Option<P<Symbol>>,
         enclosing_declaration: Option<P<Node>>,
@@ -613,7 +636,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:21
-    pub fn is_symbol_accessible_by_flags(
+    pub(crate) fn is_symbol_accessible_by_flags(
         &mut self,
         symbol: P<Symbol>,
         enclosing_declaration: Option<P<Node>>,
@@ -630,7 +653,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:26
-    pub fn is_any_symbol_accessible(
+    fn is_any_symbol_accessible(
         &mut self,
         symbols: &[P<Symbol>],
         enclosing_declaration: Option<P<Node>>,
@@ -753,14 +776,14 @@ impl Checker {
 }
 
 // symbolaccessibility.go:105
-pub fn has_non_global_augmentation_external_module_symbol(declaration: P<Node>) -> bool {
+pub(crate) fn has_non_global_augmentation_external_module_symbol(declaration: P<Node>) -> bool {
     ast::is_module_with_string_literal_name(declaration)
         || (declaration.kind() == Kind::SourceFile
             && ast::is_external_or_common_js_module(declaration.as_source_file_p()))
 }
 
 // symbolaccessibility.go:109
-pub fn get_qualified_left_meaning(right_meaning: SymbolFlags) -> SymbolFlags {
+pub(crate) fn get_qualified_left_meaning(right_meaning: SymbolFlags) -> SymbolFlags {
     // If we are looking in value space, the parent meaning is value, other wise it is namespace
     if right_meaning == SymbolFlags::Value {
         return SymbolFlags::Value;
@@ -770,7 +793,7 @@ pub fn get_qualified_left_meaning(right_meaning: SymbolFlags) -> SymbolFlags {
 
 impl Checker {
     // symbolaccessibility.go:117
-    pub(crate) fn get_with_alternative_containers(
+    fn get_with_alternative_containers(
         &mut self,
         container: P<Symbol>,
         symbol: P<Symbol>,
@@ -846,7 +869,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:168
-    pub(crate) fn get_alternative_containing_modules(
+    fn get_alternative_containing_modules(
         &mut self,
         symbol: P<Symbol>,
         enclosing_declaration: Option<P<Node>>,
@@ -918,7 +941,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:226
-    pub(crate) fn get_variable_declaration_of_object_literal(
+    fn get_variable_declaration_of_object_literal(
         &mut self,
         symbol: P<Symbol>,
         meaning: SymbolFlags,
@@ -950,7 +973,7 @@ impl Checker {
 }
 
 // symbolaccessibility.go:249
-pub fn has_external_module_symbol(declaration: P<Node>) -> bool {
+fn has_external_module_symbol(declaration: P<Node>) -> bool {
     ast::is_ambient_module(declaration)
         || (declaration.kind() == Kind::SourceFile
             && ast::is_external_or_common_js_module(declaration.as_source_file_p()))
@@ -958,10 +981,7 @@ pub fn has_external_module_symbol(declaration: P<Node>) -> bool {
 
 impl Checker {
     // symbolaccessibility.go:253
-    pub(crate) fn get_external_module_container(
-        &mut self,
-        declaration: P<Node>,
-    ) -> Option<P<Symbol>> {
+    fn get_external_module_container(&mut self, declaration: P<Node>) -> Option<P<Symbol>> {
         let node = ast::find_ancestor(Some(declaration), has_external_module_symbol)?;
         self.get_symbol_of_declaration(node)
     }
@@ -1321,7 +1341,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:373
-    pub fn get_accessible_symbol_chain(
+    pub(crate) fn get_accessible_symbol_chain(
         &mut self,
         symbol: P<Symbol>,
         enclosing_declaration: Option<P<Node>>,
@@ -1357,7 +1377,7 @@ impl Checker {
 // symbolTableID uniquely identifies a symbol table by encoding its source.
 // The high 3 bits encode the kind, and the remaining bits encode the
 // NodeId or SymbolId of the source.
-pub const ST_KIND_SHIFT: u64 = 61;
+const ST_KIND_SHIFT: u64 = 61;
 
 pub const ST_KIND_LOCALS: SymbolTableID = 0 << ST_KIND_SHIFT;
 pub const ST_KIND_EXPORTS: SymbolTableID = 1 << ST_KIND_SHIFT;
@@ -1368,32 +1388,13 @@ pub const ST_KIND_RESOLVED_EXPORTS: SymbolTableID = 4 << ST_KIND_SHIFT; // resol
 // stKindMask extracts the kind bits from a symbolTableID.
 pub const ST_KIND_MASK: SymbolTableID = !((1 << ST_KIND_SHIFT) - 1);
 
-#[cfg(test)]
-mod symbol_table_kind_tests {
-    use super::*;
-
-    #[test]
-    fn mask_extracts_every_table_kind_without_source_id_bits() {
-        let source_id = 0x12345;
-        for kind in [
-            ST_KIND_LOCALS,
-            ST_KIND_EXPORTS,
-            ST_KIND_MEMBERS,
-            ST_KIND_GLOBALS,
-            ST_KIND_RESOLVED_EXPORTS,
-        ] {
-            assert_eq!((kind | source_id) & ST_KIND_MASK, kind);
-        }
-    }
-}
-
 // symbolaccessibility.go:417
-pub fn symbol_table_id_from_locals(node: P<Node>) -> SymbolTableID {
+fn symbol_table_id_from_locals(node: P<Node>) -> SymbolTableID {
     ST_KIND_LOCALS | ast::get_node_id(node).0
 }
 
 // symbolaccessibility.go:421
-pub fn symbol_table_id_from_exports(sym: P<Symbol>) -> SymbolTableID {
+fn symbol_table_id_from_exports(sym: P<Symbol>) -> SymbolTableID {
     ST_KIND_EXPORTS | ast::get_symbol_id(sym).0
 }
 
@@ -1402,23 +1403,23 @@ pub fn symbol_table_id_from_exports(sym: P<Symbol>) -> SymbolTableID {
 // and late-bound members). This is distinct from symbolTableIDFromExports to prevent
 // cache collisions with raw sym.Exports tables passed by someSymbolTableInScope.
 // symbolaccessibility.go:429
-pub fn symbol_table_id_from_resolved_exports(sym: P<Symbol>) -> SymbolTableID {
+fn symbol_table_id_from_resolved_exports(sym: P<Symbol>) -> SymbolTableID {
     ST_KIND_RESOLVED_EXPORTS | ast::get_symbol_id(sym).0
 }
 
 // symbolaccessibility.go:433
-pub fn symbol_table_id_from_members(sym: P<Symbol>) -> SymbolTableID {
+fn symbol_table_id_from_members(sym: P<Symbol>) -> SymbolTableID {
     ST_KIND_MEMBERS | ast::get_symbol_id(sym).0
 }
 
 // symbolaccessibility.go:437
-pub fn symbol_table_id_from_globals() -> SymbolTableID {
+fn symbol_table_id_from_globals() -> SymbolTableID {
     ST_KIND_GLOBALS
 }
 
 impl Checker {
     // symbolaccessibility.go:441
-    pub(crate) fn get_accessible_symbol_chain_ex(
+    fn get_accessible_symbol_chain_ex(
         &mut self,
         ctx: &AccessibleSymbolChainContext,
     ) -> Vec<P<Symbol>> {
@@ -1480,7 +1481,7 @@ impl Checker {
      * @param {ignoreQualification} boolean Set when a symbol is being looked for through the exports of another symbol (meaning we have a route to qualify it already)
      */
     // symbolaccessibility.go:481
-    pub(crate) fn get_accessible_symbol_chain_from_symbol_table(
+    fn get_accessible_symbol_chain_from_symbol_table(
         &mut self,
         ctx: &AccessibleSymbolChainContext,
         t: Option<P<SymbolTable>>,
@@ -1510,7 +1511,7 @@ impl Checker {
     // Members tables are skipped entirely since someSymbolTableInScope filters them
     // to SymbolFlagsType & ^SymbolFlagsAssignment, which never includes aliases.
     // symbolaccessibility.go:505
-    pub(crate) fn get_symbol_table_aliases(
+    fn get_symbol_table_aliases(
         &mut self,
         symbols: Option<P<SymbolTable>>,
         table_id: SymbolTableID,
@@ -1543,7 +1544,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:535
-    pub(crate) fn try_symbol_table(
+    fn try_symbol_table(
         &mut self,
         ctx: &AccessibleSymbolChainContext,
         symbols: Option<P<SymbolTable>>,
@@ -1647,7 +1648,7 @@ impl Checker {
 }
 
 // symbolaccessibility.go:612
-pub fn is_umd_export_symbol(symbol: Option<P<Symbol>>) -> bool {
+fn is_umd_export_symbol(symbol: Option<P<Symbol>>) -> bool {
     symbol.is_some_and(|symbol| {
         let declarations = symbol.declarations();
         !declarations.is_empty() && ast::is_namespace_export_declaration(declarations[0])
@@ -1655,13 +1656,13 @@ pub fn is_umd_export_symbol(symbol: Option<P<Symbol>>) -> bool {
 }
 
 // symbolaccessibility.go:616
-pub fn is_namespace_reexport_declaration(node: P<Node>) -> bool {
+fn is_namespace_reexport_declaration(node: P<Node>) -> bool {
     ast::is_namespace_export(node) && node.parent().unwrap().module_specifier().is_some()
 }
 
 impl Checker {
     // symbolaccessibility.go:620
-    pub(crate) fn get_candidate_list_for_symbol(
+    fn get_candidate_list_for_symbol(
         &mut self,
         ctx: &AccessibleSymbolChainContext,
         symbol_from_symbol_table: P<Symbol>,
@@ -1706,7 +1707,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:647
-    pub(crate) fn is_accessible(
+    fn is_accessible(
         &mut self,
         ctx: &AccessibleSymbolChainContext,
         symbol_from_symbol_table: P<Symbol>,
@@ -1761,7 +1762,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:677
-    pub(crate) fn can_qualify_symbol(
+    fn can_qualify_symbol(
         &mut self,
         ctx: &AccessibleSymbolChainContext,
         symbol_from_symbol_table: P<Symbol>,
@@ -1830,7 +1831,7 @@ impl Checker {
 }
 
 // symbolaccessibility.go:728
-pub fn is_property_or_method_declaration_symbol(symbol: P<Symbol>) -> bool {
+fn is_property_or_method_declaration_symbol(symbol: P<Symbol>) -> bool {
     let declarations = symbol.declarations();
     if !declarations.is_empty() {
         if declarations.iter().any(|declaration| {
@@ -1851,7 +1852,7 @@ pub fn is_property_or_method_declaration_symbol(symbol: P<Symbol>) -> bool {
 
 impl Checker {
     // symbolaccessibility.go:746
-    pub(crate) fn some_symbol_table_in_scope(
+    fn some_symbol_table_in_scope(
         &mut self,
         enclosing_declaration: Option<P<Node>>,
         mut callback: impl FnMut(
@@ -1974,10 +1975,7 @@ impl Checker {
     // bindAnonymousDeclaration and aren't stored in any container's locals, so this
     // synthesized table lets someSymbolTableInScope expose them during accessibility checks.
     // symbolaccessibility.go:810
-    pub(crate) fn get_class_expression_name_table(
-        &mut self,
-        location: P<Node>,
-    ) -> Option<P<SymbolTable>> {
+    fn get_class_expression_name_table(&mut self, location: P<Node>) -> Option<P<SymbolTable>> {
         let node_id = ast::get_node_id(location);
         if let Some(&table) = self.class_expression_name_tables.get(&node_id) {
             return Some(table);
@@ -2002,7 +2000,7 @@ impl Checker {
      * @param shouldComputeAliasToMakeVisible a boolean value to indicate whether to return aliases to be mark visible in case the symbol is accessible
      */
     // symbolaccessibility.go:839
-    pub fn is_symbol_accessible(
+    pub(crate) fn is_symbol_accessible(
         &mut self,
         symbol: Option<P<Symbol>>,
         enclosing_declaration: Option<P<Node>>,
@@ -2019,7 +2017,7 @@ impl Checker {
     }
 
     // symbolaccessibility.go:843
-    pub(crate) fn is_symbol_accessible_worker(
+    fn is_symbol_accessible_worker(
         &mut self,
         symbol: Option<P<Symbol>>,
         enclosing_declaration: Option<P<Node>>,
@@ -2094,7 +2092,7 @@ impl Checker {
 //   type SymbolTrackerImpl (symboltracker.go:8)
 
 // symboltracker.go:14
-pub fn new_symbol_tracker_impl(
+pub(crate) fn new_symbol_tracker_impl(
     context: P<NodeBuilderContext>,
     tracker: Option<&'static dyn SymbolTracker>,
 ) -> P<SymbolTrackerImpl> {
@@ -2112,7 +2110,7 @@ pub fn new_symbol_tracker_impl(
 
 impl SymbolTrackerImpl {
     // symboltracker.go:28
-    pub fn track_symbol(
+    pub(crate) fn track_symbol(
         &self,
         c: &mut Checker,
         symbol: P<Symbol>,
@@ -2140,7 +2138,7 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:42
-    pub fn report_inaccessible_this_error(&self) {
+    pub(crate) fn report_inaccessible_this_error(&self) {
         self.on_diagnostic_reported();
         let Some(inner) = self.inner else {
             return;
@@ -2149,7 +2147,7 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:50
-    pub fn report_private_in_base_of_class_expression(&self, property_name: &str) {
+    pub(crate) fn report_private_in_base_of_class_expression(&self, property_name: &str) {
         self.on_diagnostic_reported();
         let Some(inner) = self.inner else {
             return;
@@ -2158,7 +2156,7 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:58
-    pub fn report_inaccessible_unique_symbol_error(&self) {
+    pub(crate) fn report_inaccessible_unique_symbol_error(&self) {
         self.on_diagnostic_reported();
         let Some(inner) = self.inner else {
             return;
@@ -2167,7 +2165,7 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:66
-    pub fn report_cyclic_structure_error(&self) {
+    pub(crate) fn report_cyclic_structure_error(&self) {
         self.on_diagnostic_reported();
         let Some(inner) = self.inner else {
             return;
@@ -2176,7 +2174,11 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:74
-    pub fn report_likely_unsafe_import_required_error(&self, specifier: &str, symbol_name: &str) {
+    pub(crate) fn report_likely_unsafe_import_required_error(
+        &self,
+        specifier: &str,
+        symbol_name: &str,
+    ) {
         self.on_diagnostic_reported();
         let Some(inner) = self.inner else {
             return;
@@ -2185,7 +2187,7 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:82
-    pub fn report_truncation_error(&self) {
+    pub(crate) fn report_truncation_error(&self) {
         self.on_diagnostic_reported();
         let Some(inner) = self.inner else {
             return;
@@ -2194,7 +2196,7 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:90
-    pub fn report_nonlocal_augmentation(
+    pub(crate) fn report_nonlocal_augmentation(
         &self,
         containing_file: P<SourceFile>,
         parent_symbol: P<Symbol>,
@@ -2208,7 +2210,7 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:98
-    pub fn report_non_serializable_property(&self, property_name: &str) {
+    pub(crate) fn report_non_serializable_property(&self, property_name: &str) {
         self.on_diagnostic_reported();
         let Some(inner) = self.inner else {
             return;
@@ -2217,12 +2219,12 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:106
-    pub(crate) fn on_diagnostic_reported(&self) {
+    fn on_diagnostic_reported(&self) {
         self.context.reported_diagnostic.set(true);
     }
 
     // symboltracker.go:110
-    pub fn report_inference_fallback(&self, c: &mut Checker, node: P<Node>) {
+    pub(crate) fn report_inference_fallback(&self, c: &mut Checker, node: P<Node>) {
         let Some(inner) = self.inner else {
             return;
         };
@@ -2230,7 +2232,7 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:117
-    pub fn push_error_fallback_node(&self, node: Option<P<Node>>) {
+    pub(crate) fn push_error_fallback_node(&self, node: Option<P<Node>>) {
         let Some(inner) = self.inner else {
             return;
         };
@@ -2238,7 +2240,7 @@ impl SymbolTrackerImpl {
     }
 
     // symboltracker.go:124
-    pub fn pop_error_fallback_node(&self) {
+    pub(crate) fn pop_error_fallback_node(&self) {
         let Some(inner) = self.inner else {
             return;
         };
@@ -2297,6 +2299,10 @@ impl ModuleExportIndex {
 /// (target, entry) pairs sorted by target with a stable sort, so each target's entries are adjacent and in table
 /// order. One allocation of 8 bytes per entry instead of a hash map with a `Vec` per target (the index is built in
 /// every checker; most tables are small and most targets have one entry).
+#[expect(
+    clippy::too_long_first_doc_paragraph,
+    reason = "Public for the integration tests; the comment keeps its upstream wording."
+)]
 pub struct ExportsByTarget {
     len: usize,
     entries: Box<[(P<Symbol>, P<Symbol>)]>,

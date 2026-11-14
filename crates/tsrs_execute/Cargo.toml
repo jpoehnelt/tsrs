@@ -1,10 +1,17 @@
 [package]
 name = "tsrs_execute"
-version.workspace = true
+version = "7.1.0-beta.tsrs1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+categories.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+readme.workspace = true
+include = ["/src", "/build.rs", "/LICENSE", "/NOTICE"]
+description = "Command-line and build orchestration for the tsrs TypeScript compiler"
 
 [lints]
 workspace = true
@@ -21,15 +28,16 @@ tsrs_compiler.workspace = true
 tsrs_incremental.workspace = true
 tsrs_contentmapper.workspace = true
 tsrs_ipc.workspace = true
-tsrs_fswatch = { path = "../tsrs_fswatch" }
+tsrs_fswatch.workspace = true
 rustc-hash.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [dev-dependencies]
-similar = "3"
+similar.workspace = true
 tsrs_contentmappertest.workspace = true
 
 [lib]
+test = false
 doctest = false

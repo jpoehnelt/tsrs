@@ -21,11 +21,18 @@ are not new measurements of this fork.
 
 ```sh
 pnpm add -D tsrs
-pnpm exec tsrs --noEmit
+pnpm exec tsrs --noEmit --fast
 ```
+
+`--fast` enables performance optimizations, including adaptive checker counts and additional caches.
+See [fast mode](#fast-mode) for details.
 
 You can try `tsrs` today and give us feedback on performance, memory usage, and conformance.
 Try checking and emitting code in the [browser playground](https://tsrs-playground.void.app).
+
+<a href="https://github.com/oxc-project/tsrs/blob/main/bench/RESULTS.md">
+  <img alt="tsrs --fast, tsrs and TypeScript 7.1 beta: check time and peak memory by project" src="https://raw.githubusercontent.com/oxc-project/tsrs/main/bench/benchmark.svg">
+</a>
 
 ## Conformance
 
@@ -33,28 +40,61 @@ We aim to release a stable version against TypeScript 7.1 with 100% conformance.
 See [compatibility and evidence](https://github.com/oxc-project/tsrs/blob/main/docs/COMPATIBILITY.md)
 for supported features and known gaps.
 
-### Checker determinism
+Default mode preserves the pinned TypeScript compiler's checker behavior, including known diagnostic differences
+when checker count or file order changes. This sensitivity is inherited from TypeScript itself. See
+[differences from pinned TypeScript](https://github.com/oxc-project/tsrs/blob/main/docs/DEFAULTS.md) for the remaining
+runtime differences and unsupported features.
 
-Deterministic checking means the same code and compiler options produce the same errors and exit status on every run,
-regardless of thread scheduling. Known checker-order issues can make errors appear or disappear between runs;
-see [#725](https://github.com/oxc-project/tsrs/issues/725).
+## Versioning
 
-To use Go-compatible checker assignment:
+Versions identify the supported TypeScript release and an unpadded tsrs revision. For TypeScript `7.1.0-beta`,
+`7.1.0-beta.tsrs1` is the first tsrs release and `7.1.0-beta.tsrs2` is the next fix. Stable TypeScript `7.1.0`
+uses `7.1.0-tsrs1`.
+
+SemVer compares `tsrsN` as text, so `tsrs10` sorts before `tsrs9`; further sequential revisions require a new
+TypeScript version. These versions are tsrs prereleases, including those targeting stable TypeScript, and publish
+to npm's `next` tag (`pnpm add -D tsrs@next`). The compiler's TypeScript
+compatibility version and exact source commit remain available separately in `tsrs --version` and npm metadata.
+See [versioning and releases](https://github.com/oxc-project/tsrs/blob/main/docs/RELEASING_CRATES.md#versioning)
+for nightly versions and release ordering.
+
+## Fast mode
+
+The following defaults and opt-in preset are available in **0.20.0** and later.
+
+By default, tsrs follows the pinned TypeScript compiler's checker settings: four checkers (capped by file count),
+Go's file assignment and checker history. Enable the fast preset with `--fast` or
+`TSRS_FAST=1`:
 
 ```sh
-pnpm exec tsrs --noEmit --checkerAssignment go
+pnpm exec tsrs --noEmit --fast
+# Or enable the same preset through the environment:
+TSRS_FAST=1 pnpm exec tsrs --noEmit
 ```
 
-This does not guarantee deterministic results for every program.
-See [comparison options](https://github.com/oxc-project/tsrs/blob/main/docs/USAGE.md#performance-options)
-for closer comparisons with tsgo.
+Fast mode adapts checker counts to the machine and project, groups related work together, and enables additional
+caches and memory optimizations. It keeps `strict`, `skipLibCheck`, `noCheck` and other checking options as configured.
 
-<a href="https://github.com/oxc-project/tsrs/blob/main/bench/RESULTS.md">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/oxc-project/tsrs/main/bench/large-projects-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/oxc-project/tsrs/main/bench/large-projects.svg">
-    <img alt="tsrs vs the TypeScript nightly: relative type-checking speed and peak memory by project" src="https://raw.githubusercontent.com/oxc-project/tsrs/main/bench/large-projects.svg">
-  </picture>
+See [performance options](https://github.com/oxc-project/tsrs/blob/main/docs/USAGE.md#performance-options)
+for configuration, behavior and incremental-cache details.
+
+## Lint and type check in one run
+
+`tsrs-lint` can replace tsgolint as the backend for [Oxlint](https://oxc.rs)'s type-aware rules. With `--type-check`,
+the same run also reports the type errors of each tsconfig program it lints, so it can replace a separate
+`tsrs --noEmit` run over the same tsconfigs. Available in tsrs **0.23.0** and later. Oxlint **1.92.0** and later
+finds `tsrs-lint` when `tsrs` is installed and uses it in place of oxlint-tsgolint:
+
+```sh
+pnpm add -D oxlint tsrs
+TSRS_FAST=1 pnpm exec oxlint --type-aware --type-check
+```
+
+Each program is then parsed and checked once instead of twice.
+See [type checking in the lint run](https://github.com/oxc-project/tsrs/blob/main/tools/tsgolint/README.md#type-checking-in-the-lint-run).
+
+<a href="https://github.com/oxc-project/tsrs/blob/main/bench/lint-typecheck/RESULTS.md">
+  <img alt="Type-aware lint plus type check on 8 cores: wall time, CPU time and peak memory of one Oxlint run with tsrs, Oxlint with tsrs plus a separate tsrs check, Oxlint with tsgolint plus tsgo, and ESLint with typescript-eslint plus tsc" src="https://raw.githubusercontent.com/oxc-project/tsrs/main/bench/lint-typecheck/chart.svg">
 </a>
 
 ## Extra features

@@ -12,9 +12,9 @@ use tsrs_vfs::{FS, bundled, osvfs};
 
 use snapshot::RecordingFs;
 
-pub const PROJECTS: &[&str] = &["Compiler-Unions", "xstate-main", "webpack", "drizzle-orm"];
+const PROJECTS: &[&str] = &["Compiler-Unions", "xstate-main", "webpack", "drizzle-orm"];
 
-pub fn project_config(name: &str) -> &'static str {
+fn project_config(name: &str) -> &'static str {
     match name {
         "Compiler-Unions" => "bench/.work/suite/cases/solutions/Compiler-Unions/tsconfig.json",
         "xstate-main" => "bench/.work/solutions/xstate-main/tsconfig.json",
@@ -84,6 +84,7 @@ impl PreparedProject {
         let args: Vec<String> = [
             "-p",
             config,
+            "--fast",
             "--noEmit",
             "--incremental",
             "false",
@@ -118,7 +119,7 @@ impl PreparedProject {
     }
 }
 
-/// Disk-backed compilation with the CLI's default checker count, for walltime and peak memory.
+/// Disk-backed compilation with fast mode's adaptive checker count, for walltime and peak memory.
 /// Call once in a fresh process so earlier compilations cannot inflate its physical-memory peak.
 pub fn default_invocation(name: &str) -> (&'static BenchmarkSystem, Vec<String>) {
     let cwd = workspace_directory();
@@ -131,6 +132,7 @@ pub fn default_invocation(name: &str) -> (&'static BenchmarkSystem, Vec<String>)
     let args = [
         "-p",
         &config,
+        "--fast",
         "--noEmit",
         "--incremental",
         "false",

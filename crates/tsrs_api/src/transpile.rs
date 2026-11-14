@@ -105,15 +105,15 @@ impl FS for TranspileFS {
     }
 }
 
-pub struct TranspileOutput {
-    pub output_text: String,
+struct TranspileOutput {
+    output_text: String,
     /// Already serialized (the diagnostics themselves live in the freed scratch region).
-    pub diagnostics: Vec<Value>,
-    pub source_map_text: String,
+    diagnostics: Vec<Value>,
+    source_map_text: String,
 }
 
 /// Go `transpileWorker` in a scratch region (see the module comment).
-pub fn transpile(
+fn transpile(
     input: &str,
     base: Option<&CompilerOptions>,
     file_name: &str,
@@ -241,7 +241,7 @@ fn transpile_in_current_region(
     );
     all.extend(result.diagnostics);
     let diagnostics: Vec<Value> =
-        all.iter().map(|d| crate::diagnostics::diagnostic_response(d)).collect();
+        all.iter().map(|&d| crate::diagnostics::diagnostic_response(d)).collect();
     drop(all);
     // SAFETY: nothing derived from the program (diagnostics are serialized above) is used after this.
     unsafe { tsrs_compiler::free_unshared_program(program) };

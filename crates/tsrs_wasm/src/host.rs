@@ -18,17 +18,17 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tsrs_core::tspath;
-use tsrs_vfs::internal::{self, Common, IoDirEntry, IoFS};
+use tsrs_vfs::internal::{self, Common, IoDirEntry, IoFS, RootFor};
 use tsrs_vfs::{Entries, FS, FileInfo, FileMode, FsError};
 
-pub const OP_READ: u32 = 0;
-pub const OP_STAT: u32 = 1;
-pub const OP_READ_DIR: u32 = 2;
-pub const OP_REALPATH: u32 = 3;
-pub const OP_WRITE: u32 = 4;
-pub const OP_APPEND: u32 = 5;
-pub const OP_REMOVE: u32 = 6;
-pub const OP_CHTIMES: u32 = 7;
+const OP_READ: u32 = 0;
+const OP_STAT: u32 = 1;
+const OP_READ_DIR: u32 = 2;
+const OP_REALPATH: u32 = 3;
+const OP_WRITE: u32 = 4;
+const OP_APPEND: u32 = 5;
+const OP_REMOVE: u32 = 6;
+const OP_CHTIMES: u32 = 7;
 
 pub enum HostError {
     NotFound,
@@ -194,20 +194,20 @@ fn nanos(t: SystemTime) -> u128 {
 }
 
 /// The io/fs view of the host file system below one root (osvfs's `DirFS`).
-struct HostRoot {
-    root: String,
+struct HostRoot<'a> {
+    root: &'a str,
 }
 
-impl HostRoot {
+impl HostRoot<'_> {
     fn join(&self, name: &str) -> Result<String, FsError> {
         if !internal::valid_path(name) || name.contains('\0') {
             return Err(FsError::Invalid);
         }
         if name == "." {
-            return Ok(self.root.clone());
+            return Ok(self.root.to_string());
         }
         let mut full = String::with_capacity(self.root.len() + 1 + name.len());
-        full.push_str(&self.root);
+        full.push_str(self.root);
         if !self.root.ends_with('/') {
             full.push('/');
         }
@@ -224,7 +224,7 @@ fn base(path: &str) -> String {
     trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
 }
 
-impl IoFS for HostRoot {
+impl IoFS for HostRoot<'_> {
     fn stat(&self, name: &str) -> Result<FileInfo, FsError> {
         let full = self.join(name)?;
         let out = call(OP_STAT, full.as_bytes()).map_err(fs_error)?;
@@ -273,17 +273,24 @@ impl IoFS for HostRoot {
 
 /// `tsrs_vfs::FS` over the host (osvfs's `OsFS`, with host calls in place of `std::fs`).
 pub struct HostFs {
-    common: Common,
+    common: Common<HostRoots>,
     case_sensitive: bool,
 }
 
+// The host serves every root.
+struct HostRoots;
+
+impl RootFor for HostRoots {
+    fn with_root<T>(&self, root: &str, f: impl FnOnce(&dyn IoFS) -> T) -> Option<T> {
+        Some(f(&HostRoot { root }))
+    }
+}
+
 impl HostFs {
-    pub fn new(case_sensitive: bool) -> HostFs {
+    pub(crate) fn new(case_sensitive: bool) -> HostFs {
         HostFs {
             common: Common {
-                root_for: Box::new(|root: &str| {
-                    Some(Box::new(HostRoot { root: root.to_string() }) as Box<dyn IoFS>)
-                }),
+                root_for: HostRoots,
                 // Only consulted for `Irregular` entries; the host reports symlinks as `l`.
                 is_reparse_point: None,
             },

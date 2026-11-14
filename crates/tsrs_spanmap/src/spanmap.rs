@@ -74,7 +74,7 @@ impl Feature {
 }
 
 // spanmap.go:68
-pub const FEATURE_MASK: Feature = Feature::All;
+const FEATURE_MASK: Feature = Feature::All;
 
 // Fidelity describes how faithfully a mapped span reflects the original.
 // spanmap.go:71
@@ -319,12 +319,6 @@ impl SpanMap {
 }
 
 // spanmap.go:231 with a nil receiver.
-pub fn segments(m: Option<&SpanMap>) -> Vec<Segment> {
-    let Some(m) = m else {
-        return Vec::new();
-    };
-    m.segments()
-}
 
 impl SpanMap {
     // VirtualToOriginalSpan maps a virtual range to an original range, along with the fidelity of the result. A virtual
@@ -399,20 +393,10 @@ impl SpanMap {
 }
 
 // spanmap.go:279 with a nil receiver.
-pub fn virtual_to_original_span_for_feature(
-    m: Option<&SpanMap>,
-    r: TextRange,
-    feature: Feature,
-) -> (TextRange, Fidelity) {
-    let Some(m) = m else {
-        return (r, Fidelity::Exact);
-    };
-    m.virtual_to_original_span_for_feature(r, feature)
-}
 
 impl SpanMap {
     // spanmap.go:287
-    pub(crate) fn virtual_span_supports_feature(&self, r: TextRange, feature: Feature) -> bool {
+    fn virtual_span_supports_feature(&self, r: TextRange, feature: Feature) -> bool {
         let (start, range_end) = source_range(r);
         let end = range_end.max(start);
         if start == end {
@@ -505,12 +489,6 @@ impl SpanMap {
 }
 
 // spanmap.go:330 with a nil receiver.
-pub fn virtual_to_original_position_exact(m: Option<&SpanMap>, pos: u32) -> (u32, bool) {
-    let Some(m) = m else {
-        return (pos, true);
-    };
-    m.virtual_to_original_position_exact(pos)
-}
 
 impl SpanMap {
     // VirtualToOriginalPositionForFeature maps pos only when its virtual segment participates in feature.
@@ -536,16 +514,6 @@ impl SpanMap {
 }
 
 // spanmap.go:350 with a nil receiver.
-pub fn virtual_to_original_position_for_feature(
-    m: Option<&SpanMap>,
-    pos: u32,
-    feature: Feature,
-) -> (u32, Fidelity) {
-    let Some(m) = m else {
-        return (pos, Fidelity::Exact);
-    };
-    m.virtual_to_original_position_for_feature(pos, feature)
-}
 
 impl SpanMap {
     // AliasForVirtualSpan returns the alias segment exactly covering r. Partial overlap does not qualify:
@@ -575,7 +543,7 @@ impl SpanMap {
     // segmentIndexAt returns the index of the segment containing pos and true, or, when pos lies in a gap,
     // the index of the segment immediately before pos (`None` if none) and false.
     // spanmap.go:378
-    pub(crate) fn segment_index_at(&self, pos: u32) -> (Option<usize>, bool) {
+    fn segment_index_at(&self, pos: u32) -> (Option<usize>, bool) {
         let idx = self.segments.partition_point(|s| s.virtual_start < pos);
         if self.segments.get(idx).is_some_and(|s| s.virtual_start == pos) {
             return (Some(idx), true);
@@ -593,14 +561,14 @@ impl SpanMap {
     // insertionPoint returns the original offset where synthesized content following segment prev sits: the
     // original end of that segment, or 0 before the first segment.
     // spanmap.go:394
-    pub(crate) fn insertion_point(&self, prev: Option<usize>) -> u32 {
+    fn insertion_point(&self, prev: Option<usize>) -> u32 {
         prev.map_or(0, |prev| self.segments[prev].original_end)
     }
 
     // mapLow maps a virtual lower range boundary to original coordinates. A boundary in a synthesized
     // gap uses that gap's insertion point; an atom uses its original start.
     // spanmap.go:403
-    pub(crate) fn map_low(&self, pos: u32, idx: Option<usize>, in_: bool) -> u32 {
+    fn map_low(&self, pos: u32, idx: Option<usize>, in_: bool) -> u32 {
         if !in_ {
             return self.insertion_point(idx);
         }
@@ -618,7 +586,7 @@ impl SpanMap {
     // mapHigh maps a virtual upper range boundary to original coordinates. A boundary in a synthesized
     // gap uses that gap's insertion point; an atom uses its original end.
     // spanmap.go:416
-    pub(crate) fn map_high(&self, pos: u32, idx: Option<usize>, in_: bool) -> u32 {
+    fn map_high(&self, pos: u32, idx: Option<usize>, in_: bool) -> u32 {
         if !in_ {
             return self.insertion_point(idx);
         }
@@ -673,16 +641,6 @@ impl SpanMap {
 }
 
 // spanmap.go:431 with a nil receiver: a nil SpanMap maps identically.
-pub fn original_to_virtual_positions(
-    m: Option<&SpanMap>,
-    pos: u32,
-    feature: Feature,
-) -> Vec<MappedPosition> {
-    let Some(m) = m else {
-        return vec![MappedPosition { position: pos, fidelity: Fidelity::Exact }];
-    };
-    m.original_to_virtual_positions(pos, feature)
-}
 
 impl SpanMap {
     // OriginalToVirtualSpans returns every feature-compatible virtual projection of an original range.
@@ -823,16 +781,6 @@ impl SpanMap {
 }
 
 // spanmap.go:539 with a nil receiver: a nil SpanMap maps identically.
-pub fn original_to_virtual_intersecting_spans(
-    m: Option<&SpanMap>,
-    r: TextRange,
-    feature: Feature,
-) -> Vec<MappedSpan> {
-    let Some(m) = m else {
-        return vec![MappedSpan { span: r, fidelity: Fidelity::Exact }];
-    };
-    m.original_to_virtual_intersecting_spans(r, feature)
-}
 
 // originalStartProjections maps the inclusive start of an original range through every matching segment.
 // Verbatim segments preserve the offset within the segment; atoms map to their virtual start.
@@ -846,7 +794,7 @@ pub fn original_to_virtual_intersecting_spans(
 //                 ^             ^
 //               result        result
 // spanmap.go:585
-pub fn original_start_projections(segments: &[Segment], start: u32, feature: Feature) -> Vec<u32> {
+fn original_start_projections(segments: &[Segment], start: u32, feature: Feature) -> Vec<u32> {
     let mut results = Vec::with_capacity(segments.len());
     results.extend(segments.iter().filter_map(|&segment| {
         if !supports_feature(segment, feature) {
@@ -879,7 +827,7 @@ pub fn original_start_projections(segments: &[Segment], start: u32, feature: Fea
 //                        ^             ^
 //                      result        result
 // spanmap.go:613
-pub fn original_end_projections(segments: &[Segment], end: u32, feature: Feature) -> Vec<u32> {
+fn original_end_projections(segments: &[Segment], end: u32, feature: Feature) -> Vec<u32> {
     let mut results = Vec::with_capacity(segments.len());
     results.extend(segments.iter().filter_map(|&segment| {
         if !supports_feature(segment, feature) {
@@ -900,7 +848,7 @@ pub fn original_end_projections(segments: &[Segment], end: u32, feature: Feature
 
 // originalToVirtualSpansInSegments maps a range fully contained by each segment.
 // spanmap.go:629
-pub fn original_to_virtual_spans_in_segments(
+fn original_to_virtual_spans_in_segments(
     segments: &[Segment],
     start: u32,
     end: u32,
@@ -938,7 +886,7 @@ pub fn original_to_virtual_spans_in_segments(
 
 // sameOriginalRange reports whether two segments belong to the same duplicate group.
 // spanmap.go:647
-pub fn same_original_range(left: Segment, right: Segment) -> bool {
+fn same_original_range(left: Segment, right: Segment) -> bool {
     left.original_start == right.original_start && left.original_end == right.original_end
 }
 
@@ -958,7 +906,7 @@ impl SpanMap {
     // construction, so the first lookup remains O(n log n); later point lookups visit only tree branches that can
     // contain a match.
     // spanmap.go:663
-    pub(crate) fn orig_index(&self) -> &OriginalIndex {
+    fn orig_index(&self) -> &OriginalIndex {
         self.original_index.get_or_init(|| {
             let mut segments = self.segments.clone();
             goslices::sort_func(&mut segments, |a, b| {
@@ -987,7 +935,7 @@ impl OriginalIndex {
     // segmentsAtOriginalPosition returns every mapping segment containing the original-text position pos.
     // Segment ends are exclusive; a segment start, including a zero-length segment, is considered contained.
     // spanmap.go:693
-    pub(crate) fn segments_at_original_position(&self, pos: u32) -> (Vec<Segment>, bool) {
+    fn segments_at_original_position(&self, pos: u32) -> (Vec<Segment>, bool) {
         // Query intervals that contain pos strictly before their exclusive end. Segments starting exactly at pos
         // are appended separately so zero-length segments are included without preventing maxEnd <= pos pruning.
         let start = self.segments.partition_point(|s| s.original_start < pos);
@@ -1000,7 +948,7 @@ impl OriginalIndex {
 
     // segmentsEndingAfterPosition returns segments among [0, limit) whose OriginalEnd is greater than pos.
     // spanmap.go:704
-    pub(crate) fn segments_ending_after_position(&self, limit: usize, pos: u32) -> Vec<Segment> {
+    fn segments_ending_after_position(&self, limit: usize, pos: u32) -> Vec<Segment> {
         let mut results = Vec::new();
         self.collect_segments_ending_at_or_after(
             1,
@@ -1017,7 +965,7 @@ impl OriginalIndex {
     // collectSegmentsEndingAtOrAfter walks the flat max-end tree left-to-right, preserving original-text order.
     // Nodes beyond limit or whose maximum end cannot reach pos are discarded without visiting their leaves.
     // spanmap.go:712
-    pub(crate) fn collect_segments_ending_at_or_after(
+    fn collect_segments_ending_at_or_after(
         &self,
         node: usize,
         start: usize,
@@ -1058,7 +1006,7 @@ impl OriginalIndex {
 }
 
 // spanmap.go:725 (Go keeps a subslice of the collected segments; this owns a copy.)
-pub struct SegmentGroupAtOriginalPosition {
+struct SegmentGroupAtOriginalPosition {
     segments: Vec<Segment>,
     at_end: bool,
 }
@@ -1076,10 +1024,7 @@ impl OriginalIndex {
     //               left group       right group
     //               atEnd: true      atEnd: false
     // spanmap.go:741
-    pub(crate) fn segment_groups_at_original_position(
-        &self,
-        pos: u32,
-    ) -> Vec<SegmentGroupAtOriginalPosition> {
+    fn segment_groups_at_original_position(&self, pos: u32) -> Vec<SegmentGroupAtOriginalPosition> {
         let limit = self.segments.partition_point(|s| s.original_start <= pos);
         let mut segments = Vec::new();
         self.collect_segments_ending_at_or_after(
@@ -1105,13 +1050,13 @@ impl OriginalIndex {
 
 // supportsFeature reports whether segment participates in feature.
 // spanmap.go:764
-pub fn supports_feature(segment: Segment, feature: Feature) -> bool {
+fn supports_feature(segment: Segment, feature: Feature) -> bool {
     segment.features.intersects(feature)
 }
 
 // clamp confines v to the inclusive interval [lo, hi].
 // spanmap.go:769 (not `Ord::clamp`, which panics when lo > hi.)
-pub fn clamp(v: u32, lo: u32, hi: u32) -> u32 {
+fn clamp(v: u32, lo: u32, hi: u32) -> u32 {
     lo.max(v.min(hi))
 }
 

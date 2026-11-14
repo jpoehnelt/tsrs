@@ -18,7 +18,7 @@ fn new_map(
     m
 }
 
-pub static LIB_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+pub(crate) static LIB_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     LazyLock::new(|| {
         new_map(&[
             // JavaScript only
@@ -252,7 +252,7 @@ pub static LIB_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     });
 
 pub static LIBS: LazyLock<Vec<&'static str>> = LazyLock::new(|| LIB_MAP.keys().copied().collect());
-pub static LIB_FILES_SET: LazyLock<FxHashSet<String>> =
+static LIB_FILES_SET: LazyLock<FxHashSet<String>> =
     LazyLock::new(|| LIB_MAP.values().map(|s| s.as_str().unwrap().to_string()).collect());
 
 pub fn get_lib_file_name(lib_name: &str) -> Option<String> {
@@ -265,22 +265,20 @@ pub fn get_lib_file_name(lib_name: &str) -> Option<String> {
     Some(lib.as_str().unwrap().to_string())
 }
 
-pub static MODULE_RESOLUTION_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
-    LazyLock::new(|| {
-        new_map(&[
-            ("node16", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE16)),
-            (
-                "nodenext",
-                CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE_NEXT),
-            ),
-            ("bundler", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::BUNDLER)),
-            ("classic", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::CLASSIC)),
-            ("node", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE10)),
-            ("node10", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE10)),
-        ])
-    });
+pub(crate) static MODULE_RESOLUTION_OPTION_MAP: LazyLock<
+    OrderedMap<&'static str, CompilerOptionsValue>,
+> = LazyLock::new(|| {
+    new_map(&[
+        ("node16", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE16)),
+        ("nodenext", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE_NEXT)),
+        ("bundler", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::BUNDLER)),
+        ("classic", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::CLASSIC)),
+        ("node", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE10)),
+        ("node10", CompilerOptionsValue::ModuleResolutionKind(ModuleResolutionKind::NODE10)),
+    ])
+});
 
-pub static TARGET_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+pub(crate) static TARGET_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     LazyLock::new(|| {
         new_map(&[
             ("es5", CompilerOptionsValue::ScriptTarget(ScriptTarget::ES5)),
@@ -301,7 +299,7 @@ pub static TARGET_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsV
         ])
     });
 
-pub static MODULE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+pub(crate) static MODULE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     LazyLock::new(|| {
         new_map(&[
             ("commonjs", CompilerOptionsValue::ModuleKind(ModuleKind::COMMON_JS)),
@@ -321,16 +319,17 @@ pub static MODULE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsV
         ])
     });
 
-pub static MODULE_DETECTION_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
-    LazyLock::new(|| {
-        new_map(&[
-            ("auto", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Auto)),
-            ("legacy", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Legacy)),
-            ("force", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Force)),
-        ])
-    });
+pub(crate) static MODULE_DETECTION_OPTION_MAP: LazyLock<
+    OrderedMap<&'static str, CompilerOptionsValue>,
+> = LazyLock::new(|| {
+    new_map(&[
+        ("auto", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Auto)),
+        ("legacy", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Legacy)),
+        ("force", CompilerOptionsValue::ModuleDetectionKind(ModuleDetectionKind::Force)),
+    ])
+});
 
-pub static JSX_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+pub(crate) static JSX_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     LazyLock::new(|| {
         new_map(&[
             ("preserve", CompilerOptionsValue::JsxEmit(JsxEmit::PRESERVE)),
@@ -341,7 +340,7 @@ pub static JSX_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValu
         ])
     });
 
-pub static NEW_LINE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
+pub(crate) static NEW_LINE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOptionsValue>> =
     LazyLock::new(|| {
         new_map(&[
             ("crlf", CompilerOptionsValue::NewLineKind(NewLineKind::CRLF)),
@@ -349,28 +348,23 @@ pub static NEW_LINE_OPTION_MAP: LazyLock<OrderedMap<&'static str, CompilerOption
         ])
     });
 
-pub static TARGET_TO_LIB_MAP: LazyLock<FxHashMap<ScriptTarget, &'static str>> =
-    LazyLock::new(|| {
-        let mut m = FxHashMap::default();
-        m.insert(ScriptTarget::ES_NEXT, "lib.esnext.full.d.ts");
-        m.insert(ScriptTarget::ES2026, "lib.es2026.full.d.ts");
-        m.insert(ScriptTarget::ES2025, "lib.es2025.full.d.ts");
-        m.insert(ScriptTarget::ES2024, "lib.es2024.full.d.ts");
-        m.insert(ScriptTarget::ES2023, "lib.es2023.full.d.ts");
-        m.insert(ScriptTarget::ES2022, "lib.es2022.full.d.ts");
-        m.insert(ScriptTarget::ES2021, "lib.es2021.full.d.ts");
-        m.insert(ScriptTarget::ES2020, "lib.es2020.full.d.ts");
-        m.insert(ScriptTarget::ES2019, "lib.es2019.full.d.ts");
-        m.insert(ScriptTarget::ES2018, "lib.es2018.full.d.ts");
-        m.insert(ScriptTarget::ES2017, "lib.es2017.full.d.ts");
-        m.insert(ScriptTarget::ES2016, "lib.es2016.full.d.ts");
-        m.insert(ScriptTarget::ES2015, "lib.es6.d.ts"); // We don't use lib.es2015.full.d.ts due to breaking change.
-        m
-    });
-
-pub fn target_to_lib_map() -> &'static FxHashMap<ScriptTarget, &'static str> {
-    &TARGET_TO_LIB_MAP
-}
+static TARGET_TO_LIB_MAP: LazyLock<FxHashMap<ScriptTarget, &'static str>> = LazyLock::new(|| {
+    let mut m = FxHashMap::default();
+    m.insert(ScriptTarget::ES_NEXT, "lib.esnext.full.d.ts");
+    m.insert(ScriptTarget::ES2026, "lib.es2026.full.d.ts");
+    m.insert(ScriptTarget::ES2025, "lib.es2025.full.d.ts");
+    m.insert(ScriptTarget::ES2024, "lib.es2024.full.d.ts");
+    m.insert(ScriptTarget::ES2023, "lib.es2023.full.d.ts");
+    m.insert(ScriptTarget::ES2022, "lib.es2022.full.d.ts");
+    m.insert(ScriptTarget::ES2021, "lib.es2021.full.d.ts");
+    m.insert(ScriptTarget::ES2020, "lib.es2020.full.d.ts");
+    m.insert(ScriptTarget::ES2019, "lib.es2019.full.d.ts");
+    m.insert(ScriptTarget::ES2018, "lib.es2018.full.d.ts");
+    m.insert(ScriptTarget::ES2017, "lib.es2017.full.d.ts");
+    m.insert(ScriptTarget::ES2016, "lib.es2016.full.d.ts");
+    m.insert(ScriptTarget::ES2015, "lib.es6.d.ts"); // We don't use lib.es2015.full.d.ts due to breaking change.
+    m
+});
 
 pub fn get_default_lib_file_name(options: &CompilerOptions) -> &'static str {
     match TARGET_TO_LIB_MAP.get(&options.get_emit_script_target()) {

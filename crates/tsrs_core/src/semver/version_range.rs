@@ -18,12 +18,12 @@ fn is_range_operand_char(c: char) -> bool {
 // range        ::= hyphen | simple ( ' ' simple ) * | ”
 // logical-or   ::= ( ' ' ) * '||' ( ' ' ) *
 // \|\|
-pub fn logical_or_reg_exp_split(text: &str) -> Vec<&str> {
+fn logical_or_reg_exp_split(text: &str) -> Vec<&str> {
     text.split("||").collect()
 }
 
 // \s+
-pub fn whitespace_reg_exp_split(text: &str) -> Vec<&str> {
+fn whitespace_reg_exp_split(text: &str) -> Vec<&str> {
     let mut result = Vec::new();
     let mut beg = 0;
     let mut i = 0;
@@ -52,7 +52,7 @@ pub fn whitespace_reg_exp_split(text: &str) -> Vec<&str> {
 // parts        ::= part ( '.' part ) *
 // part         ::= nr | [-0-9A-Za-z]+
 // (?i)^([x*0]|[1-9]\d*)(?:\.([x*0]|[1-9]\d*)(?:\.([x*0]|[1-9]\d*)(?:-([a-z0-9-.]+))?(?:\+([a-z0-9-.]+))?)?)?$
-pub fn partial_reg_exp_find_string_submatch(text: &str) -> Option<[&str; 6]> {
+fn partial_reg_exp_find_string_submatch(text: &str) -> Option<[&str; 6]> {
     // [x*0]|[1-9]\d*
     fn component(text: &str) -> Option<usize> {
         match text.as_bytes().first() {
@@ -67,7 +67,7 @@ pub fn partial_reg_exp_find_string_submatch(text: &str) -> Option<[&str; 6]> {
 //
 // hyphen       ::= partial ' - ' partial
 // (?i)^\s*([a-z0-9-+.*]+)\s+-\s+([a-z0-9-+.*]+)\s*$
-pub fn hyphen_reg_exp_find_string_submatch(text: &str) -> Option<[&str; 3]> {
+fn hyphen_reg_exp_find_string_submatch(text: &str) -> Option<[&str; 3]> {
     let mut pos = span(text, is_go_space);
     let left_len = span(&text[pos..], is_range_operand_char);
     if left_len == 0 {
@@ -110,7 +110,7 @@ pub fn hyphen_reg_exp_find_string_submatch(text: &str) -> Option<[&str; 3]> {
 // caret        ::= '^' partial
 // (?i)^([~^<>=]|<=|>=)?\s*([a-z0-9-+.*]+)$
 // The alternatives of the optional first group are tried in leftmost-first order.
-pub fn range_reg_exp_find_string_submatch(text: &str) -> Option<[&str; 3]> {
+fn range_reg_exp_find_string_submatch(text: &str) -> Option<[&str; 3]> {
     fn rest(text: &str) -> Option<&str> {
         let operand = &text[span(text, is_go_space)..];
         if !operand.is_empty() && span(operand, is_range_operand_char) == operand.len() {
@@ -140,13 +140,13 @@ pub fn range_reg_exp_find_string_submatch(text: &str) -> Option<[&str; 3]> {
 
 #[derive(Clone, Debug, Default)]
 pub struct VersionRange {
-    pub(crate) alternatives: Vec<Vec<VersionComparator>>,
+    alternatives: Vec<Vec<VersionComparator>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct VersionComparator {
-    pub(crate) operator: ComparatorOperator,
-    pub(crate) operand: Version,
+    operator: ComparatorOperator,
+    operand: Version,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -163,7 +163,7 @@ pub enum ComparatorOperator {
 }
 
 impl ComparatorOperator {
-    pub(crate) fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             ComparatorOperator::RangeLessThan => "<",
             ComparatorOperator::RangeLessThanEqual => "<=",
@@ -188,7 +188,7 @@ impl fmt::Display for VersionRange {
     }
 }
 
-pub fn format_disjunction(sb: &mut String, alternatives: &[Vec<VersionComparator>]) {
+fn format_disjunction(sb: &mut String, alternatives: &[Vec<VersionComparator>]) {
     let orig_len = sb.len();
 
     for (i, alternative) in alternatives.iter().enumerate() {
@@ -203,7 +203,7 @@ pub fn format_disjunction(sb: &mut String, alternatives: &[Vec<VersionComparator
     }
 }
 
-pub fn format_alternative(sb: &mut String, comparators: &[VersionComparator]) {
+fn format_alternative(sb: &mut String, comparators: &[VersionComparator]) {
     for (i, comparator) in comparators.iter().enumerate() {
         if i > 0 {
             sb.push(' ');
@@ -212,7 +212,7 @@ pub fn format_alternative(sb: &mut String, comparators: &[VersionComparator]) {
     }
 }
 
-pub fn format_comparator(sb: &mut String, comparator: &VersionComparator) {
+fn format_comparator(sb: &mut String, comparator: &VersionComparator) {
     sb.push_str(comparator.operator.as_str());
     sb.push_str(&comparator.operand.string());
 }
@@ -223,7 +223,7 @@ impl VersionRange {
     }
 }
 
-pub fn test_disjunction(alternatives: &[Vec<VersionComparator>], version: &Version) -> bool {
+fn test_disjunction(alternatives: &[Vec<VersionComparator>], version: &Version) -> bool {
     // an empty disjunction is treated as "*" (all versions)
     if alternatives.is_empty() {
         return true;
@@ -232,11 +232,11 @@ pub fn test_disjunction(alternatives: &[Vec<VersionComparator>], version: &Versi
     alternatives.iter().any(|alternative| test_alternative(alternative, version))
 }
 
-pub fn test_alternative(alternative: &[VersionComparator], version: &Version) -> bool {
+fn test_alternative(alternative: &[VersionComparator], version: &Version) -> bool {
     !(alternative.iter().any(|comparator| !test_comparator(comparator, version)))
 }
 
-pub fn test_comparator(comparator: &VersionComparator, version: &Version) -> bool {
+fn test_comparator(comparator: &VersionComparator, version: &Version) -> bool {
     let cmp = version.compare(&comparator.operand);
     match comparator.operator {
         ComparatorOperator::RangeLessThan => cmp == std::cmp::Ordering::Less,
@@ -252,7 +252,7 @@ pub fn try_parse_version_range(text: &str) -> Option<VersionRange> {
     Some(VersionRange { alternatives })
 }
 
-pub fn parse_alternatives(text: &str) -> Option<Vec<Vec<VersionComparator>>> {
+fn parse_alternatives(text: &str) -> Option<Vec<Vec<VersionComparator>>> {
     let mut alternatives = Vec::new();
 
     let text = text.trim();
@@ -292,7 +292,7 @@ pub fn parse_alternatives(text: &str) -> Option<Vec<Vec<VersionComparator>>> {
     Some(alternatives)
 }
 
-pub fn parse_hyphen(left: &str, right: &str) -> Option<Vec<VersionComparator>> {
+fn parse_hyphen(left: &str, right: &str) -> Option<Vec<VersionComparator>> {
     let left_result = parse_partial(left)?;
 
     let right_result = parse_partial(right)?;
@@ -329,15 +329,15 @@ pub fn parse_hyphen(left: &str, right: &str) -> Option<Vec<VersionComparator>> {
     Some(comparators)
 }
 
-pub struct PartialVersion {
-    pub(crate) version: Version,
-    pub(crate) major_str: String,
-    pub(crate) minor_str: String,
-    pub(crate) patch_str: String,
+struct PartialVersion {
+    version: Version,
+    major_str: String,
+    minor_str: String,
+    patch_str: String,
 }
 
 // Produces a "partial" version
-pub fn parse_partial(text: &str) -> Option<PartialVersion> {
+fn parse_partial(text: &str) -> Option<PartialVersion> {
     let m = partial_reg_exp_find_string_submatch(text)?;
 
     let major_str = m[1];
@@ -404,7 +404,7 @@ pub fn parse_partial(text: &str) -> Option<PartialVersion> {
     Some(result)
 }
 
-pub fn parse_comparator(op: &str, text: &str) -> Option<Vec<VersionComparator>> {
+fn parse_comparator(op: &str, text: &str) -> Option<Vec<VersionComparator>> {
     let result = parse_partial(text)?;
 
     let mut comparators_result = Vec::new();
@@ -536,932 +536,6 @@ pub fn parse_comparator(op: &str, text: &str) -> Option<Vec<VersionComparator>> 
     Some(comparators_result)
 }
 
-pub fn is_wildcard(text: &str) -> bool {
+fn is_wildcard(text: &str) -> bool {
     text == "*" || text == "x" || text == "X"
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_wildcards_have_same_string() {
-        let major_wildcard_strings =
-            ["", "*", "*.*", "*.*.*", "x", "x.x", "x.x.x", "X", "X.X", "X.X.X"];
-
-        let minor_wildcard_strings = ["1", "1.*", "1.*.*", "1.x", "1.x.x", "1.X", "1.X.X"];
-
-        let patch_wildcard_strings = ["1.2", "1.2.*", "1.2.x", "1.2.X"];
-
-        let mixed_case_wildcard_strings = ["x", "X", "*", "x.X.x", "X.x.*"];
-
-        assert_all_version_ranges_have_identical_strings(
-            "majorWildcardStrings",
-            &major_wildcard_strings,
-        );
-        assert_all_version_ranges_have_identical_strings(
-            "minorWildcardStrings",
-            &minor_wildcard_strings,
-        );
-        assert_all_version_ranges_have_identical_strings(
-            "patchWildcardStrings",
-            &patch_wildcard_strings,
-        );
-        assert_all_version_ranges_have_identical_strings(
-            "mixedCaseWildcardStrings",
-            &mixed_case_wildcard_strings,
-        );
-    }
-
-    fn assert_all_version_ranges_have_identical_strings(name: &str, strs: &[&str]) {
-        for s1 in strs {
-            for s2 in strs {
-                let v1 = try_parse_version_range(s1).unwrap_or_else(|| panic!("{name}: {s1}"));
-                let v2 = try_parse_version_range(s2).unwrap_or_else(|| panic!("{name}: {s2}"));
-                assert_eq!(v1.string(), v2.string(), "{name}: {s1} == {s2}");
-            }
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    struct TestGoodBad<'a> {
-        good: &'a [&'a str],
-        bad: &'a [&'a str],
-    }
-
-    #[test]
-    fn test_version_ranges() {
-        assert_ranges_good_bad(
-            "1",
-            TestGoodBad {
-                good: &["1.0.0", "1.9.9", "1.0.0-pre", "1.0.0+build"],
-                bad: &["0.0.0", "2.0.0", "0.0.0-pre", "0.0.0+build"],
-            },
-        );
-        assert_ranges_good_bad(
-            "1.2",
-            TestGoodBad {
-                good: &["1.2.0", "1.2.9", "1.2.0-pre", "1.2.0+build"],
-                bad: &["1.1.0", "1.3.0", "1.1.0-pre", "1.1.0+build"],
-            },
-        );
-
-        assert_ranges_good_bad(
-            "1.2.3",
-            TestGoodBad {
-                good: &["1.2.3", "1.2.3+build"],
-                bad: &["1.2.2", "1.2.4", "1.2.2-pre", "1.2.2+build", "1.2.3-pre"],
-            },
-        );
-
-        assert_ranges_good_bad(
-            "1.2.3-pre",
-            TestGoodBad {
-                good: &["1.2.3-pre", "1.2.3-pre+build.stuff"],
-                bad: &[
-                    "1.2.3",
-                    "1.2.3-pre.0",
-                    "1.2.3-pre.9",
-                    "1.2.3-pre.0+build",
-                    "1.2.3-pre.9+build",
-                    "1.2.3+build",
-                    "1.2.4",
-                ],
-            },
-        );
-
-        assert_ranges_good_bad(
-            "<3.8.0",
-            TestGoodBad { good: &["3.6", "3.7"], bad: &["3.8", "3.9", "4.0"] },
-        );
-
-        assert_ranges_good_bad(
-            "<=3.8.0",
-            TestGoodBad { good: &["3.6", "3.7", "3.8"], bad: &["3.9", "4.0"] },
-        );
-        assert_ranges_good_bad(
-            ">3.8.0",
-            TestGoodBad { good: &["3.9", "4.0"], bad: &["3.6", "3.7", "3.8"] },
-        );
-        assert_ranges_good_bad(
-            ">=3.8.0",
-            TestGoodBad { good: &["3.8", "3.9", "4.0"], bad: &["3.6", "3.7"] },
-        );
-
-        assert_ranges_good_bad(
-            "<3.8.0-0",
-            TestGoodBad { good: &["3.6", "3.7"], bad: &["3.8", "3.9", "4.0"] },
-        );
-
-        assert_ranges_good_bad(
-            "<=3.8.0-0",
-            TestGoodBad { good: &["3.6", "3.7"], bad: &["3.8", "3.9", "4.0"] },
-        );
-
-        // Big numbers in prerelease strings.
-        let lotsa_ones = "1".repeat(320);
-        let range = format!(">=1.2.3-1{lotsa_ones}");
-        let good = [
-            format!("1.2.3-1{lotsa_ones}"),
-            format!("1.2.3-11{lotsa_ones}.1"),
-            format!("1.2.3-1{lotsa_ones}.1+build"),
-        ];
-        let bad = [format!("1.2.3-{lotsa_ones}.1+build")];
-        let good: Vec<&str> = good.iter().map(String::as_str).collect();
-        let bad: Vec<&str> = bad.iter().map(String::as_str).collect();
-        assert_ranges_good_bad(&range, TestGoodBad { good: &good, bad: &bad });
-    }
-
-    #[test]
-    fn test_comparators_of_version_ranges() {
-        const COMPARATORS_TESTS: &[(&str, &str, bool)] = &[
-            // empty (matches everything)
-            ("", "2.0.0", true),
-            ("", "2.0.0-0", true),
-            ("", "1.1.0", true),
-            ("", "1.1.0-0", true),
-            ("", "1.0.1", true),
-            ("", "1.0.1-0", true),
-            ("", "1.0.0", true),
-            ("", "1.0.0-0", true),
-            ("", "0.0.0", true),
-            ("", "0.0.0-0", true),
-            // wildcard major (matches everything)
-            ("*", "2.0.0", true),
-            ("*", "2.0.0-0", true),
-            ("*", "1.1.0", true),
-            ("*", "1.1.0-0", true),
-            ("*", "1.0.1", true),
-            ("*", "1.0.1-0", true),
-            ("*", "1.0.0", true),
-            ("*", "1.0.0-0", true),
-            ("*", "0.0.0", true),
-            ("*", "0.0.0-0", true),
-            // wildcard minor
-            ("1", "2.0.0", false),
-            ("1", "2.0.0-0", false),
-            ("1", "1.1.0", true),
-            ("1", "1.1.0-0", true),
-            ("1", "1.0.1", true),
-            ("1", "1.0.1-0", true),
-            ("1", "1.0.0", true),
-            ("1", "1.0.0-0", true),
-            ("1", "0.0.0", false),
-            ("1", "0.0.0-0", false),
-            // wildcard patch
-            ("1.1", "2.0.0", false),
-            ("1.1", "2.0.0-0", false),
-            ("1.1", "1.1.0", true),
-            ("1.1", "1.1.0-0", true),
-            ("1.1", "1.0.1", false),
-            ("1.1", "1.0.1-0", false),
-            ("1.1", "1.0.0", false),
-            ("1.1", "1.0.0-0", false),
-            ("1.1", "0.0.0", false),
-            ("1.1", "0.0.0-0", false),
-            ("1.0", "2.0.0", false),
-            ("1.0", "2.0.0-0", false),
-            ("1.0", "1.1.0", false),
-            ("1.0", "1.1.0-0", false),
-            ("1.0", "1.0.1", true),
-            ("1.0", "1.0.1-0", true),
-            ("1.0", "1.0.0", true),
-            ("1.0", "1.0.0-0", true),
-            ("1.0", "0.0.0", false),
-            ("1.0", "0.0.0-0", false),
-            // exact
-            ("1.1.0", "2.0.0", false),
-            ("1.1.0", "2.0.0-0", false),
-            ("1.1.0", "1.1.0", true),
-            ("1.1.0", "1.1.0-0", false),
-            ("1.1.0", "1.0.1", false),
-            ("1.1.0", "1.0.1-0", false),
-            ("1.1.0", "1.0.0-0", false),
-            ("1.1.0", "1.0.0", false),
-            ("1.1.0", "0.0.0", false),
-            ("1.1.0", "0.0.0-0", false),
-            ("1.1.0-0", "2.0.0", false),
-            ("1.1.0-0", "2.0.0-0", false),
-            ("1.1.0-0", "1.1.0", false),
-            ("1.1.0-0", "1.1.0-0", true),
-            ("1.1.0-0", "1.0.1", false),
-            ("1.1.0-0", "1.0.1-0", false),
-            ("1.1.0-0", "1.0.0-0", false),
-            ("1.1.0-0", "1.0.0", false),
-            ("1.1.0-0", "0.0.0", false),
-            ("1.1.0-0", "0.0.0-0", false),
-            ("1.0.1", "2.0.0", false),
-            ("1.0.1", "2.0.0-0", false),
-            ("1.0.1", "1.1.0", false),
-            ("1.0.1", "1.1.0-0", false),
-            ("1.0.1", "1.0.1", true),
-            ("1.0.1", "1.0.1-0", false),
-            ("1.0.1", "1.0.0-0", false),
-            ("1.0.1", "1.0.0", false),
-            ("1.0.1", "0.0.0", false),
-            ("1.0.1", "0.0.0-0", false),
-            ("1.0.1-0", "2.0.0", false),
-            ("1.0.1-0", "2.0.0-0", false),
-            ("1.0.1-0", "1.1.0", false),
-            ("1.0.1-0", "1.1.0-0", false),
-            ("1.0.1-0", "1.0.1", false),
-            ("1.0.1-0", "1.0.1-0", true),
-            ("1.0.1-0", "1.0.0-0", false),
-            ("1.0.1-0", "1.0.0", false),
-            ("1.0.1-0", "0.0.0", false),
-            ("1.0.1-0", "0.0.0-0", false),
-            ("1.0.0", "2.0.0", false),
-            ("1.0.0", "2.0.0-0", false),
-            ("1.0.0", "1.1.0", false),
-            ("1.0.0", "1.1.0-0", false),
-            ("1.0.0", "1.0.1", false),
-            ("1.0.0", "1.0.1-0", false),
-            ("1.0.0", "1.0.0-0", false),
-            ("1.0.0", "1.0.0", true),
-            ("1.0.0", "0.0.0", false),
-            ("1.0.0", "0.0.0-0", false),
-            ("1.0.0-0", "2.0.0", false),
-            ("1.0.0-0", "2.0.0-0", false),
-            ("1.0.0-0", "1.1.0", false),
-            ("1.0.0-0", "1.1.0-0", false),
-            ("1.0.0-0", "1.0.1", false),
-            ("1.0.0-0", "1.0.1-0", false),
-            ("1.0.0-0", "1.0.0", false),
-            ("1.0.0-0", "1.0.0-0", true),
-            // = wildcard major (matches everything)
-            ("=*", "2.0.0", true),
-            ("=*", "2.0.0-0", true),
-            ("=*", "1.1.0", true),
-            ("=*", "1.1.0-0", true),
-            ("=*", "1.0.1", true),
-            ("=*", "1.0.1-0", true),
-            ("=*", "1.0.0", true),
-            ("=*", "1.0.0-0", true),
-            ("=*", "0.0.0", true),
-            ("=*", "0.0.0-0", true),
-            // = wildcard minor
-            ("=1", "2.0.0", false),
-            ("=1", "2.0.0-0", false),
-            ("=1", "1.1.0", true),
-            ("=1", "1.1.0-0", true),
-            ("=1", "1.0.1", true),
-            ("=1", "1.0.1-0", true),
-            ("=1", "1.0.0", true),
-            ("=1", "1.0.0-0", true),
-            ("=1", "0.0.0", false),
-            ("=1", "0.0.0-0", false),
-            // = wildcard patch
-            ("=1.1", "2.0.0", false),
-            ("=1.1", "2.0.0-0", false),
-            ("=1.1", "1.1.0", true),
-            ("=1.1", "1.1.0-0", true),
-            ("=1.1", "1.0.1", false),
-            ("=1.1", "1.0.1-0", false),
-            ("=1.1", "1.0.0", false),
-            ("=1.1", "1.0.0-0", false),
-            ("=1.1", "0.0.0", false),
-            ("=1.1", "0.0.0-0", false),
-            ("=1.0", "2.0.0", false),
-            ("=1.0", "2.0.0-0", false),
-            ("=1.0", "1.1.0", false),
-            ("=1.0", "1.1.0-0", false),
-            ("=1.0", "1.0.1", true),
-            ("=1.0", "1.0.1-0", true),
-            ("=1.0", "1.0.0", true),
-            ("=1.0", "1.0.0-0", true),
-            ("=1.0", "0.0.0", false),
-            ("=1.0", "0.0.0-0", false),
-            // = exact
-            ("=1.1.0", "2.0.0", false),
-            ("=1.1.0", "2.0.0-0", false),
-            ("=1.1.0", "1.1.0", true),
-            ("=1.1.0", "1.1.0-0", false),
-            ("=1.1.0", "1.0.1", false),
-            ("=1.1.0", "1.0.1-0", false),
-            ("=1.1.0", "1.0.0-0", false),
-            ("=1.1.0", "1.0.0", false),
-            ("=1.1.0", "0.0.0", false),
-            ("=1.1.0", "0.0.0-0", false),
-            ("=1.1.0-0", "2.0.0", false),
-            ("=1.1.0-0", "2.0.0-0", false),
-            ("=1.1.0-0", "1.1.0", false),
-            ("=1.1.0-0", "1.1.0-0", true),
-            ("=1.1.0-0", "1.0.1", false),
-            ("=1.1.0-0", "1.0.1-0", false),
-            ("=1.1.0-0", "1.0.0-0", false),
-            ("=1.1.0-0", "1.0.0", false),
-            ("=1.1.0-0", "0.0.0", false),
-            ("=1.1.0-0", "0.0.0-0", false),
-            ("=1.0.1", "2.0.0", false),
-            ("=1.0.1", "2.0.0-0", false),
-            ("=1.0.1", "1.1.0", false),
-            ("=1.0.1", "1.1.0-0", false),
-            ("=1.0.1", "1.0.1", true),
-            ("=1.0.1", "1.0.1-0", false),
-            ("=1.0.1", "1.0.0-0", false),
-            ("=1.0.1", "1.0.0", false),
-            ("=1.0.1", "0.0.0", false),
-            ("=1.0.1", "0.0.0-0", false),
-            ("=1.0.1-0", "2.0.0", false),
-            ("=1.0.1-0", "2.0.0-0", false),
-            ("=1.0.1-0", "1.1.0", false),
-            ("=1.0.1-0", "1.1.0-0", false),
-            ("=1.0.1-0", "1.0.1", false),
-            ("=1.0.1-0", "1.0.1-0", true),
-            ("=1.0.1-0", "1.0.0-0", false),
-            ("=1.0.1-0", "1.0.0", false),
-            ("=1.0.1-0", "0.0.0", false),
-            ("=1.0.1-0", "0.0.0-0", false),
-            ("=1.0.0", "2.0.0", false),
-            ("=1.0.0", "2.0.0-0", false),
-            ("=1.0.0", "1.1.0", false),
-            ("=1.0.0", "1.1.0-0", false),
-            ("=1.0.0", "1.0.1", false),
-            ("=1.0.0", "1.0.1-0", false),
-            ("=1.0.0", "1.0.0-0", false),
-            ("=1.0.0", "1.0.0", true),
-            ("=1.0.0", "0.0.0", false),
-            ("=1.0.0", "0.0.0-0", false),
-            ("=1.0.0-0", "2.0.0", false),
-            ("=1.0.0-0", "2.0.0-0", false),
-            ("=1.0.0-0", "1.1.0", false),
-            ("=1.0.0-0", "1.1.0-0", false),
-            ("=1.0.0-0", "1.0.1", false),
-            ("=1.0.0-0", "1.0.1-0", false),
-            ("=1.0.0-0", "1.0.0", false),
-            ("=1.0.0-0", "1.0.0-0", true),
-            // > wildcard major (matches nothing)
-            (">*", "2.0.0", false),
-            (">*", "2.0.0-0", false),
-            (">*", "1.1.0", false),
-            (">*", "1.1.0-0", false),
-            (">*", "1.0.1", false),
-            (">*", "1.0.1-0", false),
-            (">*", "1.0.0", false),
-            (">*", "1.0.0-0", false),
-            (">*", "0.0.0", false),
-            (">*", "0.0.0-0", false),
-            // > wildcard minor
-            (">1", "2.0.0", true),
-            (">1", "2.0.0-0", true),
-            (">1", "1.1.0", false),
-            (">1", "1.1.0-0", false),
-            (">1", "1.0.1", false),
-            (">1", "1.0.1-0", false),
-            (">1", "1.0.0", false),
-            (">1", "1.0.0-0", false),
-            (">1", "0.0.0", false),
-            (">1", "0.0.0-0", false),
-            // > wildcard patch
-            (">1.1", "2.0.0", true),
-            (">1.1", "2.0.0-0", true),
-            (">1.1", "1.1.0", false),
-            (">1.1", "1.1.0-0", false),
-            (">1.1", "1.0.1", false),
-            (">1.1", "1.0.1-0", false),
-            (">1.1", "1.0.0", false),
-            (">1.1", "1.0.0-0", false),
-            (">1.1", "0.0.0", false),
-            (">1.1", "0.0.0-0", false),
-            (">1.0", "2.0.0", true),
-            (">1.0", "2.0.0-0", true),
-            (">1.0", "1.1.0", true),
-            (">1.0", "1.1.0-0", true),
-            (">1.0", "1.0.1", false),
-            (">1.0", "1.0.1-0", false),
-            (">1.0", "1.0.0", false),
-            (">1.0", "1.0.0-0", false),
-            (">1.0", "0.0.0", false),
-            (">1.0", "0.0.0-0", false),
-            // > exact
-            (">1.1.0", "2.0.0", true),
-            (">1.1.0", "2.0.0-0", true),
-            (">1.1.0", "1.1.0", false),
-            (">1.1.0", "1.1.0-0", false),
-            (">1.1.0", "1.0.1", false),
-            (">1.1.0", "1.0.1-0", false),
-            (">1.1.0", "1.0.0", false),
-            (">1.1.0", "1.0.0-0", false),
-            (">1.1.0", "0.0.0", false),
-            (">1.1.0", "0.0.0-0", false),
-            (">1.1.0-0", "2.0.0", true),
-            (">1.1.0-0", "2.0.0-0", true),
-            (">1.1.0-0", "1.1.0", true),
-            (">1.1.0-0", "1.1.0-0", false),
-            (">1.1.0-0", "1.0.1", false),
-            (">1.1.0-0", "1.0.1-0", false),
-            (">1.1.0-0", "1.0.0", false),
-            (">1.1.0-0", "1.0.0-0", false),
-            (">1.1.0-0", "0.0.0", false),
-            (">1.1.0-0", "0.0.0-0", false),
-            (">1.0.1", "2.0.0", true),
-            (">1.0.1", "2.0.0-0", true),
-            (">1.0.1", "1.1.0", true),
-            (">1.0.1", "1.1.0-0", true),
-            (">1.0.1", "1.0.1", false),
-            (">1.0.1", "1.0.1-0", false),
-            (">1.0.1", "1.0.0", false),
-            (">1.0.1", "1.0.0-0", false),
-            (">1.0.1", "0.0.0", false),
-            (">1.0.1", "0.0.0-0", false),
-            (">1.0.1-0", "2.0.0", true),
-            (">1.0.1-0", "2.0.0-0", true),
-            (">1.0.1-0", "1.1.0", true),
-            (">1.0.1-0", "1.1.0-0", true),
-            (">1.0.1-0", "1.0.1", true),
-            (">1.0.1-0", "1.0.1-0", false),
-            (">1.0.1-0", "1.0.0", false),
-            (">1.0.1-0", "1.0.0-0", false),
-            (">1.0.1-0", "0.0.0", false),
-            (">1.0.1-0", "0.0.0-0", false),
-            (">1.0.0", "2.0.0", true),
-            (">1.0.0", "2.0.0-0", true),
-            (">1.0.0", "1.1.0", true),
-            (">1.0.0", "1.1.0-0", true),
-            (">1.0.0", "1.0.1", true),
-            (">1.0.0", "1.0.1-0", true),
-            (">1.0.0", "1.0.0", false),
-            (">1.0.0", "1.0.0-0", false),
-            (">1.0.0", "0.0.0", false),
-            (">1.0.0", "0.0.0-0", false),
-            (">1.0.0-0", "2.0.0", true),
-            (">1.0.0-0", "2.0.0-0", true),
-            (">1.0.0-0", "1.1.0", true),
-            (">1.0.0-0", "1.1.0-0", true),
-            (">1.0.0-0", "1.0.1", true),
-            (">1.0.0-0", "1.0.1-0", true),
-            (">1.0.0-0", "1.0.0", true),
-            (">1.0.0-0", "1.0.0-0", false),
-            (">1.0.0-0", "0.0.0", false),
-            (">1.0.0-0", "0.0.0-0", false),
-            // >= wildcard major (matches everything)
-            (">=*", "2.0.0", true),
-            (">=*", "2.0.0-0", true),
-            (">=*", "1.1.0", true),
-            (">=*", "1.1.0-0", true),
-            (">=*", "1.0.1", true),
-            (">=*", "1.0.1-0", true),
-            (">=*", "1.0.0", true),
-            (">=*", "1.0.0-0", true),
-            (">=*", "0.0.0", true),
-            (">=*", "0.0.0-0", true),
-            // >= wildcard minor
-            (">=1", "2.0.0", true),
-            (">=1", "2.0.0-0", true),
-            (">=1", "1.1.0", true),
-            (">=1", "1.1.0-0", true),
-            (">=1", "1.0.1", true),
-            (">=1", "1.0.1-0", true),
-            (">=1", "1.0.0", true),
-            (">=1", "1.0.0-0", true),
-            (">=1", "0.0.0", false),
-            (">=1", "0.0.0-0", false),
-            // >= wildcard patch
-            (">=1.1", "2.0.0", true),
-            (">=1.1", "2.0.0-0", true),
-            (">=1.1", "1.1.0", true),
-            (">=1.1", "1.1.0-0", true),
-            (">=1.1", "1.0.1", false),
-            (">=1.1", "1.0.1-0", false),
-            (">=1.1", "1.0.0", false),
-            (">=1.1", "1.0.0-0", false),
-            (">=1.1", "0.0.0", false),
-            (">=1.1", "0.0.0-0", false),
-            (">=1.0", "2.0.0", true),
-            (">=1.0", "2.0.0-0", true),
-            (">=1.0", "1.1.0", true),
-            (">=1.0", "1.1.0-0", true),
-            (">=1.0", "1.0.1", true),
-            (">=1.0", "1.0.1-0", true),
-            (">=1.0", "1.0.0", true),
-            (">=1.0", "1.0.0-0", true),
-            (">=1.0", "0.0.0", false),
-            (">=1.0", "0.0.0-0", false),
-            // >= exact
-            (">=1.1.0", "2.0.0", true),
-            (">=1.1.0", "2.0.0-0", true),
-            (">=1.1.0", "1.1.0", true),
-            (">=1.1.0", "1.1.0-0", false),
-            (">=1.1.0", "1.0.1", false),
-            (">=1.1.0", "1.0.1-0", false),
-            (">=1.1.0", "1.0.0", false),
-            (">=1.1.0", "1.0.0-0", false),
-            (">=1.1.0", "0.0.0", false),
-            (">=1.1.0", "0.0.0-0", false),
-            (">=1.1.0-0", "2.0.0", true),
-            (">=1.1.0-0", "2.0.0-0", true),
-            (">=1.1.0-0", "1.1.0", true),
-            (">=1.1.0-0", "1.1.0-0", true),
-            (">=1.1.0-0", "1.0.1", false),
-            (">=1.1.0-0", "1.0.1-0", false),
-            (">=1.1.0-0", "1.0.0", false),
-            (">=1.1.0-0", "1.0.0-0", false),
-            (">=1.1.0-0", "0.0.0", false),
-            (">=1.1.0-0", "0.0.0-0", false),
-            (">=1.0.1", "2.0.0", true),
-            (">=1.0.1", "2.0.0-0", true),
-            (">=1.0.1", "1.1.0", true),
-            (">=1.0.1", "1.1.0-0", true),
-            (">=1.0.1", "1.0.1", true),
-            (">=1.0.1", "1.0.1-0", false),
-            (">=1.0.1", "1.0.0", false),
-            (">=1.0.1", "1.0.0-0", false),
-            (">=1.0.1", "0.0.0", false),
-            (">=1.0.1", "0.0.0-0", false),
-            (">=1.0.1-0", "2.0.0", true),
-            (">=1.0.1-0", "2.0.0-0", true),
-            (">=1.0.1-0", "1.1.0", true),
-            (">=1.0.1-0", "1.1.0-0", true),
-            (">=1.0.1-0", "1.0.1", true),
-            (">=1.0.1-0", "1.0.1-0", true),
-            (">=1.0.1-0", "1.0.0", false),
-            (">=1.0.1-0", "1.0.0-0", false),
-            (">=1.0.1-0", "0.0.0", false),
-            (">=1.0.1-0", "0.0.0-0", false),
-            (">=1.0.0", "2.0.0", true),
-            (">=1.0.0", "2.0.0-0", true),
-            (">=1.0.0", "1.1.0", true),
-            (">=1.0.0", "1.1.0-0", true),
-            (">=1.0.0", "1.0.1", true),
-            (">=1.0.0", "1.0.1-0", true),
-            (">=1.0.0", "1.0.0", true),
-            (">=1.0.0", "1.0.0-0", false),
-            (">=1.0.0", "0.0.0", false),
-            (">=1.0.0", "0.0.0-0", false),
-            (">=1.0.0-0", "2.0.0", true),
-            (">=1.0.0-0", "2.0.0-0", true),
-            (">=1.0.0-0", "1.1.0", true),
-            (">=1.0.0-0", "1.1.0-0", true),
-            (">=1.0.0-0", "1.0.1", true),
-            (">=1.0.0-0", "1.0.1-0", true),
-            (">=1.0.0-0", "1.0.0", true),
-            (">=1.0.0-0", "1.0.0-0", true),
-            (">=1.0.0-0", "0.0.0", false),
-            (">=1.0.0-0", "0.0.0-0", false),
-            // < wildcard major (matches nothing)
-            ("<*", "2.0.0", false),
-            ("<*", "2.0.0-0", false),
-            ("<*", "1.1.0", false),
-            ("<*", "1.1.0-0", false),
-            ("<*", "1.0.1", false),
-            ("<*", "1.0.1-0", false),
-            ("<*", "1.0.0", false),
-            ("<*", "1.0.0-0", false),
-            ("<*", "0.0.0", false),
-            ("<*", "0.0.0-0", false),
-            // < wildcard minor
-            ("<1", "2.0.0", false),
-            ("<1", "2.0.0-0", false),
-            ("<1", "1.1.0", false),
-            ("<1", "1.1.0-0", false),
-            ("<1", "1.0.1", false),
-            ("<1", "1.0.1-0", false),
-            ("<1", "1.0.0", false),
-            ("<1", "1.0.0-0", false),
-            ("<1", "0.0.0", true),
-            ("<1", "0.0.0-0", true),
-            // < wildcard patch
-            ("<1.1", "2.0.0", false),
-            ("<1.1", "2.0.0-0", false),
-            ("<1.1", "1.1.0", false),
-            ("<1.1", "1.1.0-0", false),
-            ("<1.1", "1.0.1", true),
-            ("<1.1", "1.0.1-0", true),
-            ("<1.1", "1.0.0", true),
-            ("<1.1", "1.0.0-0", true),
-            ("<1.1", "0.0.0", true),
-            ("<1.1", "0.0.0-0", true),
-            ("<1.0", "2.0.0", false),
-            ("<1.0", "2.0.0-0", false),
-            ("<1.0", "1.1.0", false),
-            ("<1.0", "1.1.0-0", false),
-            ("<1.0", "1.0.1", false),
-            ("<1.0", "1.0.1-0", false),
-            ("<1.0", "1.0.0", false),
-            ("<1.0", "1.0.0-0", false),
-            ("<1.0", "0.0.0", true),
-            ("<1.0", "0.0.0-0", true),
-            // < exact
-            ("<1.1.0", "2.0.0", false),
-            ("<1.1.0", "2.0.0-0", false),
-            ("<1.1.0", "1.1.0", false),
-            ("<1.1.0", "1.1.0-0", true),
-            ("<1.1.0", "1.0.1", true),
-            ("<1.1.0", "1.0.1-0", true),
-            ("<1.1.0", "1.0.0", true),
-            ("<1.1.0", "1.0.0-0", true),
-            ("<1.1.0", "0.0.0", true),
-            ("<1.1.0", "0.0.0-0", true),
-            ("<1.1.0-0", "2.0.0", false),
-            ("<1.1.0-0", "2.0.0-0", false),
-            ("<1.1.0-0", "1.1.0", false),
-            ("<1.1.0-0", "1.1.0-0", false),
-            ("<1.1.0-0", "1.0.1", true),
-            ("<1.1.0-0", "1.0.1-0", true),
-            ("<1.1.0-0", "1.0.0", true),
-            ("<1.1.0-0", "1.0.0-0", true),
-            ("<1.1.0-0", "0.0.0", true),
-            ("<1.1.0-0", "0.0.0-0", true),
-            ("<1.0.1", "2.0.0", false),
-            ("<1.0.1", "2.0.0-0", false),
-            ("<1.0.1", "1.1.0", false),
-            ("<1.0.1", "1.1.0-0", false),
-            ("<1.0.1", "1.0.1", false),
-            ("<1.0.1", "1.0.1-0", true),
-            ("<1.0.1", "1.0.0", true),
-            ("<1.0.1", "1.0.0-0", true),
-            ("<1.0.1", "0.0.0", true),
-            ("<1.0.1", "0.0.0-0", true),
-            ("<1.0.1-0", "2.0.0", false),
-            ("<1.0.1-0", "2.0.0-0", false),
-            ("<1.0.1-0", "1.1.0", false),
-            ("<1.0.1-0", "1.1.0-0", false),
-            ("<1.0.1-0", "1.0.1", false),
-            ("<1.0.1-0", "1.0.1-0", false),
-            ("<1.0.1-0", "1.0.0", true),
-            ("<1.0.1-0", "1.0.0-0", true),
-            ("<1.0.1-0", "0.0.0", true),
-            ("<1.0.1-0", "0.0.0-0", true),
-            ("<1.0.0", "2.0.0", false),
-            ("<1.0.0", "2.0.0-0", false),
-            ("<1.0.0", "1.1.0", false),
-            ("<1.0.0", "1.1.0-0", false),
-            ("<1.0.0", "1.0.1", false),
-            ("<1.0.0", "1.0.1-0", false),
-            ("<1.0.0", "1.0.0", false),
-            ("<1.0.0", "1.0.0-0", true),
-            ("<1.0.0", "0.0.0", true),
-            ("<1.0.0", "0.0.0-0", true),
-            ("<1.0.0-0", "2.0.0", false),
-            ("<1.0.0-0", "2.0.0-0", false),
-            ("<1.0.0-0", "1.1.0", false),
-            ("<1.0.0-0", "1.1.0-0", false),
-            ("<1.0.0-0", "1.0.1", false),
-            ("<1.0.0-0", "1.0.1-0", false),
-            ("<1.0.0-0", "1.0.0", false),
-            ("<1.0.0-0", "1.0.0-0", false),
-            ("<1.0.0-0", "0.0.0", true),
-            ("<1.0.0-0", "0.0.0-0", true),
-            // <= wildcard major (matches everything)
-            ("<=*", "2.0.0", true),
-            ("<=*", "2.0.0-0", true),
-            ("<=*", "1.1.0", true),
-            ("<=*", "1.1.0-0", true),
-            ("<=*", "1.0.1", true),
-            ("<=*", "1.0.1-0", true),
-            ("<=*", "1.0.0", true),
-            ("<=*", "1.0.0-0", true),
-            ("<=*", "0.0.0", true),
-            ("<=*", "0.0.0-0", true),
-            // <= wildcard minor
-            ("<=1", "2.0.0", false),
-            ("<=1", "2.0.0-0", false),
-            ("<=1", "1.1.0", true),
-            ("<=1", "1.1.0-0", true),
-            ("<=1", "1.0.1", true),
-            ("<=1", "1.0.1-0", true),
-            ("<=1", "1.0.0", true),
-            ("<=1", "1.0.0-0", true),
-            ("<=1", "0.0.0", true),
-            ("<=1", "0.0.0-0", true),
-            // <= wildcard patch
-            ("<=1.1", "2.0.0", false),
-            ("<=1.1", "2.0.0-0", false),
-            ("<=1.1", "1.1.0", true),
-            ("<=1.1", "1.1.0-0", true),
-            ("<=1.1", "1.0.1", true),
-            ("<=1.1", "1.0.1-0", true),
-            ("<=1.1", "1.0.0", true),
-            ("<=1.1", "1.0.0-0", true),
-            ("<=1.1", "0.0.0", true),
-            ("<=1.1", "0.0.0-0", true),
-            ("<=1.0", "2.0.0", false),
-            ("<=1.0", "2.0.0-0", false),
-            ("<=1.0", "1.1.0", false),
-            ("<=1.0", "1.1.0-0", false),
-            ("<=1.0", "1.0.1", true),
-            ("<=1.0", "1.0.1-0", true),
-            ("<=1.0", "1.0.0", true),
-            ("<=1.0", "1.0.0-0", true),
-            ("<=1.0", "0.0.0", true),
-            ("<=1.0", "0.0.0-0", true),
-            // <= exact
-            ("<=1.1.0", "2.0.0", false),
-            ("<=1.1.0", "2.0.0-0", false),
-            ("<=1.1.0", "1.1.0", true),
-            ("<=1.1.0", "1.1.0-0", true),
-            ("<=1.1.0", "1.0.1", true),
-            ("<=1.1.0", "1.0.1-0", true),
-            ("<=1.1.0", "1.0.0", true),
-            ("<=1.1.0", "1.0.0-0", true),
-            ("<=1.1.0", "0.0.0", true),
-            ("<=1.1.0", "0.0.0-0", true),
-            ("<=1.1.0-0", "2.0.0", false),
-            ("<=1.1.0-0", "2.0.0-0", false),
-            ("<=1.1.0-0", "1.1.0", false),
-            ("<=1.1.0-0", "1.1.0-0", true),
-            ("<=1.1.0-0", "1.0.1", true),
-            ("<=1.1.0-0", "1.0.1-0", true),
-            ("<=1.1.0-0", "1.0.0", true),
-            ("<=1.1.0-0", "1.0.0-0", true),
-            ("<=1.1.0-0", "0.0.0", true),
-            ("<=1.1.0-0", "0.0.0-0", true),
-            ("<=1.0.1", "2.0.0", false),
-            ("<=1.0.1", "2.0.0-0", false),
-            ("<=1.0.1", "1.1.0", false),
-            ("<=1.0.1", "1.1.0-0", false),
-            ("<=1.0.1", "1.0.1", true),
-            ("<=1.0.1", "1.0.1-0", true),
-            ("<=1.0.1", "1.0.0", true),
-            ("<=1.0.1", "1.0.0-0", true),
-            ("<=1.0.1", "0.0.0", true),
-            ("<=1.0.1", "0.0.0-0", true),
-            ("<=1.0.1-0", "2.0.0", false),
-            ("<=1.0.1-0", "2.0.0-0", false),
-            ("<=1.0.1-0", "1.1.0", false),
-            ("<=1.0.1-0", "1.1.0-0", false),
-            ("<=1.0.1-0", "1.0.1", false),
-            ("<=1.0.1-0", "1.0.1-0", true),
-            ("<=1.0.1-0", "1.0.0", true),
-            ("<=1.0.1-0", "1.0.0-0", true),
-            ("<=1.0.1-0", "0.0.0", true),
-            ("<=1.0.1-0", "0.0.0-0", true),
-            ("<=1.0.0", "2.0.0", false),
-            ("<=1.0.0", "2.0.0-0", false),
-            ("<=1.0.0", "1.1.0", false),
-            ("<=1.0.0", "1.1.0-0", false),
-            ("<=1.0.0", "1.0.1", false),
-            ("<=1.0.0", "1.0.1-0", false),
-            ("<=1.0.0", "1.0.0", true),
-            ("<=1.0.0", "1.0.0-0", true),
-            ("<=1.0.0", "0.0.0", true),
-            ("<=1.0.0", "0.0.0-0", true),
-            ("<=1.0.0-0", "2.0.0", false),
-            ("<=1.0.0-0", "2.0.0-0", false),
-            ("<=1.0.0-0", "1.1.0", false),
-            ("<=1.0.0-0", "1.1.0-0", false),
-            ("<=1.0.0-0", "1.0.1", false),
-            ("<=1.0.0-0", "1.0.1-0", false),
-            ("<=1.0.0-0", "1.0.0", false),
-            ("<=1.0.0-0", "1.0.0-0", true),
-            ("<=1.0.0-0", "0.0.0", true),
-            ("<=1.0.0-0", "0.0.0-0", true),
-            // https://github.com/microsoft/TypeScript/issues/50909
-            (">4.8", "4.9.0-beta", true),
-            (">=4.9", "4.9.0-beta", true),
-            ("<4.9", "4.9.0-beta", false),
-            ("<=4.8", "4.9.0-beta", false),
-        ];
-        for &(range_text, version_text, expected) in COMPARATORS_TESTS {
-            assert_range_test("comparators", range_text, version_text, expected);
-        }
-    }
-
-    #[test]
-    fn test_conjunctions_of_version_ranges() {
-        let conjunction_tests: &[(&str, &str, bool)] = &[
-            (">1.0.0 <2.0.0", "1.0.1", true),
-            (">1.0.0 <2.0.0", "2.0.0", false),
-            (">1.0.0 <2.0.0", "1.0.0", false),
-            (">1 >2", "3.0.0", true),
-        ];
-        for &(range_text, version_text, expected) in conjunction_tests {
-            assert_range_test("conjunctions", range_text, version_text, expected);
-        }
-    }
-
-    #[test]
-    fn test_disjunctions_of_version_ranges() {
-        let disjunction_tests: &[(&str, &str, bool)] = &[
-            (">1.0.0 || <1.0.0", "1.0.1", true),
-            (">1.0.0 || <1.0.0", "0.0.1", true),
-            (">1.0.0 || <1.0.0", "1.0.0", false),
-            (">1.0.0 || <1.0.0", "0.0.0", true),
-            (">=1.0.0 <2.0.0 || >=3.0.0 <4.0.0", "1.0.0", true),
-            (">=1.0.0 <2.0.0 || >=3.0.0 <4.0.0", "2.0.0", false),
-            (">=1.0.0 <2.0.0 || >=3.0.0 <4.0.0", "3.0.0", true),
-        ];
-        for &(range_text, version_text, expected) in disjunction_tests {
-            assert_range_test("disjunctions", range_text, version_text, expected);
-        }
-    }
-
-    #[test]
-    fn test_hyphens_of_version_ranges() {
-        let hyphen_tests: &[(&str, &str, bool)] = &[
-            ("1.0.0 - 2.0.0", "1.0.0", true),
-            ("1.0.0 - 2.0.0", "1.0.1", true),
-            ("1.0.0 - 2.0.0", "2.0.0", true),
-            ("1.0.0 - 2.0.0", "2.0.1", false),
-            ("1.0.0 - 2.0.0", "0.9.9", false),
-            ("1.0.0 - 2.0.0", "3.0.0", false),
-        ];
-        for &(range_text, version_text, expected) in hyphen_tests {
-            assert_range_test("hyphens", range_text, version_text, expected);
-        }
-    }
-
-    #[test]
-    fn test_tildes_of_version_ranges() {
-        let tilde_tests: &[(&str, &str, bool)] = &[
-            ("~0", "0.0.0", true),
-            ("~0", "0.1.0", true),
-            ("~0", "0.1.2", true),
-            ("~0", "0.1.9", true),
-            ("~0", "1.0.0", false),
-            ("~0.1", "0.1.0", true),
-            ("~0.1", "0.1.2", true),
-            ("~0.1", "0.1.9", true),
-            ("~0.1", "0.2.0", false),
-            ("~0.1.2", "0.1.2", true),
-            ("~0.1.2", "0.1.9", true),
-            ("~0.1.2", "0.2.0", false),
-            ("~1.0.0", "1.0.0", true),
-            ("~1.0.0", "1.0.1", true),
-            ("~1", "1.0.0", true),
-            ("~1", "1.2.0", true),
-            ("~1", "1.2.3", true),
-            ("~1", "0.0.0", false),
-            ("~1", "2.0.0", false),
-            ("~1.2", "1.2.0", true),
-            ("~1.2", "1.2.3", true),
-            ("~1.2", "1.1.0", false),
-            ("~1.2", "1.3.0", false),
-            ("~1.2.3", "1.2.3", true),
-            ("~1.2.3", "1.2.9", true),
-            ("~1.2.3", "1.1.0", false),
-            ("~1.2.3", "1.3.0", false),
-        ];
-        for &(range_text, version_text, expected) in tilde_tests {
-            assert_range_test("tilde", range_text, version_text, expected);
-        }
-    }
-
-    #[test]
-    fn test_carets_of_version_ranges() {
-        let caret_tests: &[(&str, &str, bool)] = &[
-            ("^0", "0.0.0", true),
-            ("^0", "0.1.0", true),
-            ("^0", "0.9.0", true),
-            ("^0", "0.1.2", true),
-            ("^0", "0.1.9", true),
-            ("^0", "1.0.0", false),
-            ("^0.1", "0.1.0", true),
-            ("^0.1", "0.1.2", true),
-            ("^0.1", "0.1.9", true),
-            ("^0.1.2", "0.1.2", true),
-            ("^0.1.2", "0.1.9", true),
-            ("^0.1.2", "0.0.0", false),
-            ("^0.1.2", "0.2.0", false),
-            ("^0.1.2", "1.0.0", false),
-            ("^1", "1.0.0", true),
-            ("^1", "1.2.0", true),
-            ("^1", "1.2.3", true),
-            ("^1", "1.9.0", true),
-            ("^1", "0.0.0", false),
-            ("^1", "2.0.0", false),
-            ("^1.2", "1.2.0", true),
-            ("^1.2", "1.2.3", true),
-            ("^1.2", "1.9.0", true),
-            ("^1.2", "1.1.0", false),
-            ("^1.2", "2.0.0", false),
-            ("^1.2.3", "1.2.3", true),
-            ("^1.2.3", "1.9.0", true),
-            ("^1.2.3", "1.2.2", false),
-            ("^1.2.3", "2.0.0", false),
-        ];
-        for &(range_text, version_text, expected) in caret_tests {
-            assert_range_test("caret", range_text, version_text, expected);
-        }
-    }
-
-    fn assert_ranges_good_bad(version_range_string: &str, tests: TestGoodBad) {
-        let version_range = try_parse_version_range(version_range_string)
-            .unwrap_or_else(|| panic!("{version_range_string}"));
-        for good in tests.good {
-            let v = try_parse_version(good).unwrap();
-            assert!(
-                version_range.test(&v),
-                "{good} should be matched by range {version_range_string}"
-            );
-        }
-
-        for bad in tests.bad {
-            let v = try_parse_version(bad).unwrap();
-            assert!(
-                !version_range.test(&v),
-                "{bad} should not be matched by range {version_range_string}"
-            );
-        }
-    }
-
-    fn assert_range_test(name: &str, range_text: &str, version_text: &str, in_range: bool) {
-        let test_name =
-            format!("{name} (version {version_text} in range {range_text}) == {in_range}");
-        let version_range =
-            try_parse_version_range(range_text).unwrap_or_else(|| panic!("{test_name}"));
-        let version =
-            try_parse_version(version_text).unwrap_or_else(|e| panic!("{test_name}: {e}"));
-        assert_eq!(version_range.test(&version), in_range, "{test_name}");
-    }
 }

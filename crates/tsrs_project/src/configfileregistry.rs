@@ -30,7 +30,7 @@ pub struct ConfiguredContentMappers {
 }
 
 // configfileregistry.go:32
-pub fn collect_configured_content_mappers(
+pub(crate) fn collect_configured_content_mappers(
     command_lines: &[P<ParsedCommandLine>],
 ) -> Arc<ConfiguredContentMappers> {
     let mut seen_extensions: Set<String> = Set::default();
@@ -88,7 +88,7 @@ pub struct ConfigFileEntry {
 }
 
 // configfileregistry.go:88
-pub fn new_config_file_entry(
+pub(crate) fn new_config_file_entry(
     has_relative_pattern_capability: bool,
     file_name: &str,
 ) -> ConfigFileEntry {
@@ -109,7 +109,7 @@ pub fn new_config_file_entry(
 }
 
 // configfileregistry.go:101
-pub fn new_extended_config_file_entry(
+pub(crate) fn new_extended_config_file_entry(
     file_name: &str,
     extending_config_path: Path,
 ) -> ConfigFileEntry {
@@ -155,7 +155,7 @@ impl ConfigFileRegistry {
     }
 
     // configfileregistry.go:135
-    pub fn get_config_file_name(&self, path: &Path) -> String {
+    pub(crate) fn get_config_file_name(&self, path: &Path) -> String {
         match self.config_file_names.get(path) {
             Some(entry) => entry.nearest_config_file_name.clone(),
             None => String::new(),
@@ -163,7 +163,11 @@ impl ConfigFileRegistry {
     }
 
     // configfileregistry.go:142
-    pub fn get_ancestor_config_file_name(&self, path: &Path, higher_than_config: &str) -> String {
+    pub(crate) fn get_ancestor_config_file_name(
+        &self,
+        path: &Path,
+        higher_than_config: &str,
+    ) -> String {
         match self.config_file_names.get(path) {
             Some(entry) => entry
                 .ancestors
@@ -218,9 +222,6 @@ impl ConfigFileRegistry {
 
     // configfileregistry.go:182
     // For testing
-    pub fn get_test_config_entry(&self, path: &Path) -> Option<TestConfigEntry> {
-        self.configs.get(path).map(|entry| test_config_entry(entry))
-    }
 
     // configfileregistry.go:202
     // For testing
@@ -245,15 +246,6 @@ impl ConfigFileRegistry {
 
     // configfileregistry.go:214
     // For testing
-    pub fn get_test_config_file_names_entry(
-        &self,
-        path: &Path,
-    ) -> Option<TestConfigFileNamesEntry> {
-        self.config_file_names.get(path).map(|entry| TestConfigFileNamesEntry {
-            nearest_config_file_name: entry.nearest_config_file_name.clone(),
-            ancestors: entry.ancestors.clone(),
-        })
-    }
 }
 
 pub struct TestConfigFileNamesEntry {

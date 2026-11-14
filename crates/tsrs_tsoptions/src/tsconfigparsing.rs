@@ -1,6 +1,6 @@
 use std::fmt::Display;
 use std::fmt::Write as _;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use tsrs_ast::{
@@ -52,7 +52,7 @@ struct ExtendsResult {
     extended_source_files: FxHashSet<String>,
 }
 
-pub static COMPILER_OPTIONS_DECLARATION: LazyLock<CommandLineOption> =
+static COMPILER_OPTIONS_DECLARATION: LazyLock<CommandLineOption> =
     LazyLock::new(|| CommandLineOption {
         name: "compilerOptions",
         kind: CommandLineOptionKind::Object,
@@ -60,7 +60,7 @@ pub static COMPILER_OPTIONS_DECLARATION: LazyLock<CommandLineOption> =
         ..CommandLineOption::DEFAULT
     });
 
-pub static COMPILE_ON_SAVE_COMMAND_LINE_OPTION: CommandLineOption = CommandLineOption {
+static COMPILE_ON_SAVE_COMMAND_LINE_OPTION: CommandLineOption = CommandLineOption {
     name: "compileOnSave",
     kind: CommandLineOptionKind::Boolean,
     default_value_description: crate::commandlineoption::DefaultValueDescription::Bool(false),
@@ -73,7 +73,7 @@ static EXTENDS_OPTION_DECLARATION_ELEMENT: CommandLineOption = CommandLineOption
     ..CommandLineOption::DEFAULT
 };
 
-pub static EXTENDS_OPTION_DECLARATION: LazyLock<CommandLineOption> =
+static EXTENDS_OPTION_DECLARATION: LazyLock<CommandLineOption> =
     LazyLock::new(|| CommandLineOption {
         name: "extends",
         kind: CommandLineOptionKind::ListOrElement,
@@ -116,7 +116,7 @@ static TSCONFIG_ROOT_OPTIONS_MAP_ITEMS: [CommandLineOption; 5] = [
     },
 ];
 
-pub static TSCONFIG_ROOT_OPTIONS_MAP: LazyLock<CommandLineOption> =
+static TSCONFIG_ROOT_OPTIONS_MAP: LazyLock<CommandLineOption> =
     LazyLock::new(|| CommandLineOption {
         name: "undefined", // should never be needed since this is root
         kind: CommandLineOptionKind::Object,
@@ -137,14 +137,14 @@ pub static TSCONFIG_ROOT_OPTIONS_MAP: LazyLock<CommandLineOption> =
 #[derive(Clone, Debug, Default)]
 pub struct ConfigFileSpecs {
     // Present to report errors (user specified specs), validatedIncludeSpecs are used for file name matching
-    pub(crate) include_specs: Option<Vec<CompilerOptionsValue>>,
+    include_specs: Option<Vec<CompilerOptionsValue>>,
     // Present to report errors (user specified specs), validatedExcludeSpecs are used for file name matching
-    pub(crate) exclude_specs: Option<Vec<CompilerOptionsValue>>,
-    pub(crate) validated_files_spec: Vec<String>,
+    exclude_specs: Option<Vec<CompilerOptionsValue>>,
+    validated_files_spec: Vec<String>,
     pub(crate) validated_include_specs: Vec<String>,
     pub(crate) validated_exclude_specs: Vec<String>,
-    pub(crate) validated_files_spec_before_substitution: Vec<String>,
-    pub(crate) validated_include_specs_before_substitution: Vec<String>,
+    validated_files_spec_before_substitution: Vec<String>,
+    validated_include_specs_before_substitution: Vec<String>,
     pub(crate) is_default_include_spec: bool,
 }
 
@@ -223,15 +223,15 @@ pub trait ExtendedConfigCache: Sync {
 }
 
 pub struct ExtendedConfigCacheEntry {
-    pub(crate) extended_result: Option<P<TsConfigSourceFile>>,
-    pub(crate) extended_config: Option<ParsedTsconfig>,
-    pub(crate) errors: Vec<P<Diagnostic>>,
+    extended_result: Option<P<TsConfigSourceFile>>,
+    extended_config: Option<ParsedTsconfig>,
+    errors: Vec<P<Diagnostic>>,
 }
 
 impl ExtendedConfigCacheEntry {
     pub fn extended_file_names(&self) -> Vec<String> {
         if let Some(extended_result) = self.extended_result {
-            return extended_result.extended_source_files.borrow().clone();
+            return extended_result.extended_source_files.lock().unwrap().clone();
         }
         Vec::new()
     }
@@ -239,11 +239,11 @@ impl ExtendedConfigCacheEntry {
 
 #[derive(Clone, Debug)]
 pub struct ParsedTsconfig {
-    pub(crate) raw: CompilerOptionsValue,
-    pub(crate) options: Option<CompilerOptions>,
-    pub(crate) type_acquisition: Option<TypeAcquisition>,
+    raw: CompilerOptionsValue,
+    options: Option<CompilerOptions>,
+    type_acquisition: Option<TypeAcquisition>,
     // Note that the case of the config path has not yet been normalized, as no files have been imported into the project yet
-    pub(crate) extended_config_path: Option<Vec<String>>,
+    extended_config_path: Option<Vec<String>>,
 }
 
 fn parse_own_config_of_json_source_file(
@@ -394,18 +394,19 @@ fn initializer_of(property_assignment: P<Node>) -> P<Node> {
     property_assignment.initializer().unwrap()
 }
 
-// Filled while the config is parsed; read-only (and read by checker threads) afterwards.
+// Filled while the config is parsed (and again when it is parsed again); read-only (and read by checker threads)
+// afterwards. The two filled-in fields are `Mutex`es: config parsing is a cold path.
 pub struct TsConfigSourceFile {
-    pub extended_source_files: tsrs_core::FrozenCell<Vec<String>>,
-    pub(crate) config_file_specs: tsrs_core::FrozenCell<Option<ConfigFileSpecs>>,
+    pub extended_source_files: std::sync::Mutex<Vec<String>>,
+    pub(crate) config_file_specs: std::sync::Mutex<Option<ConfigFileSpecs>>,
     pub source_file: P<SourceFile>,
 }
 
 impl TsConfigSourceFile {
     pub fn new(source_file: P<SourceFile>) -> P<TsConfigSourceFile> {
         P::new(TsConfigSourceFile {
-            extended_source_files: tsrs_core::FrozenCell::new(Vec::new()),
-            config_file_specs: tsrs_core::FrozenCell::new(None),
+            extended_source_files: std::sync::Mutex::new(Vec::new()),
+            config_file_specs: std::sync::Mutex::new(None),
             source_file,
         })
     }
@@ -415,7 +416,7 @@ impl TsConfigSourceFile {
     clippy::single_option_map,
     reason = "named Go conversion helper used at the tsconfig/source-file boundary"
 )]
-pub fn tsconfig_to_source_file(
+fn tsconfig_to_source_file(
     tsconfig_source_file: Option<P<TsConfigSourceFile>>,
 ) -> Option<P<SourceFile>> {
     tsconfig_source_file.map(|f| f.source_file)
@@ -438,7 +439,7 @@ pub fn new_tsconfig_source_file_from_file_path(
     TsConfigSourceFile::new(source_file)
 }
 
-pub struct JsonConversionNotifier<'a> {
+struct JsonConversionNotifier<'a> {
     root_options: &'static CommandLineOption,
     on_property_set: &'a mut dyn FnMut(
         &str,
@@ -449,7 +450,7 @@ pub struct JsonConversionNotifier<'a> {
     ) -> (CompilerOptionsValue, Vec<P<Diagnostic>>),
 }
 
-pub fn convert_config_file_to_object(
+fn convert_config_file_to_object(
     source_file: P<SourceFile>,
     json_conversion_notifier: Option<&mut JsonConversionNotifier>,
 ) -> (CompilerOptionsValue, Vec<P<Diagnostic>>) {
@@ -491,7 +492,7 @@ pub fn convert_config_file_to_object(
     convert_to_json(source_file, root_expression, true, json_conversion_notifier)
 }
 
-pub fn is_compiler_options_value(
+fn is_compiler_options_value(
     option: Option<&CommandLineOption>,
     value: &CompilerOptionsValue,
 ) -> bool {
@@ -527,7 +528,7 @@ pub fn is_compiler_options_value(
     false
 }
 
-pub fn validate_json_option_value(
+pub(crate) fn validate_json_option_value(
     opt: &CommandLineOption,
     val: CompilerOptionsValue,
     value_expression: Option<P<Node>>,
@@ -604,7 +605,7 @@ fn convert_json_option_of_list_type(
 
 const CONFIG_DIR_TEMPLATE: &str = "${configDir}";
 
-pub fn starts_with_config_dir_template(value: &str) -> bool {
+fn starts_with_config_dir_template(value: &str) -> bool {
     tsrs_core::stringutil::go_strings_to_lower(value)
         .starts_with(&tsrs_core::stringutil::go_strings_to_lower(CONFIG_DIR_TEMPLATE))
 }
@@ -629,11 +630,11 @@ fn normalize_non_list_option_value(
 
 // Match the path that the file system will receive after resolving it against
 // the config's base directory; normalization can add or remove an /??/ prefix.
-pub fn is_network_path_value(value: &str, base_path: &str) -> bool {
+pub(crate) fn is_network_path_value(value: &str, base_path: &str) -> bool {
     tspath::is_network_path(&tspath::get_normalized_absolute_path(value, base_path))
 }
 
-pub fn convert_json_option(
+fn convert_json_option(
     opt: &'static CommandLineOption,
     value: CompilerOptionsValue,
     base_path: &str,
@@ -893,7 +894,7 @@ fn get_extends_config_path(
 
 // Go `map[string]*CommandLineOption`.
 #[derive(Clone, Debug, Default)]
-pub struct CommandLineOptionNameMap(pub FxHashMap<&'static str, &'static CommandLineOption>);
+pub struct CommandLineOptionNameMap(pub(crate) FxHashMap<&'static str, &'static CommandLineOption>);
 
 impl CommandLineOptionNameMap {
     pub fn get(&self, name: &str) -> Option<&'static CommandLineOption> {
@@ -903,7 +904,7 @@ impl CommandLineOptionNameMap {
         }
     }
 
-    pub fn get_spelling_suggestion(&self, name: &str) -> Option<&'static CommandLineOption> {
+    pub(crate) fn get_spelling_suggestion(&self, name: &str) -> Option<&'static CommandLineOption> {
         tsrs_core::get_spelling_suggestion(
             name,
             self.0.values().copied(),
@@ -913,7 +914,7 @@ impl CommandLineOptionNameMap {
     }
 }
 
-pub fn command_line_options_to_map(
+pub(crate) fn command_line_options_to_map(
     compiler_options: &[&'static CommandLineOption],
 ) -> CommandLineOptionNameMap {
     let mut result =
@@ -929,7 +930,7 @@ pub fn command_line_options_to_map(
 pub static COMMAND_LINE_COMPILER_OPTIONS_MAP: LazyLock<CommandLineOptionNameMap> =
     LazyLock::new(|| command_line_options_to_map(&OPTIONS_DECLARATIONS));
 
-pub fn convert_map_to_options<O: OptionParser>(
+pub(crate) fn convert_map_to_options<O: OptionParser>(
     compiler_options: &OrderedMap<String, CompilerOptionsValue>,
     mut result: O,
 ) -> O {
@@ -1191,7 +1192,7 @@ fn convert_object_literal_expression_to_json(
 // convertToJson converts the json syntax tree into the json value and report errors
 // This returns the json value (apart from checking errors) only if returnValue provided is true.
 // Otherwise it just checks the errors and returns undefined
-pub fn convert_to_json(
+fn convert_to_json(
     source_file: P<SourceFile>,
     root_expression: Option<P<Node>>,
     return_value: bool,
@@ -1582,7 +1583,12 @@ fn get_extended_config(
     {
         result.extended_source_files.insert(extended_result.source_file.file_name().to_string());
         result.extended_source_files.extend(
-            extended_result.extended_source_files.borrow().iter().map(std::clone::Clone::clone),
+            extended_result
+                .extended_source_files
+                .lock()
+                .unwrap()
+                .iter()
+                .map(std::clone::Clone::clone),
         );
     }
     (cache_entry.get().extended_config.as_ref(), errors)
@@ -1739,7 +1745,7 @@ fn parse_config(
             );
         }
         if let Some(source_file) = source_file {
-            let mut extended_source_files = source_file.extended_source_files.borrow_mut();
+            let mut extended_source_files = source_file.extended_source_files.lock().unwrap();
             #[expect(
                 clippy::iter_over_hash_type,
                 reason = "each file is inserted at its sorted position"
@@ -2124,7 +2130,7 @@ fn parse_json_config_file_content_worker(
     };
 
     if let Some(source_file) = source_file {
-        *source_file.config_file_specs.borrow_mut() = Some(config_file_specs.clone());
+        *source_file.config_file_specs.lock().unwrap() = Some(config_file_specs.clone());
     }
 
     let content_mapper_source_file = source_file.map(|f| f.source_file);
@@ -2517,7 +2523,7 @@ fn create_diagnostic_for_spec(
     )
 }
 
-pub fn spec_to_diagnostic(
+fn spec_to_diagnostic(
     spec: &str,
     disallow_trailing_recursion: bool,
     base_path: &str,
@@ -2901,12 +2907,21 @@ fn handle_option_config_dir_template_substitution(
     // !!! don't hardcode this; use options declarations?
 
     if let Some(paths) = &mut compiler_options.paths {
-        for (_, v) in paths.iter_mut() {
+        // Go `handleOptionConfigDirTemplateSubstitution` clones the `paths` map only when at least one
+        // `${configDir}` substitution is required, so inherited maps stay shared otherwise.
+        let mut substitutions: Vec<(String, Option<Vec<String>>)> = Vec::new();
+        for (k, v) in paths.iter() {
             if let Some(substitution) = v
-                .as_deref()
+                .as_ref()
                 .and_then(|v| get_substituted_string_array_with_config_dir_template(v, base_path))
             {
-                *v = Some(substitution);
+                substitutions.push((k.clone(), Some(substitution)));
+            }
+        }
+        if !substitutions.is_empty() {
+            let paths = Arc::make_mut(paths);
+            for (k, substitution) in substitutions {
+                paths.insert(k, substitution);
             }
         }
     }
@@ -3041,7 +3056,7 @@ fn remove_wildcard_files_with_lower_priority_extension(
 // options is the Compiler options.
 // host is the host used to resolve files and directories.
 // extraExtensions are additional file extensions (e.g. from content mappers) to treat as supported.
-pub fn get_file_names_from_config_specs(
+pub(crate) fn get_file_names_from_config_specs(
     config_file_specs: &ConfigFileSpecs,
     base_path: &str, // considering this is the current directory
     options: Option<&CompilerOptions>,
@@ -3382,7 +3397,7 @@ fn write_json(out: &mut String, value: &CompilerOptionsValue) {
 
 // Go `locale.Parse` (golang.org/x/text/language.Parse) reports whether the string is a BCP 47 language
 // tag. This checks BCP 47 well-formedness (language, script, region, variants, extensions, private use).
-pub fn locale_parse(locale_str: &str) -> bool {
+fn locale_parse(locale_str: &str) -> bool {
     let subtags: Vec<&str> = locale_str.split(['-', '_']).collect();
     let is_alpha = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphabetic());
     let is_digit = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());

@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tsrs_ast::{
     self as ast, CommentDirectiveKind, Diagnostic, DiagnosticExt, FileReference, Kind, Node,
-    SourceFile, SourceFileMetaData, compare_diagnostics, equal_diagnostics,
+    NodeFactory, SourceFile, SourceFileMetaData, compare_diagnostics, equal_diagnostics,
     equal_diagnostics_no_related_info, new_compiler_diagnostic, new_diagnostic,
 };
 use tsrs_core::tspath::{self, ComparePathsOptions, Path};
@@ -28,7 +28,7 @@ use crate::file_include::{self, FileIncludeReason};
 use crate::fileloader::str_slice;
 use crate::fileloader::{
     DuplicateSourceFile, LibFile, ProcessedFiles, get_default_resolution_mode_for_file,
-    get_emit_syntax_for_usage_location_worker, get_mode_for_usage_location,
+    get_emit_syntax_for_usage_location_worker, get_mode_for_usage_location, new_synthetic_import,
     process_all_program_files,
 };
 use crate::host::CompilerHost;
@@ -48,15 +48,15 @@ pub type CreateCheckerPool = Arc<dyn Fn(&'static Program) -> Box<dyn CheckerPool
 
 // Go `ProgramOptions` (= ProgramConfig + ProgramHosts + ProgramFactories, flattened; tracing is not ported).
 pub struct ProgramOptions {
-    pub config: P<ParsedCommandLine>,
+    pub(crate) config: P<ParsedCommandLine>,
     pub use_source_of_project_reference: bool,
     pub single_threaded: Tristate,
     pub typings_location: String,
-    pub project_name: String,
+    pub(crate) project_name: String,
     // SkipModuleResolution avoids all module and type reference resolution while
     // still collecting import metadata needed for emit.
     pub skip_module_resolution: bool,
-    pub host: Arc<dyn CompilerHost>,
+    pub(crate) host: Arc<dyn CompilerHost>,
     pub create_checker_pool: Option<CreateCheckerPool>,
     pub create_module_resolver: Option<CreateModuleResolver>,
     /// tsrs-only: whether the type-check pass frees the tree of each leaf file once it is checked (fileregions.rs;
@@ -80,10 +80,8 @@ pub struct ProgramOptions {
     /// tsrs-only: what the file loader allocates goes to these regions (programregions.rs), which the caller frees
     /// once nothing uses the program's processed-file and resolution data (watch mode, `tsc -b`).
     pub regions: Option<std::sync::Arc<crate::programregions::ProgramRegions>>,
-    /// tsrs-only: `reuse_program` may keep the file loader's synthetic imports (JSX runtime, import helpers) of the
-    /// edited file. Their parent is this program's version of the file, so the caller must keep it alive while any
-    /// program reused from this one lives (watch mode keeps the full build's files). The language server frees it
-    /// with this program, so it leaves this off and gets Go's full rebuild.
+    /// tsrs-only: `reuse_program` may replace a file that has synthetic imports (JSX runtime, import helpers) when
+    /// its new version needs the same ones. Off, an edit of such a file is Go's full rebuild.
     pub reuse_synthetic_imports: bool,
 }
 
@@ -110,7 +108,7 @@ impl ProgramOptions {
     }
 
     // Go `ProgramOptions{ProgramConfig: config, Host: host, CreateCheckerPool: ..., CreateModuleResolver: ...}`.
-    pub fn from_config(
+    fn from_config(
         config: ProgramConfig,
         host: Arc<dyn CompilerHost>,
         create_checker_pool: Option<CreateCheckerPool>,
@@ -131,7 +129,7 @@ impl ProgramOptions {
             canonical_diagnostics: true,
             checker_regions: false,
             checker_diagnostic_regions: false,
-            regions: None,
+            regions: config.regions.map(|_| Arc::default()),
             reuse_synthetic_imports: false,
         }
     }
@@ -151,13 +149,13 @@ impl ProgramOptions {
 
 #[derive(Clone)]
 pub struct ProgramConfig {
-    pub config: P<ParsedCommandLine>,
-    pub use_source_of_project_reference: bool,
-    pub single_threaded: Tristate,
-    pub typings_location: String,
-    pub project_name: String,
-    pub skip_module_resolution: bool,
-    pub regions: Option<std::sync::Arc<crate::programregions::ProgramRegions>>,
+    pub(crate) config: P<ParsedCommandLine>,
+    use_source_of_project_reference: bool,
+    single_threaded: Tristate,
+    typings_location: String,
+    project_name: String,
+    pub(crate) skip_module_resolution: bool,
+    pub(crate) regions: Option<std::sync::Arc<crate::programregions::ProgramRegions>>,
 }
 
 impl ProgramConfig {
@@ -196,7 +194,7 @@ pub struct Program {
     pub(crate) opts: ProgramConfig,
     host: Arc<dyn CompilerHost>,
     resolution_host: &'static dyn ResolutionHost,
-    pub(crate) resolution_data: P<module::ResolutionData>,
+    pub resolution_data: P<module::ResolutionData>,
     // Always set once the program is constructed (see `init_checker_pool`).
     checker_pool: OnceLock<ProgramCheckerPool>,
     pub(crate) include_processor: IncludeProcessor,
@@ -247,7 +245,7 @@ pub struct Program {
     pub(crate) tsgo_check_slots: OnceLock<FxHashMap<P<SourceFile>, (u32, u32)>>,
     // tsrs-only: the import graph those slots are computed from (`checkerpool::get_import_adjacency`), which a program
     // made by `reuse_program` takes over: it has the same files at the same indices with the same imports.
-    pub(crate) tsgo_import_adjacency: OnceLock<Arc<[Vec<usize>]>>,
+    pub tsgo_import_adjacency: OnceLock<Arc<[Vec<usize>]>>,
     // tsrs-only: `ProgramOptions::checker_recycling`.
     pub(crate) checker_recycling: bool,
     canonical_diagnostics: bool,
@@ -257,6 +255,9 @@ pub struct Program {
     pub(crate) checker_diagnostic_regions: bool,
     // tsrs-only: `ProgramOptions::reuse_synthetic_imports`.
     reuse_synthetic_imports: bool,
+    // tsrs-only: the file loader's synthetic imports of the files `reuse_program` replaced since the full build
+    // (parented to the full build's versions), to the ones made for this program's versions.
+    replaced_synthetic_imports: FxHashMap<P<Node>, P<Node>>,
     // tsrs-only: the address of the program `reuse_program` made this one from, 0 for a program built in full
     // (`is_reuse_of`). An address, not a reference: the watch frees that program once this one has replaced it.
     reused_from: usize,
@@ -280,7 +281,7 @@ impl Program {
             && self.compiler_checker_pool().is_some()
     }
 
-    pub fn file_exists(&self, path: &str) -> bool {
+    pub(crate) fn file_exists(&self, path: &str) -> bool {
         self.host.fs().file_exists(path)
     }
 
@@ -325,14 +326,14 @@ impl Program {
 
     // GetRedirectTargets returns the list of file paths that redirect to the given path.
     // These are files from the same package (same name@version) installed in different locations.
-    pub fn get_redirect_targets(&self, path: &Path) -> &[String] {
+    pub(crate) fn get_redirect_targets(&self, path: &Path) -> &[String] {
         self.redirect_targets_map.get(path).map_or(&[] as &[String], std::vec::Vec::as_slice)
     }
 
     // gets the original file that was included in program
     // this returns original source file name when including output of project reference
     // otherwise same name
-    pub fn get_source_of_project_reference_if_output_included(
+    pub(crate) fn get_source_of_project_reference_if_output_included(
         &self,
         file_name: &str,
         path: &Path,
@@ -344,7 +345,7 @@ impl Program {
     }
 
     // program.go:209
-    pub fn get_project_reference_from_source(
+    pub(crate) fn get_project_reference_from_source(
         &self,
         path: &Path,
     ) -> Option<P<SourceOutputAndProjectReference>> {
@@ -357,23 +358,18 @@ impl Program {
     }
 
     // program.go:218
-    pub fn get_project_reference_from_output_dts(
+    pub(crate) fn get_project_reference_from_output_dts(
         &self,
         path: &Path,
     ) -> Option<P<SourceOutputAndProjectReference>> {
         self.project_reference_file_mapper.get_project_reference_from_output_dts(path)
     }
 
-    // program.go:222
-    pub fn get_resolved_project_reference_for(
-        &self,
-        path: &Path,
-    ) -> (Option<P<ParsedCommandLine>>, bool) {
-        self.project_reference_file_mapper.get_resolved_reference_for(path)
-    }
-
     // program.go:226
-    pub fn get_redirect_for_resolution(&self, file: P<SourceFile>) -> Option<P<ParsedCommandLine>> {
+    pub(crate) fn get_redirect_for_resolution(
+        &self,
+        file: P<SourceFile>,
+    ) -> Option<P<ParsedCommandLine>> {
         self.project_reference_file_mapper
             .get_redirect_parsed_command_line_for_resolution(file.file_name(), file.path())
     }
@@ -572,6 +568,7 @@ pub fn new_program(opts: ProgramOptions) -> &'static Program {
         checker_regions: opts.checker_regions,
         checker_diagnostic_regions: opts.checker_diagnostic_regions,
         reuse_synthetic_imports: opts.reuse_synthetic_imports,
+        replaced_synthetic_imports: FxHashMap::default(),
         reused_from: 0,
         own_region: None,
     };
@@ -710,6 +707,7 @@ impl Program {
                 create_module_resolver,
             );
             opts.canonical_diagnostics = self.canonical_diagnostics;
+            opts.reuse_synthetic_imports = self.reuse_synthetic_imports;
             (new_program(opts), new_file, false)
         }
     }
@@ -800,6 +798,17 @@ impl Program {
             let _scope = own_region.as_ref().map(tsrs_core::arena::Region::enter);
             self.resolution_data.clone_data()
         };
+        let mut replaced_synthetic_imports = self.replaced_synthetic_imports.clone();
+        for &file in std::iter::once(&new_file_some).chain(&new_supplemental_files) {
+            // In the file's memory: the nodes live as long as their parent.
+            let _owner = tsrs_core::arena::enter_owner(file.addr());
+            let helpers = self.import_helpers_import_specifiers.get(file.path()).copied();
+            let jsx = self.jsx_runtime_import_specifiers.get(file.path()).map(|jsx| jsx.specifier);
+            for import in helpers.into_iter().chain(jsx) {
+                let own = new_synthetic_import(&NodeFactory::default(), import.text(), file);
+                replaced_synthetic_imports.insert(import, own);
+            }
+        }
         let mut result = Program {
             opts: self.opts.clone(),
             resolution_host: crate::projectreferencefilemapper::resolution_host_for(Arc::clone(
@@ -839,6 +848,7 @@ impl Program {
             checker_regions: self.checker_regions,
             checker_diagnostic_regions: self.checker_diagnostic_regions,
             reuse_synthetic_imports: self.reuse_synthetic_imports,
+            replaced_synthetic_imports,
             reused_from: std::ptr::from_ref(self) as usize,
             own_region,
         };
@@ -875,6 +885,11 @@ impl Program {
         self.reused_from == std::ptr::from_ref(other) as usize
     }
 
+    // This program's node for the file loader's synthetic import `import`.
+    fn synthetic_import(&self, import: P<Node>) -> P<Node> {
+        self.replaced_synthetic_imports.get(&import).copied().unwrap_or(import)
+    }
+
     // program.go:443
     // `previous`: the pool of the program this one reuses (`reuse_program`), whose file assignment it may take over.
     fn init_checker_pool(
@@ -896,7 +911,7 @@ impl Program {
 
     // program.go:458
     // GetCheckerPool returns the checker pool associated with this program.
-    pub fn get_checker_pool(&self) -> &dyn CheckerPool {
+    fn get_checker_pool(&self) -> &dyn CheckerPool {
         match self.checker_pool.get().unwrap() {
             ProgramCheckerPool::Compiler(pool) => pool,
             ProgramCheckerPool::External(pool) => &**pool,
@@ -904,7 +919,7 @@ impl Program {
     }
 
     // Go `p.compilerCheckerPool` (nil when the program was created with `CreateCheckerPool`).
-    pub(crate) fn compiler_checker_pool(&self) -> Option<&CheckerPoolImpl> {
+    pub fn compiler_checker_pool(&self) -> Option<&CheckerPoolImpl> {
         match self.checker_pool.get() {
             Some(ProgramCheckerPool::Compiler(pool)) => Some(pool),
             _ => None,
@@ -912,7 +927,7 @@ impl Program {
     }
 
     // The built-in pool, for the CLI's statistics; panics on a program with an external pool.
-    pub(crate) fn pool(&self) -> &CheckerPoolImpl {
+    pub fn pool(&self) -> &CheckerPoolImpl {
         self.compiler_checker_pool().expect("program uses an external checker pool")
     }
 
@@ -965,10 +980,9 @@ impl Program {
     // resolution (the clone keeps the file's), as it keeps the file's other imports. Go builds the program again
     // whenever either version has one (program.go:389), so every edit of a file with JSX (`react-jsx`) or under
     // `importHelpers` is a full build. tsrs-only, with `reuse_synthetic_imports`: they are kept when `new_file` needs
-    // the same ones. The synthetic nodes' parent stays the old version of the file, which only lends them its path,
-    // options and implied format, the same as the new version's (`can_replace_file_in_program` compares the parse
-    // options). The JSX runtime comes from the options and the file's pragmas; whether the file needs the helpers
-    // module, from the options and whether it is a module, which `can_replace_file_in_program` also compares.
+    // the same ones, and the new program gets nodes of its own for them (`replaced_synthetic_imports`). The JSX
+    // runtime comes from the options and the file's pragmas; whether the file needs the helpers module, from the
+    // options and whether it is a module, which `can_replace_file_in_program` also compares.
     fn can_keep_synthetic_imports(&self, old_file: P<SourceFile>, new_file: P<SourceFile>) -> bool {
         let old_helpers = self.import_helpers_import_specifiers.contains_key(old_file.path());
         let new_helpers = self.needs_import_helpers_import_specifier(new_file);
@@ -1048,24 +1062,8 @@ impl Program {
 
     // GetContentMapper returns the content mapper that produced the given source file, or nil if the
     // file was not produced by a content mapper.
-    // program.go:525
-    pub fn get_content_mapper(
-        &self,
-        file: P<SourceFile>,
-    ) -> Option<&'static tsrs_contentmapper::Mapper> {
-        if file.content_mapper().is_empty() {
-            return None;
-        }
-        let mapper = self.opts.config.get().get_content_mapper_for_file_name(file.file_name());
-        mapper.filter(|mapper| mapper.identity() == file.content_mapper())
-    }
 
-    // program.go:536
-    pub fn content_mapper_extensions(&self) -> Vec<String> {
-        self.opts.config.content_mapper_extensions()
-    }
-
-    pub fn content_mapper_extension_rewrites(&self) -> Vec<tspath::ExtensionRewrite> {
+    pub(crate) fn content_mapper_extension_rewrites(&self) -> Vec<tspath::ExtensionRewrite> {
         self.opts.config.content_mapper_extension_rewrites().to_vec()
     }
 
@@ -1130,17 +1128,13 @@ impl Program {
         unresolved_imports
     }
 
-    pub fn checker_count(&self) -> usize {
-        self.pool().checker_count()
-    }
-
     pub(crate) fn processing_diagnostics(
         &self,
     ) -> std::sync::MutexGuard<'_, Vec<ProcessingDiagnostic>> {
         self.processing_diagnostics.lock().unwrap()
     }
 
-    pub(crate) fn add_processing_diagnostic(&self, d: ProcessingDiagnostic) {
+    fn add_processing_diagnostic(&self, d: ProcessingDiagnostic) {
         self.processing_diagnostics.lock().unwrap().push(d);
     }
 
@@ -1159,11 +1153,17 @@ impl Program {
         let unbound: Vec<P<SourceFile>> =
             self.files.iter().copied().filter(|f| !f.is_bound()).collect();
         if self.single_threaded() {
+            let _regions = crate::programregions::enter(self.opts.regions.as_deref());
             // Go's single-threaded work group runs queued functions last-queued first, so files bind in reverse
             // program order. The order is observable: the binder assigns symbol ids (private names).
             unbound.into_iter().rev().for_each(crate::fileregions::bind);
         } else {
-            worker_pool().install(|| unbound.into_par_iter().for_each(crate::fileregions::bind));
+            worker_pool().install(|| {
+                unbound.into_par_iter().for_each(|file| {
+                    let _regions = crate::programregions::enter(self.opts.regions.as_deref());
+                    crate::fileregions::bind(file);
+                });
+            });
         }
     }
 
@@ -1181,13 +1181,6 @@ impl Program {
         if let Some(pool) = self.compiler_checker_pool() {
             pool.for_each_checker_parallel(cb);
         }
-    }
-
-    /// The index (as passed to `for_each_checker_parallel`) of the checker the pool assigned `file` to, i.e. the
-    /// checker `for_each_checker_group` runs it on. Creates the checkers on first use. None when the program has no
-    /// checker pool of its own or `file` is not one of its files.
-    pub fn checker_index_of_file(&self, file: P<SourceFile>) -> Option<usize> {
-        self.compiler_checker_pool()?.checker_index_of_file(file)
     }
 
     /// Runs `cb` for every file of `files` with the file's checker, one task per checker, each visiting its files in
@@ -1240,7 +1233,7 @@ impl Program {
         self.get_resolved_module_by_path(file.path(), module_reference, mode)
     }
 
-    pub(crate) fn get_resolved_module_by_path(
+    fn get_resolved_module_by_path(
         &self,
         path: &Path,
         module_reference: &str,
@@ -1275,7 +1268,7 @@ impl Program {
     }
 
     // GetPackagesMap returns a lazily-cached map of package names to whether they bundle types.
-    pub fn get_packages_map(&self) -> &FxHashMap<String, bool> {
+    pub(crate) fn get_packages_map(&self) -> &FxHashMap<String, bool> {
         self.packages_map.get_or_init(|| {
             let mut packages_map: FxHashMap<String, bool> = FxHashMap::default();
             #[expect(
@@ -2015,7 +2008,7 @@ impl Program {
 
         if let Some(paths) = &options.paths {
             let paths_base_path = options.get_paths_base_path(self.get_current_directory());
-            for (key, value) in paths {
+            for (key, value) in paths.iter() {
                 // !!! This code does not handle cases where where the path mappings have the wrong types,
                 // as that information is mostly lost during the parsing process.
                 if !has_zero_or_one_asterisk_character(key) {
@@ -2673,7 +2666,8 @@ impl Program {
     }
 
     // program.go:1488
-    fn get_semantic_diagnostics_with_checker(
+    /// Collects a file's semantic diagnostics using an exclusively borrowed checker for this program.
+    pub fn get_semantic_diagnostics_with_checker(
         &'static self,
         ctx: &Context,
         c: &mut Checker,
@@ -2893,11 +2887,6 @@ impl Program {
             .map_or(0, |pool| f(&pool.state().retired.lock().unwrap()) as usize)
     }
 
-    // program.go:1743
-    pub fn program(&self) -> &Program {
-        self
-    }
-
     /// Go returns the struct by value (sharing its strings); a reference here, so the hot callers (module mode
     /// lookups during checking) do not copy two strings.
     pub fn get_source_file_meta_data(&self, path: &Path) -> &SourceFileMetaData {
@@ -2916,7 +2905,7 @@ impl Program {
         )
     }
 
-    pub fn get_emit_syntax_for_usage_location(
+    pub(crate) fn get_emit_syntax_for_usage_location(
         &self,
         source_file: P<SourceFile>,
         location: P<Node>,
@@ -3080,7 +3069,7 @@ impl Program {
         all_files_belong_to_path
     }
 
-    pub fn to_path(&self, filename: &str) -> Path {
+    fn to_path(&self, filename: &str) -> Path {
         tspath::to_path(
             filename,
             self.get_current_directory(),
@@ -3093,7 +3082,10 @@ impl Program {
         self.get_source_file_by_path(&path)
     }
 
-    pub fn get_source_file_for_resolved_module(&self, file_name: &str) -> Option<P<SourceFile>> {
+    pub(crate) fn get_source_file_for_resolved_module(
+        &self,
+        file_name: &str,
+    ) -> Option<P<SourceFile>> {
         let file = self.get_source_file(file_name);
         if file.is_none() {
             let filename = self.get_parse_file_redirect(file_name);
@@ -3255,13 +3247,15 @@ impl Program {
 
     pub fn get_jsx_runtime_import_specifier(&self, path: &Path) -> (String, Option<P<Node>>) {
         match self.jsx_runtime_import_specifiers.get(path) {
-            Some(result) => (result.module_reference.clone(), Some(result.specifier)),
+            Some(result) => {
+                (result.module_reference.clone(), Some(self.synthetic_import(result.specifier)))
+            }
             None => (String::new(), None),
         }
     }
 
     pub fn get_import_helpers_import_specifier(&self, path: &Path) -> Option<P<Node>> {
-        self.import_helpers_import_specifiers.get(path).copied()
+        self.import_helpers_import_specifiers.get(path).map(|&s| self.synthetic_import(s))
     }
 
     pub fn source_file_may_be_emitted(
@@ -3480,7 +3474,7 @@ impl Program {
         })
     }
 
-    pub fn for_each_resolved_module(
+    fn for_each_resolved_module(
         &self,
         callback: &mut dyn FnMut(&ResolvedModule, &str, ResolutionMode, &Path),
         file: Option<P<SourceFile>>,
@@ -3494,7 +3488,7 @@ impl Program {
         );
     }
 
-    pub fn for_each_resolved_type_reference_directive(
+    fn for_each_resolved_type_reference_directive(
         &self,
         callback: &mut dyn FnMut(&ResolvedTypeReferenceDirective, &str, ResolutionMode, &Path),
         file: Option<P<SourceFile>>,

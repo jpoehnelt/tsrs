@@ -24,7 +24,10 @@ use crate::compilerhost::CompilerHostImpl;
 use crate::dirty::Cloneable;
 use crate::logging::LogTree;
 use crate::memregions::ProgramOwner;
-use crate::parsecache::{parse_cache_key_for_duplicate, parse_cache_key_for_file};
+use crate::parsecache::{
+    content_mapped_parse_cache_key_for_duplicate, content_mapped_parse_cache_key_for_file,
+    parse_cache_key_for_duplicate, parse_cache_key_for_file,
+};
 use crate::projectcollectionbuilder::ProjectCollectionBuilder;
 use crate::snapshot::{ModuleResolverFactory, ProjectTreeRequest};
 use crate::watch::{
@@ -33,22 +36,17 @@ use crate::watch::{
 };
 use tsrs_core::arena::Region;
 
-pub const INFERRED_PROJECT_NAME: &str = "/dev/null/inferred"; // lowercase so toPath is a no-op regardless of settings
+const INFERRED_PROJECT_NAME: &str = "/dev/null/inferred"; // lowercase so toPath is a no-op regardless of settings
 const SYNTHETIC_PROJECT_PREFIX: &str = "/dev/null/synthetic/";
-pub const HR: &str = "-----------------------------------------------";
+pub(crate) const HR: &str = "-----------------------------------------------";
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
 pub struct ID(pub String);
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
-pub struct ConfiguredProjectID(pub Path);
+pub struct ConfiguredProjectID(pub(crate) Path);
 
 impl ConfiguredProjectID {
-    // project.go:36
-    pub fn path(&self) -> Path {
-        self.0.clone()
-    }
-
     // project.go:54
     pub fn as_id(&self) -> ID {
         ID(self.0.to_string())
@@ -56,11 +54,11 @@ impl ConfiguredProjectID {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
-pub struct InferredProjectID(pub String);
+pub struct InferredProjectID(String);
 
-pub type ModuleResolverFactoryRef = Option<Arc<dyn ModuleResolverFactory>>;
+pub(crate) type ModuleResolverFactoryRef = Option<Arc<dyn ModuleResolverFactory>>;
 
-pub fn inferred_project_id() -> InferredProjectID {
+pub(crate) fn inferred_project_id() -> InferredProjectID {
     InferredProjectID(INFERRED_PROJECT_NAME.to_string())
 }
 
@@ -82,30 +80,26 @@ impl std::fmt::Display for ID {
 
 impl InferredProjectID {
     // project.go:55
-    pub fn as_id(&self) -> ID {
+    pub(crate) fn as_id(&self) -> ID {
         ID(self.0.clone())
     }
 }
 
 impl SyntheticProjectID {
     // project.go:56
-    pub fn as_id(&self) -> ID {
+    fn as_id(&self) -> ID {
         ID(self.0.clone())
     }
 }
 
 impl ID {
-    pub fn string(&self) -> String {
-        self.0.clone()
-    }
-
     // project.go:58
-    pub fn configured(&self) -> Option<ConfiguredProjectID> {
+    pub(crate) fn configured(&self) -> Option<ConfiguredProjectID> {
         parse_configured_project_id(&Path::new(self.0.clone()))
     }
 
     // project.go:76
-    pub fn inferred(&self) -> Option<InferredProjectID> {
+    pub(crate) fn inferred(&self) -> Option<InferredProjectID> {
         if self.0 == INFERRED_PROJECT_NAME { Some(inferred_project_id()) } else { None }
     }
 
@@ -146,7 +140,7 @@ pub enum Kind {
 
 impl Kind {
     // project_stringer_generated.go:19
-    pub fn string(self) -> &'static str {
+    pub(crate) fn string(self) -> &'static str {
         match self {
             Kind::Inferred => "Inferred",
             Kind::Configured => "Configured",
@@ -182,9 +176,9 @@ pub enum PendingReload {
 #[derive(Clone)]
 pub struct Project {
     pub kind: Kind,
-    pub(crate) id: ID,
+    id: ID,
     pub(crate) current_directory: String,
-    pub(crate) config_file_name: String,
+    config_file_name: String,
     pub(crate) config_file_path: Path,
 
     pub(crate) dirty: bool,
@@ -193,7 +187,7 @@ pub struct Project {
     pub(crate) host: Option<Arc<CompilerHostImpl>>,
     pub command_line: Option<P<ParsedCommandLine>>,
     // Go: `commandLineWithTypingsFiles` + `commandLineWithTypingsFilesOnce`.
-    pub(crate) command_line_with_typings_files: Arc<OnceLock<P<ParsedCommandLine>>>,
+    command_line_with_typings_files: Arc<OnceLock<P<ParsedCommandLine>>>,
     pub program: Option<&'static Program>,
     // The kind of update that was performed on the program last time it was updated.
     pub program_update_kind: ProgramUpdateKind,
@@ -201,14 +195,14 @@ pub struct Project {
     pub program_last_update: u64,
     // Set of projects that this project could be referencing.
     // Only set before actually loading config file to get actual project references
-    pub(crate) potential_project_references: Option<Arc<Set<Path>>>,
+    potential_project_references: Option<Arc<Set<Path>>>,
 
     pub(crate) program_files_watch: Option<Arc<WatchedFiles<Option<Arc<SyncMap<Path, String>>>>>>,
     pub(crate) typings_watch: Option<Arc<WatchedFiles<PatternsAndIgnored>>>,
     pub(crate) content_mapper_watch: Option<Arc<WatchedFiles<Vec<String>>>>,
     pub(crate) content_mapper_watched_files: Option<Arc<Set<Path>>>,
 
-    pub(crate) checker_pool: Option<Arc<CheckerPoolImpl>>,
+    pub checker_pool: Option<Arc<CheckerPoolImpl>>,
     // Memory regions (not in Go): owns the program and what is freed with it (memregions.rs).
     pub(crate) program_owner: Option<Arc<ProgramOwner>>,
 
@@ -223,7 +217,7 @@ pub struct Project {
 }
 
 // project.go:180
-pub fn new_configured_project(
+pub(crate) fn new_configured_project(
     config_file_name: &str,
     config_file_path: &Path,
     builder: &ProjectCollectionBuilder,
@@ -245,7 +239,7 @@ pub fn new_configured_project(
 }
 
 // project.go:196
-pub fn new_inferred_project(
+pub(crate) fn new_inferred_project(
     current_directory: &str,
     compiler_options: Option<P<CompilerOptions>>,
     root_file_names: Vec<String>,
@@ -293,7 +287,7 @@ pub fn new_inferred_project(
 }
 
 // project.go:234
-pub fn new_synthetic_project(
+pub(crate) fn new_synthetic_project(
     id: &SyntheticProjectID,
     current_directory: &str,
     compiler_options: P<CompilerOptions>,
@@ -322,7 +316,7 @@ pub fn new_synthetic_project(
 // project.go:258
 // `errors` is the `Errors` slice Go assigns on the returned command line right after creating it (Rust's
 // command line is immutable once allocated).
-pub fn new_inferred_project_command_line(
+pub(crate) fn new_inferred_project_command_line(
     compiler_options: P<CompilerOptions>,
     root_file_names: Vec<String>,
     project_references: Vec<ProjectReference>,
@@ -342,7 +336,7 @@ pub fn new_inferred_project_command_line(
 }
 
 // project.go:270
-pub fn new_project(
+fn new_project(
     id: ID,
     kind: Kind,
     current_directory: &str,
@@ -420,9 +414,9 @@ pub fn new_project(
 }
 
 // The result of `CreateProgram`.
-pub struct CreateProgramResult {
-    pub program: &'static Program,
-    pub update_kind: ProgramUpdateKind,
+pub(crate) struct CreateProgramResult {
+    pub(crate) program: &'static Program,
+    pub(crate) update_kind: ProgramUpdateKind,
     // Go reads the pool back with `program.GetCheckerPool().(*checkerPool)`; the program keeps the pool behind
     // `dyn CheckerPool`, so the factory hands the concrete pool out here.
     pub(crate) checker_pool: Option<Arc<CheckerPoolImpl>>,
@@ -446,7 +440,7 @@ impl Project {
     // relative to the given workspace root directory.
     // For configured projects, this is the config file path made relative.
     // For inferred projects, this is the last component of the current directory.
-    pub fn display_name(&self, cwd: &str) -> String {
+    pub(crate) fn display_name(&self, cwd: &str) -> String {
         if self.kind == Kind::Inferred {
             return tspath::get_base_file_name(&self.current_directory);
         }
@@ -468,6 +462,10 @@ impl Project {
         self.id.clone()
     }
 
+    pub(crate) fn id_ref(&self) -> &ID {
+        &self.id
+    }
+
     // project.go:338
     // ConfigFileName panics if Kind() is not KindConfigured.
     pub fn config_file_name(&self) -> &str {
@@ -477,13 +475,13 @@ impl Project {
 
     // project.go:346
     // ConfigFilePath panics if Kind() is not KindConfigured.
-    pub fn config_file_path(&self) -> &Path {
+    pub(crate) fn config_file_path(&self) -> &Path {
         assert!(self.kind == Kind::Configured, "ConfigFilePath called on non-configured project");
         &self.config_file_path
     }
 
     // project.go:353
-    pub fn id_string(&self) -> String {
+    fn id_string(&self) -> String {
         self.id.0.clone()
     }
 
@@ -514,7 +512,7 @@ impl Project {
     }
 
     // project.go:380
-    pub fn has_file(&self, file_name: &str) -> bool {
+    pub(crate) fn has_file(&self, file_name: &str) -> bool {
         self.contains_file(&self.to_path(file_name))
     }
 
@@ -524,7 +522,7 @@ impl Project {
     }
 
     // project.go:388
-    pub fn is_source_from_project_reference(&self, path: &Path) -> bool {
+    pub(crate) fn is_source_from_project_reference(&self, path: &Path) -> bool {
         self.program.is_some_and(|program| program.is_source_from_project_reference(path))
     }
 
@@ -536,7 +534,7 @@ impl Project {
     //     the augmented command line is rebuilt from the new command line on next access);
     //   - potentialProjectReferences, the pre-load placeholder derived from the old
     //     command line (always nil for inferred projects, which have no project references).
-    pub fn set_command_line(&mut self, command_line: Option<P<ParsedCommandLine>>) {
+    pub(crate) fn set_command_line(&mut self, command_line: Option<P<ParsedCommandLine>>) {
         self.command_line = command_line;
         self.command_line_with_typings_files = Arc::new(OnceLock::new());
         self.potential_project_references = None;
@@ -607,7 +605,7 @@ impl Project {
     }
 
     // project.go:499
-    pub fn create_program(&self) -> CreateProgramResult {
+    pub(crate) fn create_program(&self) -> CreateProgramResult {
         let host = self.host.clone().unwrap();
         let mut update_kind = ProgramUpdateKind::NewFiles;
         let mut program_cloned = false;
@@ -658,25 +656,51 @@ impl Project {
             new_program_result = program;
             program_cloned = cloned;
             let (parse_cache, journal) = host.builder_parse_cache_journal();
+            let content_mapped_parse_cache = host.builder_content_mapped_parse_cache();
             if program_cloned {
                 update_kind = ProgramUpdateKind::Cloned;
                 for &file in new_program_result.source_files() {
                     // Use pointer identity: dirtyFile is the exact instance UpdateProgram acquired,
                     // and it is the only file whose refcount is already accounted for.
-                    // (Content mappers are not ported: no file is a failure stub, supplemental or content-mapped.)
-                    if Some(file) != dirty_file {
+                    if Some(file) != dirty_file
+                        && !file.is_content_mapper_failure_stub()
+                        && !file.is_content_mapper_supplemental()
+                    {
                         // UpdateProgram acquired the changed file only, so we need to ref everything else
-                        journal.ref_(&parse_cache, parse_cache_key_for_file(file));
+                        if file.content_mapper().is_empty() {
+                            journal.ref_(&parse_cache, parse_cache_key_for_file(file));
+                        } else {
+                            journal.ref_content_mapped(
+                                &content_mapped_parse_cache,
+                                content_mapped_parse_cache_key_for_file(file),
+                            );
+                        }
                     }
                 }
                 for file in new_program_result.duplicate_source_files() {
-                    journal.ref_(&parse_cache, parse_cache_key_for_duplicate(file));
+                    if !file.is_content_mapper_failure_stub {
+                        if file.content_mapper.is_empty() {
+                            journal.ref_(&parse_cache, parse_cache_key_for_duplicate(file));
+                        } else {
+                            journal.ref_content_mapped(
+                                &content_mapped_parse_cache,
+                                content_mapped_parse_cache_key_for_duplicate(file),
+                            );
+                        }
+                    }
                 }
             } else if let Some(dirty_file) = dirty_file {
                 // UpdateProgram always acquires the dirty file before deciding whether it can
                 // reuse the old program. If it falls back to a full rebuild, release that
                 // speculative acquire so the rebuilt program is the only remaining owner.
-                journal.deref(&parse_cache, &parse_cache_key_for_file(dirty_file));
+                if dirty_file.content_mapper().is_empty() {
+                    journal.deref(&parse_cache, &parse_cache_key_for_file(dirty_file));
+                } else {
+                    journal.deref_content_mapped(
+                        &content_mapped_parse_cache,
+                        &content_mapped_parse_cache_key_for_file(dirty_file),
+                    );
+                }
             }
         } else {
             let mut typings_location = String::new();
@@ -688,6 +712,8 @@ impl Project {
             opts.typings_location = typings_location;
             opts.create_checker_pool = Some(create_checker_pool);
             opts.create_module_resolver = Some(create_module_resolver);
+            opts.regions = Some(Arc::default());
+            opts.reuse_synthetic_imports = true;
             new_program_result = new_program(opts);
         }
         let cleanup = cleanup_module_resolver.lock().unwrap().take();
@@ -744,7 +770,7 @@ impl Project {
     }
 
     // project.go:597
-    pub(crate) fn to_path(&self, file_name: &str) -> Path {
+    fn to_path(&self, file_name: &str) -> Path {
         tspath::to_path(
             file_name,
             &self.current_directory,
@@ -783,7 +809,7 @@ impl Project {
 
     // project.go:623
     // GetTypeAcquisition returns the type acquisition settings for this project.
-    pub fn get_type_acquisition(&self) -> Option<TypeAcquisition> {
+    fn get_type_acquisition(&self) -> Option<TypeAcquisition> {
         if self.kind == Kind::Inferred || self.kind == Kind::Synthetic {
             // For inferred and synthetic projects, use default settings.
             return Some(TypeAcquisition {
@@ -803,37 +829,16 @@ impl Project {
 
     // project.go:642
     // GetUnresolvedImports extracts unresolved imports from this project's program.
-    pub fn get_unresolved_imports(&self) -> Option<Arc<Set<String>>> {
+    fn get_unresolved_imports(&self) -> Option<Arc<Set<String>>> {
         let program = self.program?;
         Some(Arc::new(program.get_unresolved_imports().clone()))
     }
 
     // project.go:651
     // ShouldTriggerATA determines if ATA should be triggered for this project.
-    pub fn should_trigger_ata(&self, snapshot_id: u64) -> bool {
-        if self.program.is_none() || self.command_line.is_none() {
-            return false;
-        }
-
-        let type_acquisition = self.get_type_acquisition();
-        if !type_acquisition.as_ref().is_some_and(|ta| ta.enable.is_true()) {
-            return false;
-        }
-
-        let Some(installed_typings_info) = &self.installed_typings_info else {
-            return true;
-        };
-        if self.program_last_update == snapshot_id
-            && self.program_update_kind == ProgramUpdateKind::NewFiles
-        {
-            return true;
-        }
-
-        !installed_typings_info.equals(&self.compute_typings_info())
-    }
 
     // project.go:668
-    pub fn compute_typings_info(&self) -> ata::TypingsInfo {
+    pub(crate) fn compute_typings_info(&self) -> ata::TypingsInfo {
         ata::TypingsInfo {
             compiler_options: self.command_line.unwrap().compiler_options(),
             type_acquisition: self.get_type_acquisition(),

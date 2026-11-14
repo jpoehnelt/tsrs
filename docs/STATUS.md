@@ -5,6 +5,160 @@ change are identified separately from measurements of the packaged release. For 
 see the [compatibility table](COMPATIBILITY.md); detailed investigations are indexed in the
 [engineering notes](../notes/README.md). The early development log follows the release entries.
 
+## 0.25.0
+
+Package version `0.25.0-ts7.1.0-beta`; TypeScript stays at `7.1.0-beta` (`3e9236361fa9`).
+The [release notes](releases/0.25.0.md) cover Windows ARM64 packages (`@tsrs/win32-arm64`), concurrent tsconfig
+programs in headless lint, and two command-line fixes. The type checker is unchanged from 0.24.0.
+
+The [release dry run](https://github.com/oxc-project/tsrs/actions/runs/42937173948) at `181538bf` built eight native
+targets and WASM, assembled ten packages and skipped publication. Windows ARM64 trained on all 15,448 conformance
+variants with no failures, crashes or timeouts, merged its profile and passed the installed-package CLI/SDK smoke
+([notes](../notes/perf-pgo.md#2026-11-11-windows-arm64-release-dry-run-passes)). The GNU Linux conformance and
+Fourslash gates passed on the BOLT-optimized binaries, and the Node API smoke passed 25 of 25 steps on both GNU targets.
+
+## 0.24.0
+
+Package version `0.24.0-ts7.1.0-beta`; TypeScript stays at `7.1.0-beta` (`3e9236361fa9`).
+The [release notes](releases/0.24.0.md) cover language-server program reuse after edits in projects with synthetic
+imports, type checking before lint rules to preserve diagnostic locations, per-program loader cleanup,
+request-scoped caching of referenced tsconfigs and bound declaration files in the linter, the Unicode JSDoc
+indentation panic fix, and Rust dependency updates (#940, #944, #948, #949, #950, #951, #955). Shared declaration
+files can increase peak memory on some workloads; the individual changes' measurements are linked from the notes.
+Windows ARM64 remains deferred.
+
+Preparation checks on `37cd452c` with the version changes passed the dev CLI/runner build, all-target Clippy,
+source checks, release-version consistency, local documentation links, and CLI compilation smoke checks in default
+and fast modes. `Cargo.lock` changes only the 43 workspace package versions. These checks predate the inclusion
+of #948 and #955. Compiler conformance was not rerun because this worktree has no `ts-ref` checkout. Packaging
+is unchanged; no release dry run was performed for this version bump.
+
+## 0.23.0
+
+Package version `0.23.0-ts7.1.0-beta`; TypeScript stays at `7.1.0-beta` (`3e9236361fa9`).
+The [release notes](releases/0.23.0.md) cover whole-program type checking in both lint modes, loose-file checking,
+project-reference discovery, faster language-server requests, lint fixes and rebuild memory fixes. Windows x64
+stays supported; Windows ARM64 awaits npm setup and a passing native release dry run.
+
+[Oxlint's program tests](https://github.com/oxc-project/oxc/pull/28912) at `582b5756` exercised the lint changes
+on `28e42fc6b`: six snapshots gained errors from unlisted files in the same tsconfig. Default mode, fast mode and
+a repeat run matched. All 124 lint tests passed on the rebased `33db0ae496fa`.
+
+The [release dry run](https://github.com/oxc-project/tsrs/actions/runs/42287456170/attempts/2) at `87138a91` built
+seven native targets and WASM, assembled nine packages and skipped publication. Installed-package CLI/SDK smokes
+passed on GNU Linux, macOS and Windows x64; Node API smokes ran on GNU Linux and macOS. Musl checks ran `--version`;
+WASM passed 14 tests under Node. Linux x64 passed the unchanged Fourslash gate on one retry after a shutdown EOF
+whose cause remains unconfirmed.
+
+## 0.22.0
+
+The package version is `0.22.0-ts7.1.0-beta`, retaining TypeScript `7.1.0-beta` at `3e9236361fa9`.
+The [release notes](releases/0.22.0.md) lead with one run for type-aware lint and type checking: under the fast preset,
+`oxlint --type-aware --type-check` reports the same type errors as `tsrs --noEmit`, so it can replace a separate
+typecheck. They also cover content mappers in the language server, the Node API and the linter, fast-mode build info
+that keeps interface caches on incremental edits, and two fast-mode checker shortcuts
+([#854](https://github.com/oxc-project/tsrs/pull/854), [#875](https://github.com/oxc-project/tsrs/pull/875),
+[#883](https://github.com/oxc-project/tsrs/pull/883), [#885](https://github.com/oxc-project/tsrs/pull/885),
+[#897](https://github.com/oxc-project/tsrs/pull/897), [#900](https://github.com/oxc-project/tsrs/pull/900),
+[#902](https://github.com/oxc-project/tsrs/pull/902)).
+
+## 0.21.0
+
+The package version is `0.21.0-ts7.1.0-beta`, retaining TypeScript `7.1.0-beta` at `3e9236361fa9`.
+The [release notes](releases/0.21.0.md) cover the type-aware linter for Oxlint (`tsrs --lint` and the npm
+`tsrs-lint` command, with lint in PGO training), lint on the program's checker pool, request-scoped lint file
+reads, `TSRS_LIB_PATH` in the linter, checker allocation and key-property changes, and the language-server session fix
+([#624](https://github.com/oxc-project/tsrs/pull/624), [#829](https://github.com/oxc-project/tsrs/pull/829),
+[#833](https://github.com/oxc-project/tsrs/pull/833), [#837](https://github.com/oxc-project/tsrs/pull/837),
+[#848](https://github.com/oxc-project/tsrs/pull/848), [#857](https://github.com/oxc-project/tsrs/pull/857),
+[#859](https://github.com/oxc-project/tsrs/pull/859), [#862](https://github.com/oxc-project/tsrs/pull/862),
+[#874](https://github.com/oxc-project/tsrs/pull/874)).
+
+## 0.20.1
+
+The package version is `0.20.1-ts7.1.0-beta`, retaining TypeScript `7.1.0-beta` at `3e9236361fa9`.
+The [release notes](releases/0.20.1.md) cover the `NoInfer` checker revert, unsigned WebAssembly host pointers,
+Windows SDK discovery and content-mapper command lookup, blocking npm launcher streams, collection storage
+changes, checker-thread reuse, shared build modification-time caches, inline reads of small include trees and
+fewer temporary printer allocations (#800, #804, #808, #812, #814, #815, #816, #822, #826, #828, #831).
+
+The release workflow publishes all nine npm packages with the `latest` tag, marks the GitHub release as latest
+and then deploys the playground (#801). Individual optimization measurements are linked from the release notes;
+the earlier conformance results below remain attributed to the revisions where they were recorded.
+
+Local preparation validation passes the dev CLI/runner build, Clippy across all targets, source and script
+checks, release-version consistency, and CLI compilation smoke checks in default and fast modes. `Cargo.lock`
+changes only the 42 workspace package versions. Compiler conformance was not rerun because the local reference
+checkout did not match the pinned commit; packaged-release validation remains with the release workflow.
+
+## 0.20.0 beta
+
+The beta package version is `0.20.0-ts7.1.0-beta`, targeting TypeScript `7.1.0-beta` at `3e9236361fa9`.
+The [release notes](releases/0.20.0.md) cover installation, TypeScript-compatible defaults, the opt-in fast preset,
+API changes, platform support and known gaps. The release workflow publishes nine npm packages with the `latest`
+tag, creates a GitHub prerelease and then deploys the playground; npm's `beta` tag is assigned manually.
+
+The October 26 preparation advances the Cargo workspace and npm package versions to 0.20.0. Since the
+October 25 refresh, changes include full-width flow-memo keys on Windows, checker and front-end allocation
+improvements, Vite+ tooling, debug assertions in the CI profile, and Windows packaging and Fourslash PGO fixes
+(#774, #775, #776, #778, #785, #786, #790, #791, #794, #796, #798). The [release notes](releases/0.20.0.md) link the
+individual measurements. The dated entries below preserve validation results and release-preparation state
+at their recorded revisions.
+
+## 2026-10-25: 0.19.0 beta refresh
+
+The release candidate remains `0.19.0-ts7.1.0-beta`, rebased onto main `b938b0a2`. All nine npm packages are
+prepared for `latest`, with a GitHub prerelease and manual npm `beta` tagging. The playground deploys after
+publication. The TypeScript pin remains `3e9236361fa9`; 0.18.0 remains the published release until this candidate ships.
+
+The candidate includes TypeScript-compatible checker defaults and the opt-in `--fast` / `TSRS_FAST=1` preset
+described below. Lazy declaration parsing now requires the preset or `TSRS_LAZY_DTS=1`, with `skipLibCheck` or
+`noCheck`; watch and API sessions remain eager. Build diagnostics keep the source text needed for error summaries
+after program regions are freed. Signature links, inherited path mappings, copy-on-write maps, lazy-member tables
+and mapped string names include the latest storage changes, and diagnostic formatting preserves output order
+while running in parallel. Ad hoc diagnostic messages use arena storage instead of leaked allocations (#779).
+The [release notes](releases/0.19.0.md) link individual performance measurements.
+
+Earlier candidate features remain: LSP API sessions over projects and unsaved editor files, mapper-contribution
+validation, the Cloudflare Workers WASM host fix, UTF-8 parent-path normalization, the macOS/Linux project-local
+VS Code SDK launcher, and Intel macOS and Windows x64 packages. Language-server mapper execution remains unported.
+The CLI returns through the C runtime so Windows PGO training can write profiles; failed Fourslash groups print
+diagnostics in job logs. CI and release BOLT use the shared conformance gate in both modes with a scheduling sweep,
+and CI adds ThreadSanitizer coverage for checking, emit, incremental builds, watch and LSP edits.
+
+Local dev-profile validation on the candidate based on `fb6aeb54` passes all 1,246 workspace tests (four existing
+tests are ignored), including all 16 macOS watch cases, all 50 regression fixtures, and 4,092 Go Fourslash groups
+with 470 skipped and no failures. Every compiler baseline matches in both modes after one isolated retry:
+`intersectionConstructorReductionCrash` hit the 300-second limit during concurrent validation and passed alone
+in 266 seconds with a 900-second limit. All 36 scheduling runs at four and eight checkers pass.
+
+After the final rebase onto `b938b0a2`, diagnostic and test-runner unit checks, six focused diagnostic/emit
+conformance runs across both modes and checker assignments, and dev/noembed builds pass. The final packed macOS
+arm64 consumer passes all 25 CLI/Node API steps with disk libraries and no embedded copies. Clippy, source/script
+checks, SDK freshness, and release-version consistency pass. Native Windows PGO training and Linux PGO/BOLT gates
+still require a successful release-workflow run.
+
+## 2026-10-25: TypeScript defaults and opt-in fast mode (unreleased)
+
+Ordinary compilation now uses the pinned TypeScript defaults: four checkers, Go's file assignment and checker
+history, and eager members. `--fast` or `TSRS_FAST=1` opts into adaptive checker counts, locality scheduling with
+work stealing, canonical history and caches, lazy members, and eligible memory-saving modes. Explicit feature
+flags override the preset; an explicit `--fast` value overrides `TSRS_FAST`. It works in response files, watch and
+build mode; build mode keeps four checkers per project. Switching history or lazy-member settings rejects
+incompatible persisted diagnostics in either direction.
+
+Fast mode can change diagnostics and exit status in known history/depth-limit cases, use more memory with more
+checkers, and change compiler counters between runs. Compiler checking options stay as configured.
+[Usage](USAGE.md#performance-options) explains these effects, scope and precedence, including individual
+overrides that remain active under `--fast false`.
+
+Dev-profile validation against `3e9236361fa9` retains all 13,700 error, 12,998 type, 12,998 symbol, 13,626 emit,
+149 JavaScript-map and 156 source-map-record passes in both modes. Initial timeouts passed on focused retries with
+a longer limit. All 50 regression fixtures, 16 macOS watch cases (including fast watch/build-watch edits), the
+focused scheduling sweep at four and eight checkers, and affected CLI/compiler/core/incremental checks pass.
+Clippy, source lint and the WebAssembly target check pass. [Usage](USAGE.md#performance-options) describes the
+preset and its known history/depth-limit differences.
+
 ## 2026-10-22: 0.19.0 source upgrade candidate
 
 The source and package metadata now target `microsoft/TypeScript@3e9236361fa97a9e6c685f4833ac457ae2d8c50a`
@@ -766,7 +920,8 @@ threads on the large codebase and lose on small ones (notes/perf-checker-stealin
 On the 40k-error corpus, tsgo and tsrs printed different text for `--checkers 1, 2, 4, 8, 12, 16`: four distinct
 outputs, 2-6 lines each. The cause is one tsgo cache. `getUndefinedProperty` keeps the filled-in `x?: undefined` of
 widened object literals per name, with the declaration of the first `x` a checker saw, and properties are sorted by
-declaration. By default tsrs keys it by the property it stands for (one line; `upstream/determinism-undefined-property.md`).
+declaration. By default tsrs keys it by the property it stands for
+(one line; [upstream bug report](../notes/determinism-undefined-property.md)).
 Output is then a function of the program alone: identical for N = 1-16 x 20 random assignments
 (`TSRS_CHECKER_ASSIGNMENT=random:<seed>`) on the error-rich corpora, and for conformance run with 4 checkers per test
 and random assignments. `--checkerAssignment go` keeps tsgo's cache; the conformance, fourslash and tsc harnesses run
