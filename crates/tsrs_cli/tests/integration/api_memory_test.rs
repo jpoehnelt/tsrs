@@ -138,7 +138,7 @@ fn repeated_builds_memory() {
             };
             json::marshal(&id).unwrap()
         }
-        Response::Binary(_) => unreachable!(),
+        Response::Binary(_) | Response::Value(_) => unreachable!(),
     };
     let n: usize = std::env::var("N").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
     let mut before = 0;
@@ -195,7 +195,7 @@ fn failed_builds_free_their_orchestrator() {
             Value::Object(o) => json::marshal(o.get("buildOrchestratorID").unwrap()).unwrap(),
             _ => unreachable!(),
         },
-        Response::Binary(_) => unreachable!(),
+        Response::Binary(_) | Response::Value(_) => unreachable!(),
     };
     let id = create();
     let fail = |i: usize| {
