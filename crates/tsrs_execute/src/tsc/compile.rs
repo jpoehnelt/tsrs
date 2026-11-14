@@ -1,3 +1,8 @@
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -50,7 +55,7 @@ pub trait System: Sync {
 }
 
 /// Uses the command's clock only when compilation statistics were requested.
-pub struct DiagnosticTimer<'a> {
+pub(crate) struct DiagnosticTimer<'a> {
     sys: &'a dyn System,
     start: Option<Instant>,
 }
@@ -83,7 +88,7 @@ fn new_content_mapper_logger(sys: &'static dyn System) -> Option<contentmapper::
 // Close it when the compilation session ends.
 // compile.go:89 (Go binds the host to the command's context, which closes it when the process ends; the callers
 // close it explicitly instead. The locale is the option's text: tsrs does not canonicalize BCP 47 tags.)
-pub fn new_content_mapper_host(
+pub(crate) fn new_content_mapper_host(
     sys: &'static dyn System,
     options: &CompilerOptions,
 ) -> Option<Arc<dyn contentmapper::Host>> {
@@ -123,7 +128,7 @@ impl Drop for ContentMapperCloser {
 }
 
 #[cfg(unix)]
-pub fn format_local_time_03_04_05_pm(t: std::time::SystemTime) -> String {
+fn format_local_time_03_04_05_pm(t: std::time::SystemTime) -> String {
     let secs = t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as _);
     // SAFETY: `libc::tm` is C integers (and, on some platforms, a nullable `char *`), for which all zeros is valid.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -200,11 +205,11 @@ pub type SyncWriter = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
 // The build host's mtime cache (Go `*collections.SyncMap[tspath.Path, time.Time]`, zero time = None).
 pub type MTimesCache = std::sync::Arc<
-    std::sync::Mutex<rustc_hash::FxHashMap<tsrs_core::tspath::Path, Option<std::time::SystemTime>>>,
+    tsrs_core::collections::SyncMap<tsrs_core::tspath::Path, Option<std::time::SystemTime>>,
 >;
 
 // emit.go:21 GetTraceWithWriterFromSys
-pub fn get_trace_with_writer_from_sys(
+pub(crate) fn get_trace_with_writer_from_sys(
     w: SyncWriter,
     is_sys_writer: bool,
     testing: Option<&'static dyn CommandLineTesting>,
@@ -232,22 +237,22 @@ pub struct CommandLineResult {
 
 #[derive(Default, Clone)]
 pub struct CompileTimes {
-    pub config_time: Duration,
-    pub parse_time: Duration,
-    pub content_mapper_times: contentmapper::Timings,
-    pub bind_time: Duration,
-    pub check_time: Duration,
-    pub total_time: Duration,
-    pub emit_time: Duration,
-    pub build_info_read_time: Duration,
-    pub changes_compute_time: Duration,
+    pub(crate) config_time: Duration,
+    pub(crate) parse_time: Duration,
+    pub(crate) content_mapper_times: contentmapper::Timings,
+    pub(crate) bind_time: Duration,
+    pub(crate) check_time: Duration,
+    pub(crate) total_time: Duration,
+    pub(crate) emit_time: Duration,
+    pub(crate) build_info_read_time: Duration,
+    pub(crate) changes_compute_time: Duration,
 }
 
-pub struct CompileAndEmitResult {
-    pub diagnostics: Vec<P<Diagnostic>>,
-    pub emit_skipped: bool,
+pub(crate) struct CompileAndEmitResult {
+    pub(crate) diagnostics: Vec<P<Diagnostic>>,
+    pub(crate) emit_skipped: bool,
     // Go `EmitResult.EmittedFiles`.
-    pub emitted_files: Vec<String>,
-    pub status: ExitStatus,
-    pub times: CompileTimes,
+    pub(crate) emitted_files: Vec<String>,
+    pub(crate) status: ExitStatus,
+    pub(crate) times: CompileTimes,
 }

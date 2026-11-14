@@ -72,7 +72,7 @@ pub enum Response {
 }
 
 impl Response {
-    pub fn null() -> Response {
+    pub(crate) fn null() -> Response {
         Response::Value(tsrs_core::json::Value::Null)
     }
 }

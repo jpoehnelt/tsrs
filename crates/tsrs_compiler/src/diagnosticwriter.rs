@@ -79,18 +79,19 @@ pub fn diagnostic_file(d: P<Diagnostic>) -> Option<FileLike> {
 }
 
 // diagnosticwriter.go:83
-pub fn diagnostic_pos(d: P<Diagnostic>) -> u32 {
+fn diagnostic_pos(d: P<Diagnostic>) -> u32 {
     resolve(d).loc.pos().expect_source("rendered diagnostics have source positions")
 }
 
-// diagnosticwriter.go:84
-pub fn diagnostic_end(d: P<Diagnostic>) -> u32 {
-    resolve(d).loc.end().expect_source("rendered diagnostics have source positions")
+// diagnosticwriter.go:85
+fn diagnostic_len(d: P<Diagnostic>) -> u32 {
+    resolve(d).loc.len().expect("rendered diagnostics have source positions")
 }
 
-// diagnosticwriter.go:85
-pub fn diagnostic_len(d: P<Diagnostic>) -> u32 {
-    resolve(d).loc.len().expect("rendered diagnostics have source positions")
+// The range (ASTDiagnostic).Pos and End read (diagnosticwriter.go:83-84), for a caller that handles a synthetic
+// position itself.
+pub fn diagnostic_loc(d: P<Diagnostic>) -> TextRange {
+    resolve(d).loc
 }
 
 // resolvedLocation describes how a diagnostic on a content-mapped file should be reported.
@@ -177,22 +178,6 @@ macro_rules! w {
     ($out:expr_2021, $($arg:tt)*) => {{
         let _ = write!($out, $($arg)*);
     }};
-}
-
-pub fn format_diagnostics_with_color_and_context(
-    output: &mut dyn Write,
-    diags: &[P<Diagnostic>],
-    format_opts: &FormattingOptions,
-) {
-    if diags.is_empty() {
-        return;
-    }
-    for (i, &diagnostic) in diags.iter().enumerate() {
-        if i > 0 {
-            w!(output, "{}", format_opts.new_line);
-        }
-        format_diagnostic_with_color_and_context(output, diagnostic, format_opts);
-    }
 }
 
 pub fn format_diagnostic_with_color_and_context(
@@ -378,12 +363,6 @@ fn go_repeat_count(n: i64) -> usize {
     n as usize
 }
 
-pub fn flatten_diagnostic_message(d: P<Diagnostic>, new_line: &str) -> String {
-    let mut output = Vec::new();
-    write_flattened_diagnostic_message(&mut output, d, new_line);
-    tsrs_core::utf8::into_string(output).unwrap()
-}
-
 pub fn write_flattened_diagnostic_message(
     writer: &mut dyn Write,
     diagnostic: P<Diagnostic>,
@@ -432,7 +411,7 @@ fn get_category_format(category: Category) -> &'static str {
     }
 }
 
-pub type FormattedWriter = dyn Fn(&mut dyn Write, &str, &str);
+type FormattedWriter = dyn Fn(&mut dyn Write, &str, &str);
 
 fn write_with_style_and_reset(output: &mut dyn Write, text: &str, format_style: &str) {
     w!(output, "{}", format_style);
@@ -440,7 +419,7 @@ fn write_with_style_and_reset(output: &mut dyn Write, text: &str, format_style: 
     w!(output, "{}", RESET_ESCAPE_SEQUENCE);
 }
 
-pub fn write_location(
+fn write_location(
     output: &mut dyn Write,
     file: &FileLike,
     pos: u32,
@@ -618,16 +597,6 @@ fn pretty_path_for_file_error(
     format!("{}{}:{}{}", file_name, FOREGROUND_COLOR_ESCAPE_GREY, line + 1, RESET_ESCAPE_SEQUENCE)
 }
 
-pub fn write_format_diagnostics(
-    output: &mut dyn Write,
-    diagnostics: &[P<Diagnostic>],
-    format_opts: &FormattingOptions,
-) {
-    for &diagnostic in diagnostics {
-        write_format_diagnostic(output, diagnostic, format_opts);
-    }
-}
-
 pub fn write_format_diagnostic(
     output: &mut dyn Write,
     diagnostic: P<Diagnostic>,
@@ -699,15 +668,6 @@ pub fn format_diagnostics_in_order(
             write(out);
         }
     }
-}
-
-pub fn format_diagnostic_to_string(
-    diagnostic: P<Diagnostic>,
-    format_opts: &FormattingOptions,
-) -> String {
-    let mut out = Vec::new();
-    write_format_diagnostic(&mut out, diagnostic, format_opts);
-    tsrs_core::utf8::from_utf8_lossy(&out).into_owned()
 }
 
 // diagnosticwriter.go:584

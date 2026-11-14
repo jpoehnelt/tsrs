@@ -9,8 +9,8 @@ use tsrs_core::TextPos;
 type DeclarationsOfName = Option<Rc<RefCell<FxHashMap<&'static str, P<Node>>>>>;
 
 // Transforms TypeScript-specific runtime syntax into JavaScript-compatible syntax.
-pub struct RuntimeSyntaxTransformer {
-    pub base: Transformer,
+struct RuntimeSyntaxTransformer {
+    base: Transformer,
     compiler_options: P<CompilerOptions>,
     parent_node: Cell<Option<P<Node>>>,
     current_node: Cell<Option<P<Node>>>,
@@ -1362,7 +1362,13 @@ impl RuntimeSyntaxTransformer {
 }
 
 // runtimesyntax.go:1030
-pub fn get_innermost_module_declaration_from_dotted_module(module_declaration: P<Node>) -> P<Node> {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+pub(crate) fn get_innermost_module_declaration_from_dotted_module(
+    module_declaration: P<Node>,
+) -> P<Node> {
     let mut module_declaration = module_declaration;
     while let Some(body) = module_declaration.body() {
         if body.kind() != Kind::ModuleDeclaration {

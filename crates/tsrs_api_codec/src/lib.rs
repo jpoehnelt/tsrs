@@ -9,9 +9,9 @@ pub mod encoder;
 pub mod format;
 mod generated;
 pub mod handle;
-pub mod msgpack;
+pub(crate) mod msgpack;
 pub mod positionmap;
-pub mod stringtable;
+pub(crate) mod stringtable;
 
 pub use decoder::{DecodeError, DecodedNode, decode_nodes, decode_source_file};
 pub use encoder::{
@@ -20,4 +20,3 @@ pub use encoder::{
 };
 pub use format::PROTOCOL_VERSION;
 pub use handle::{ParsedNodeHandle, node_handle, parse_node_handle, resolve_node_index};
-pub use positionmap::PositionMap;

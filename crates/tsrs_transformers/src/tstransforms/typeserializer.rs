@@ -1,7 +1,12 @@
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+
 use crate::*;
 use tsrs_checker::TypeReferenceSerializationKind;
 
-pub struct MetadataSerializer {
+pub(crate) struct MetadataSerializer {
     resolver: Resolver,
     language_version: ScriptTarget,
     strict_null_checks: bool,
@@ -12,13 +17,13 @@ pub struct MetadataSerializer {
 
 #[derive(Clone, Copy, Default)]
 pub struct MetadataSerializerContext {
-    pub current_lexical_scope: Option<P<Node>>,
-    pub current_name_scope: Option<P<Node>>,
-    pub serializing_conditional_type_branch: bool,
+    pub(crate) current_lexical_scope: Option<P<Node>>,
+    pub(crate) current_name_scope: Option<P<Node>>,
+    pub(crate) serializing_conditional_type_branch: bool,
 }
 
 // typeserializer.go:26
-pub fn new_metadata_serializer(
+pub(crate) fn new_metadata_serializer(
     resolver: Resolver,
     f: &'static printer::NodeFactory,
     ec: P<EmitContext>,
@@ -42,7 +47,7 @@ impl MetadataSerializer {
     }
 
     // typeserializer.go:34
-    pub fn serialize_type_of_node(
+    pub(crate) fn serialize_type_of_node(
         &self,
         ctx: MetadataSerializerContext,
         node: P<Node>,
@@ -56,7 +61,7 @@ impl MetadataSerializer {
     }
 
     // typeserializer.go:41
-    pub fn serialize_parameter_types_of_node(
+    pub(crate) fn serialize_parameter_types_of_node(
         &self,
         ctx: MetadataSerializerContext,
         node: P<Node>,
@@ -70,7 +75,7 @@ impl MetadataSerializer {
     }
 
     // typeserializer.go:48
-    pub fn serialize_return_type_of_node(
+    pub(crate) fn serialize_return_type_of_node(
         &self,
         ctx: MetadataSerializerContext,
         node: P<Node>,
@@ -84,7 +89,7 @@ impl MetadataSerializer {
 }
 
 // typeserializer.go:55
-pub fn get_set_accessor_value_parameter(node: Option<P<Node>>) -> Option<P<Node>> {
+fn get_set_accessor_value_parameter(node: Option<P<Node>>) -> Option<P<Node>> {
     let node = node?;
     let parameters = node.parameters();
     if !parameters.is_empty() {

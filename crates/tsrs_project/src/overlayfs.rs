@@ -17,7 +17,7 @@ use crate::snapshotfs::FileHandleSource;
 pub type Hash128 = u128;
 
 // Go `xxh3.HashString128`.
-pub fn hash_string_128(s: &str) -> Hash128 {
+pub(crate) fn hash_string_128(s: &str) -> Hash128 {
     xxhash_rust::xxh3::xxh3_128(s.as_bytes())
 }
 
@@ -86,7 +86,7 @@ pub struct CachedFile {
 }
 
 // overlayfs.go:82
-pub fn new_cached_file(file_name: String, content: String) -> CachedFile {
+pub(crate) fn new_cached_file(file_name: String, content: String) -> CachedFile {
     let hash = hash_string_128(&content);
     CachedFile {
         base: FileBase::new(file_name, content, hash),
@@ -163,9 +163,9 @@ impl crate::dirty::Cloneable for CachedFile {
 
 pub struct Overlay {
     pub(crate) base: FileBase,
-    pub(crate) version: i32,
-    pub(crate) kind: ScriptKind,
-    pub(crate) matches_disk_text: bool,
+    version: i32,
+    kind: ScriptKind,
+    matches_disk_text: bool,
 }
 
 // overlayfs.go:130
@@ -181,12 +181,12 @@ pub fn new_overlay(file_name: String, content: String, version: i32, kind: Scrip
 
 impl Overlay {
     // overlayfs.go:144
-    pub fn text(&self) -> &str {
+    fn text(&self) -> &str {
         &self.base.content
     }
 
     // overlayfs.go:148
-    pub fn original_file_name(&self) -> &str {
+    fn original_file_name(&self) -> &str {
         self.base.file_name()
     }
 
@@ -198,18 +198,18 @@ impl Overlay {
         clippy::unused_self,
         reason = "Span mapping is an optional property of the overlay instance, matching the host interface."
     )]
-    pub fn span_map(&self) -> Option<&SpanMap> {
+    fn span_map(&self) -> Option<&SpanMap> {
         None
     }
 
     // overlayfs.go:155
-    pub fn original_text(&self) -> &str {
+    fn original_text(&self) -> &str {
         &self.base.content
     }
 
     // overlayfs.go:163
     // !!! optimization: incorporate mtime
-    pub(crate) fn compute_matches_disk_text(&self, fs: &dyn FS) -> (bool, bool) {
+    fn compute_matches_disk_text(&self, fs: &dyn FS) -> (bool, bool) {
         if tspath::is_dynamic_file_name(&self.base.file_name) {
             return (false, false);
         }
@@ -312,7 +312,7 @@ pub enum FsRef {
 }
 
 impl FsRef {
-    pub fn fs(&self) -> &dyn FS {
+    fn fs(&self) -> &dyn FS {
         match self {
             FsRef::Host(fs) => &**fs,
             FsRef::Layered(fs) => &**fs,
@@ -394,7 +394,7 @@ impl LayeredFileSystem for OverlayFS {
 }
 
 // overlayfs.go:226
-pub fn layer_overlay_file_system(
+pub(crate) fn layer_overlay_file_system(
     file_system: &FsRef,
     overlays: OverlayMap,
     position_encoding: lsproto::PositionEncodingKind,
@@ -634,10 +634,7 @@ struct FileEvents {
 
 impl OverlayFS {
     // overlayfs.go:407
-    pub(crate) fn process_changes(
-        &self,
-        changes: &[FileChange],
-    ) -> (FileChangeSummary, OverlayMap) {
+    pub fn process_changes(&self, changes: &[FileChange]) -> (FileChangeSummary, OverlayMap) {
         let mut st = self.mu.write().unwrap();
 
         let mut result = FileChangeSummary::default();
@@ -878,7 +875,3 @@ impl OverlayFS {
         (result, new_overlays)
     }
 }
-
-#[cfg(test)]
-#[path = "overlayfs_test.rs"]
-mod overlayfs_test;

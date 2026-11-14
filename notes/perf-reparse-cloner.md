@@ -110,6 +110,8 @@ The Linux `bench/count.py` gate on the pull request is the landing number; these
 
 ## Next, from the same profile (not done here)
 
+The first two items are done in notes/perf-vfs-probes.md.
+
 - VFS probes (`Common::file_exists`, `directory_exists`, `stat`): `split_path` normalizes the path into a new
   `String` and copies the root and the rest, `root_for` boxes a `DirFS` with its own copy of the root, and
   `DirFS::file_type` joins the path again before the syscall's `CString`: about five avoidable allocations per
@@ -119,8 +121,9 @@ The Linux `bench/count.py` gate on the pull request is the landing number; these
 - `InfoCache::get` keys every lookup with a fresh `to_path` (an `Arc` plus the lowercase copy on case-insensitive
   hosts) and `get_package_json_info` joins `package.json` onto the directory first: 7.7% of cal-diy's front end.
   A borrowed key view like #681's resolution-cache key would remove the hit path's allocations.
-- JSDoc parsing grows a `Vec<P<Node>>` of tags per comment and a `Vec<CommentRange>` per node with JSDoc
-  (6.8% of webpack's front end); the parser already has `*_space` buffers for similar lists. For TS files the
-  lazy `parse_jsdoc_for_node` builds a whole `Parser` (scanner, factory with two `Rc` counters) per node whose
-  JSDoc the checker asks for: 0.6% of webpack's full check in `new_node_factory` alone.
+- Done in notes/perf-jsdoc-parser.md: JSDoc parsing grows a `Vec<P<Node>>` of tags per comment and a
+  `Vec<CommentRange>` per node with JSDoc (6.8% of webpack's front end); the parser already has `*_space` buffers
+  for similar lists. For TS files the lazy `parse_jsdoc_for_node` builds a whole `Parser` (scanner, factory with
+  two `Rc` counters) per node whose JSDoc the checker asks for: 0.6% of webpack's full check in `new_node_factory`
+  alone.
 - `SymbolMap::insert` growth is memory-tuned and on the do-not-redo list (notes/perf-heap-churn.md).

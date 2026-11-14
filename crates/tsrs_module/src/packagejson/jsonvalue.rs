@@ -120,7 +120,7 @@ pub struct JSONValue {
 }
 
 impl JSONValue {
-    pub(crate) fn from_json(value: &Json) -> JSONValue {
+    pub fn from_json(value: &Json) -> JSONValue {
         JSONValue { data: JSONData::from_json(value, JSONValue::from_json) }
     }
 }

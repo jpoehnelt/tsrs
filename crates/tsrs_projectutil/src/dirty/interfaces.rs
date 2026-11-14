@@ -25,15 +25,11 @@ impl<T> Shared<T> {
         Arc::ptr_eq(&a.0, &b.0)
     }
 
-    pub fn as_ptr(&self) -> *const T {
-        Arc::as_ptr(&self.0)
-    }
-
     pub fn arc(&self) -> &Arc<T> {
         &self.0
     }
 
-    pub fn make_mut(this: &mut Shared<T>) -> &mut T
+    pub(crate) fn make_mut(this: &mut Shared<T>) -> &mut T
     where
         T: Clone,
     {
@@ -44,7 +40,7 @@ impl<T> Shared<T> {
 impl<T: Cloneable> Shared<T> {
     // Go `v.Clone()` on the pointer.
     #[must_use]
-    pub fn clone_shared(&self) -> Shared<T> {
+    pub(crate) fn clone_shared(&self) -> Shared<T> {
         Shared(Arc::new(self.0.clone_value()))
     }
 }

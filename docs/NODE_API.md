@@ -2,14 +2,13 @@
 
 ## JavaScript API
 
-Install the package with `pnpm add -D tsrs`. `require("tsrs")` exports `version`, `typescriptVersion` and
+Install the beta with `pnpm add -D tsrs@0.25.0-ts7.1.0-beta`. `require("tsrs")` exports `version`, `typescriptVersion` and
 `typescriptCommit`.
 
 The package also ships TypeScript 7's programmatic API, copied from microsoft/TypeScript
-`packages/typescript` under the same subpaths as the `typescript` 7 package. The
-[commit-by-commit migration](../notes/typescript-623-ports.md) advanced the SDK with each API commit;
-[`UPSTREAM.json`](../npm/tsrs/UPSTREAM.json) records the copied SDK revision. The 0.19.0 source pin is
-`3e9236361fa9`, while the last published release, 0.18.0, uses the earlier pin:
+`packages/typescript` under the same subpaths as the `typescript` 7 package. Both the compiler and SDK follow
+`3e9236361fa9` (TypeScript 7.1 beta); [`UPSTREAM.json`](../npm/tsrs/UPSTREAM.json) records the copied SDK revision
+and adaptations.
 
 | subpath | contents |
 | --- | --- |
@@ -41,7 +40,7 @@ that uses the remote declaration's owning API. It returns the binder symbol from
 synthetic and configuration declarations have no cached file owner, and a released or replaced file cannot be
 looked up after its cached result is gone.
 
-The source-31 API reports `caseSensitivity` as TypeScript's enum in its `initialize` response.
+The API reports `caseSensitivity` as TypeScript's enum in its `initialize` response.
 Inferred projects omit `configFileName`; snapshot program and transpile requests accept raw compiler
 options, with relative option paths resolved from the API server's current directory. Document
 identifiers must contain a non-empty file name or URI.
@@ -50,20 +49,21 @@ The code is TypeScript's, with one intentional difference: if the server process
 every pending and later request with an error starting `API server connection lost: ` instead of leaving them
 pending forever (see [npm packaging](../npm/README.md)).
 
-The source-50 module loader accepts full `typescript/*` specifiers and resolves them through the
+The module loader accepts full `typescript/*` specifiers and resolves them through the
 selected package manifest. Passing a `tsrs` installation's `package.json` loads `tsrs/*` from that
 installation. This is a package-side helper; tsrs does not supply the upstream VS Code extension's SDK event,
 API-pipe lifecycle, or in-place-upgrade restart handling.
 
-Source 58 promotes these entry points to the upstream beta names. It also removes deprecated `openProject`,
+The 0.20.0 beta uses the upstream beta entry-point names. It removes deprecated `openProject`,
 `Project.rootFiles` / `.compilerOptions`, and the `Snapshot.internal` formatting alias; use `openProjects`,
 `project.parsedCommandLine`, and `project.languageService.formatNodeForInsertion`. The server's project response
 no longer sends the removed duplicate fields. The API is served by the `tsrs` binary (`tsrs --api`), whose
-coverage of the protocol is still incomplete; [the method inventory](../npm/sdk/METHODS.md) tracks the published
-base per method, and the coverage matrix below tracks the incremental port.
-Source 102 makes sync API generators single-use across `API.batch` calls. Reusing an instance, even after its first
+coverage of the protocol is still incomplete. [The method inventory](../npm/sdk/METHODS.md) records requests from
+the pinned SDK suite, and the [coverage matrix](#coverage-matrix) records implementation status and gaps.
+
+Sync API generators are single-use across `API.batch` calls. Reusing an instance, even after its first
 batch completes, throws `Cannot execute the same generator instance more than once`, as in upstream TypeScript.
-Source 109 adds `TS_API_TIMING_DIR`: a nonempty directory enables timing collection even with `collectTiming: false`.
+`TS_API_TIMING_DIR` set to a nonempty directory enables timing collection even with `collectTiming: false`.
 Each sync or async API client writes one uniquely named JSON snapshot when closed, with client timing and either
 server timing or a server timing error. Repeated `close()` calls do not write another snapshot. An external socket
 server with timing disabled still yields the client's measured snapshot. After a synchronous filesystem callback
@@ -86,10 +86,15 @@ protocol or a one-shot CLI wrapper, and it is not compatible with TS5 `createPro
 Status: shipped (in the npm package since 0.3.0, docs/STATUS.md), with the gaps below. The matrix at the end is
 the source of truth: `supported`
 means a core Rust test against a real compiler session exercises it; `partial` means it is implemented
-and dispatched but only covered by the upstream Node suites, a lane's own unit tests, or has a documented
+and dispatched but only covered by the upstream Node suites, component-level checks, or has a documented
 divergence. Unimplemented methods return an explicit `api: unsupported: ...` error, never a fake success.
 
-Evidence at merge time (pinned upstream client, `node tools/node-api/run-upstream.mjs
+The [recorded beta SDK inventory](../npm/sdk/METHODS.md) has 968/968 passing tests on both tsgo and tsrs,
+with successful responses for 170 of 177 methods. Methods absent from that suite need separate evidence;
+passing client assertions alone does not establish byte-level response parity. See
+[API validation](NODE_API_VALIDATION.md) for the oracle comparison and historical runs.
+
+Historical evidence from the initial API merge (pinned upstream client, `node tools/node-api/run-upstream.mjs
 --binary target/debug/tsrs --label tsrs --suite upstream --filter <file>`): `test/sync/api.test.ts` 339/339 (three
 consecutive runs; one earlier run had a single unreproduced failure), `test/async/api.test.ts` 348/348,
 `sync/ast` 111/111, `sync/astnav` + `async/astnav` 4/4 each, `sync/api-generators` 43/43, parity `rss` 2/2.
@@ -116,7 +121,7 @@ The API was developed in parallel lanes; the names stay in use below and in the 
 | codec | `crates/tsrs_api_codec` (AST binary encoder/decoder, string table, node index tables, source-file id) |
 | checker | `crates/tsrs_api/src/checker.rs`, `crates/tsrs_api/src/checker/**`, necessary checker exports |
 | sdk | `npm/**` (ported `sync` / `async` client, AST package, Node tests) |
-| parity | `tools/node-api/**`, `.github/workflows/node-api.yml.bak` (automation disabled) |
+| parity | `tools/node-api/**`, the `node-api-clients` job in `.github/workflows/ci.yml`; the older standalone `node-api.yml.bak` workflow is disabled |
 
 ## Integration contract (Rust)
 
@@ -158,7 +163,7 @@ The transport does not depend on `tsrs_api`. It defines its own handler/conn tra
 - deterministic shutdown: EOF on input ends `run` with `Ok`, malformed frames end it with an error
   without writing non-protocol bytes to stdout.
 
-Source 101 makes `--api --pipe <path>` create a new private directory on Unix, with a socket at
+`--api --pipe <path>` creates a new private directory on Unix, with a socket at
 `<path>/socket` (`0700` directory, `0600` socket); an existing path is an error. On Windows,
 `<path>` is a named pipe restricted to the current user. The spawned sync client gives its
 Windows pipe a random 128-bit suffix. LSP `custom/initializeAPISession` returns the same private pipe transport for an API session over the language
@@ -213,10 +218,10 @@ Core provides (stable API for the checker lane):
 
 ## Coverage matrix
 
-The protocol port through source 29 has 177 `Method` constants (core 58, checker 119). Kept in sync with
+The pinned protocol has 177 `Method` constants (core 58, checker 119). Kept in sync with
 `crates/tsrs_api/src/methods.rs`.
 
-Source 29 adds checker-scoped `getMergedSymbol`, `getSymbolOfNode`,
+Checker-scoped methods include `getMergedSymbol`, `getSymbolOfNode`,
 `getSymbolOfDeclarationForChecker`, and `getParentOfSymbolForChecker`. All resolve handles in the requested
 snapshot and project. The node/declaration and parent methods return `null` when no symbol exists; the
 existing core `getSymbolOfDeclaration` instead retrieves a binder symbol from a cached source file.
@@ -233,11 +238,11 @@ existing core `getSymbolOfDeclaration` instead retrieves a binder symbol from a 
 | 8 | `createSnapshot` | core | supported | program_test, module_resolution_test, requestfs_test (full/layer request filesystems, removedPaths) |
 | 9 | `updateSnapshot` | core | supported | program_test, requestfs_test (layers compacted over full, retained base, release of base, fileNotifications expanded to request-symlink aliases) |
 | 10 | `getCurrentLanguageServerSnapshot` | core | supported | session_apistate_test (port of Go's session_apistate_test.go: pending LSP changes, per-session open/close ownership, created programs released on close, standalone sessions rejected); tsrs_lsp server_apisession_test (`custom/initializeAPISession`, open-file overlays over the socket, shutdown) |
-| 11 | `createBuildOrchestrator` | core | supported | tsrs_cli api::tests and tsrs_lsp server_apisession_test (shared in-process build backend; fresh orchestrator per call instead of Go's recheckAllProjects reuse) |
-| 12 | `disposeBuildOrchestrator` | core | supported | tsrs_cli api::tests |
-| 13 | `build` | core | supported | tsrs_cli api::tests (references, up-to-date rebuild) |
-| 14 | `buildReferences` | core | supported | tsrs_cli api::tests |
-| 15 | `cleanBuild` | core | supported | tsrs_cli api::tests |
+| 11 | `createBuildOrchestrator` | core | supported | tsrs_cli api_test and tsrs_lsp server_apisession_test (shared in-process build backend; fresh orchestrator per call instead of Go's recheckAllProjects reuse) |
+| 12 | `disposeBuildOrchestrator` | core | supported | tsrs_cli api_test |
+| 13 | `build` | core | supported | tsrs_cli api_test (references, up-to-date rebuild) |
+| 14 | `buildReferences` | core | supported | tsrs_cli api_test |
+| 15 | `cleanBuild` | core | supported | tsrs_cli api_test |
 | 16 | `cleanReferences` | core | partial | ported Go clean(onlyReferences); no dedicated test |
 | 17 | `createModuleResolver` | core | supported | module_resolution_test (default, static entries, callback; custom resolutions skip disk-layout import diagnostics under `rewriteRelativeImportExtensions`) |
 | 18 | `releaseModuleResolver` | core | supported | module_resolution_test |
@@ -403,7 +408,7 @@ existing core `getSymbolOfDeclaration` instead retrieves a binder symbol from a 
 
 ## Request-filesystem regression fixtures
 
-`cargo test -p tsrs_api --test requestfs_differential` runs the production request filesystem against 11
+`cargo test -p tsrs_api --test integration requestfs_differential` runs the production request filesystem against 11
 pinned-Go scenarios (20 updates, 142 filesystem queries and every update's change summary), plus layering over
 real files and symlinks. No Cargo feature is needed. Fixtures and their generator are in
 `crates/tsrs_api/tests/fixtures/`: place `requestfs_gen.go.txt` in the pinned
@@ -423,7 +428,7 @@ real files and symlinks. No Cargo feature is needed. Fixtures and their generato
   builds programs single-threaded, so `--builders` and checker parallelism do not speed up API builds and
   `singleThreaded` is forced on (it does not appear in outputs or build info). The output files, `.tsbuildinfo`
   included, and the exit status are byte-identical to `tsrs -b` on the same graph
-  (`api_build_outputs_match_cli_build`), and up-to-date rebuilds build nothing (`api::tests`). This is what
+  (`api_build_outputs_match_cli_build`), and up-to-date rebuilds build nothing (`api_test`). This is what
   makes per-build memory freeable; it trades build throughput for bounded memory.
 - Build orchestration runs the `tsc -b` orchestrator in-process through `tsrs_api::build::BuildBackend`.
   Every API session installs this backend by default, including library and LSP-attached sessions; embedding hosts

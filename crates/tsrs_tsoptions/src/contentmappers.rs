@@ -60,7 +60,7 @@ pub struct Mapper {
 }
 
 // contentmapper.go:58
-pub const SUPPORTED_VIRTUAL_EXTENSIONS: [&str; 9] =
+const SUPPORTED_VIRTUAL_EXTENSIONS: [&str; 9] =
     [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".json"];
 
 // contentmapper.go:62
@@ -110,7 +110,7 @@ impl Mapper {
     }
 
     // contentmapper.go:87
-    pub(crate) fn manifest_identity(&self) -> String {
+    fn manifest_identity(&self) -> String {
         if self.manifest.name.is_empty() {
             return String::new();
         }

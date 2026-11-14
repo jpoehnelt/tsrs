@@ -1,0 +1,1308 @@
+{
+  "schemaVersion": 1,
+  "kind": "release-publication",
+  "measuredAt": "2026-10-28T09:57:26.295Z",
+  "completedAt": "2026-10-28T10:12:30.985Z",
+  "machine": {
+    "platform": "Darwin arm64",
+    "cpus": 14,
+    "cpu": "Apple M3 Max",
+    "memory_gb": 36,
+    "label": "local machine (Apple M3 Max, 14 cores, 36 GB)"
+  },
+  "settings": {
+    "workers": null,
+    "runs": 10,
+    "typescriptRuns": 5,
+    "checkers": "default",
+    "quietCores": 1.5,
+    "quietWaitSeconds": 900
+  },
+  "environment": {
+    "GOMAXPROCS": null,
+    "RAYON_NUM_THREADS": null,
+    "TSRS_FAST": null
+  },
+  "hyperfine": "hyperfine 2.0.0",
+  "compilers": {
+    "typescript": {
+      "package": "@typescript/typescript-darwin-arm64",
+      "version": "7.1.0-beta",
+      "label": "TypeScript",
+      "requested": "typescript@7.1.0-beta",
+      "tarball": "https://registry.npmjs.org/@typescript/typescript-darwin-arm64/-/typescript-darwin-arm64-7.1.0-beta.tgz",
+      "integrity": "sha512-q7mxblcyX0E7hXsY4k+Q6KWKK5mGmfVq+BDesdTgRVgjodk27aIxER77Zyj9+TgSTlCje8F7+JM6f6hl2BuNdw==",
+      "sha256": "29f5eb8daa5c8cf6ef1c0cb79fbcf47c0cfdf26edabdf148bb779d0b2d56cebc",
+      "version_output": "Version 7.1.0-beta"
+    },
+    "tsrs": {
+      "package": "@tsrs/darwin-arm64",
+      "version": "0.20.1-ts7.1.0-beta",
+      "label": "tsrs",
+      "requested": "@tsrs/darwin-arm64@0.20.1-ts7.1.0-beta",
+      "tarball": "https://registry.npmjs.org/@tsrs/darwin-arm64/-/darwin-arm64-0.20.1-ts7.1.0-beta.tgz",
+      "integrity": "sha512-35FzlwW1basYFfHM4aEXD9ix/BJ7xfBM4/k0CLnooHVYKELg279gK5peLGQzI7IuTMWlwxt8IB9MRKT7GfKWXA==",
+      "sha256": "5c1f6789358b9947e5c2176532f2cbee5488a5d7481652ee2f1763efdf105217",
+      "version_output": "Version 7.1.0-beta (tsrs 0.20.1-ts7.1.0-beta, microsoft/TypeScript@3e9236361fa9)"
+    }
+  },
+  "projects": [
+    {
+      "name": "vscode",
+      "project": "src",
+      "commit": "9cf0128b9822dcd8a533f08ef7312956a4390301",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "xstate-main",
+      "project": ".",
+      "commit": "fbee62e7c1586315ed478c2fedf530d7e0ff5a3e",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "webpack",
+      "project": ".",
+      "commit": "b54c5e2aa26dd0267bc904d45402f811f100186c",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "mui-docs",
+      "project": "docs",
+      "commit": "6780195595c12252a130aa5ae5c5bd461229c6b7",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "Compiler",
+      "project": ".",
+      "commit": "41f652ab2df5077b1115f73eaeefc2fe9f674132",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "Compiler-Unions",
+      "project": "tsconfig.json",
+      "commit": "41f652ab2df5077b1115f73eaeefc2fe9f674132",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "cal-diy",
+      "project": "apps/web",
+      "commit": "54343aa685ae8f33159d2f485ec4a57bad5c574a",
+      "overlaySha256": "bd8a78fb6c563ab5",
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "formbricks-web",
+      "project": "apps/web/tsconfig.typecheck.json",
+      "commit": "ec45c28e4d20bd9daf3191c991b67981aabf5db8",
+      "overlaySha256": "635fefae1e3bede6",
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "supabase-studio",
+      "project": "apps/studio",
+      "commit": "12afe399995143a2cc699eabbbd29596f4e64945",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "t3code-server",
+      "project": "apps/server",
+      "commit": "9bd1d8009a6b7c50f9dd9458e2bf27d481ff3b43",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "mikro-orm",
+      "project": "tests",
+      "commit": "97fb2318067eae37ef52da57e2975eb7539ed729",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "next-packages-next",
+      "project": "packages/next",
+      "commit": "fa8dcf34f1629dacc62f1952ee8a66a2439781a5",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "next-root",
+      "project": ".",
+      "commit": "fa8dcf34f1629dacc62f1952ee8a66a2439781a5",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "storybook",
+      "project": "scripts",
+      "commit": "48dfcc6becd3ab813b9d1de7966ef7fd9c8c9bc0",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "nuxt",
+      "project": ".",
+      "commit": "85b8d54f6ce49f4d0f199e90513b1e5d5fa22196",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "playwright",
+      "project": ".",
+      "commit": "d469960fdfc461e2d5795a3fa48a58a52a91ecaf",
+      "overlaySha256": null,
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "drizzle-orm",
+      "project": "drizzle-orm/tsconfig.build.json",
+      "commit": "15454dbe49d827c6081f3d0231e2e7985e517295",
+      "overlaySha256": "02cec513f142ccd6",
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "typeorm",
+      "project": "packages/typeorm",
+      "commit": "fe92394287516feeada6e9c308ebe22deca2458e",
+      "overlaySha256": "db6224934f2a60f5",
+      "checkers": [
+        "default"
+      ]
+    },
+    {
+      "name": "date-fns",
+      "project": "pkgs/core",
+      "commit": "717ce0a807ea4c6b540d015b5c408723175b2838",
+      "overlaySha256": "e2cf3e6c2f4c32bb",
+      "checkers": [
+        "default"
+      ]
+    }
+  ],
+  "samples": {
+    "total": 475,
+    "contended": 0
+  },
+  "rows": [
+    {
+      "project": "vscode",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 5.265042667,
+      "peakRssBytes": 5864521728,
+      "instructions": 245924188919,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 371,
+      "diagnosticCodes": {
+        "TS18048": 5,
+        "TS2304": 16,
+        "TS2307": 53,
+        "TS2322": 2,
+        "TS2339": 10,
+        "TS2344": 1,
+        "TS2345": 12,
+        "TS2349": 1,
+        "TS2416": 1,
+        "TS2503": 127,
+        "TS2554": 1,
+        "TS2698": 1,
+        "TS7006": 141
+      },
+      "diagnosticsSha256": "e0597cd75c337fee"
+    },
+    {
+      "project": "vscode",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 2.0057268539999997,
+      "peakRssBytes": 2529656832,
+      "instructions": 84037247516.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 371,
+      "diagnosticCodes": {
+        "TS18048": 5,
+        "TS2304": 16,
+        "TS2307": 53,
+        "TS2322": 2,
+        "TS2339": 10,
+        "TS2344": 1,
+        "TS2345": 12,
+        "TS2349": 1,
+        "TS2416": 1,
+        "TS2503": 127,
+        "TS2554": 1,
+        "TS2698": 1,
+        "TS7006": 141
+      },
+      "diagnosticsSha256": "e0597cd75c337fee"
+    },
+    {
+      "project": "vscode",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.907454354,
+      "peakRssBytes": 2132893696,
+      "instructions": 80218887581.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 371,
+      "diagnosticCodes": {
+        "TS18048": 5,
+        "TS2304": 16,
+        "TS2307": 53,
+        "TS2322": 2,
+        "TS2339": 10,
+        "TS2344": 1,
+        "TS2345": 12,
+        "TS2349": 1,
+        "TS2416": 1,
+        "TS2503": 127,
+        "TS2554": 1,
+        "TS2698": 1,
+        "TS7006": 141
+      },
+      "diagnosticsSha256": "e0597cd75c337fee"
+    },
+    {
+      "project": "xstate-main",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.461010209,
+      "peakRssBytes": 588922880,
+      "instructions": 22471551694,
+      "runs": 5,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "xstate-main",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.19377412500000002,
+      "peakRssBytes": 278052864,
+      "instructions": 6647163771.5,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "xstate-main",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.142957146,
+      "peakRssBytes": 257728512,
+      "instructions": 6996557398.5,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "webpack",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.739236208,
+      "peakRssBytes": 885260288,
+      "instructions": 37304005447,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 840,
+      "diagnosticCodes": {
+        "TS1095": 2,
+        "TS1340": 5,
+        "TS18048": 5,
+        "TS18049": 2,
+        "TS2304": 3,
+        "TS2307": 262,
+        "TS2309": 2,
+        "TS2315": 11,
+        "TS2322": 18,
+        "TS2339": 72,
+        "TS2344": 1,
+        "TS2345": 57,
+        "TS2370": 3,
+        "TS2483": 1,
+        "TS2532": 4,
+        "TS2533": 3,
+        "TS2536": 1,
+        "TS2538": 6,
+        "TS2565": 8,
+        "TS2578": 2,
+        "TS2683": 4,
+        "TS2694": 5,
+        "TS2724": 1,
+        "TS2731": 3,
+        "TS2740": 1,
+        "TS2749": 209,
+        "TS2769": 1,
+        "TS5115": 1,
+        "TS7006": 56,
+        "TS7009": 1,
+        "TS7015": 1,
+        "TS7017": 1,
+        "TS7019": 1,
+        "TS7031": 15,
+        "TS7041": 1,
+        "TS7053": 71
+      },
+      "diagnosticsSha256": "ddb4ddecaa6051fb"
+    },
+    {
+      "project": "webpack",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.284291917,
+      "peakRssBytes": 425058304,
+      "instructions": 11211751066,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 840,
+      "diagnosticCodes": {
+        "TS1095": 2,
+        "TS1340": 5,
+        "TS18048": 5,
+        "TS18049": 2,
+        "TS2304": 3,
+        "TS2307": 262,
+        "TS2309": 2,
+        "TS2315": 11,
+        "TS2322": 18,
+        "TS2339": 72,
+        "TS2344": 1,
+        "TS2345": 57,
+        "TS2370": 3,
+        "TS2483": 1,
+        "TS2532": 4,
+        "TS2533": 3,
+        "TS2536": 1,
+        "TS2538": 6,
+        "TS2565": 8,
+        "TS2578": 2,
+        "TS2683": 4,
+        "TS2694": 5,
+        "TS2724": 1,
+        "TS2731": 3,
+        "TS2740": 1,
+        "TS2749": 209,
+        "TS2769": 1,
+        "TS5115": 1,
+        "TS7006": 56,
+        "TS7009": 1,
+        "TS7015": 1,
+        "TS7017": 1,
+        "TS7019": 1,
+        "TS7031": 15,
+        "TS7041": 1,
+        "TS7053": 71
+      },
+      "diagnosticsSha256": "ddb4ddecaa6051fb"
+    },
+    {
+      "project": "webpack",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.15759854150000002,
+      "peakRssBytes": 500948992,
+      "instructions": 12978743950.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 840,
+      "diagnosticCodes": {
+        "TS1095": 2,
+        "TS1340": 5,
+        "TS18048": 5,
+        "TS18049": 2,
+        "TS2304": 3,
+        "TS2307": 262,
+        "TS2309": 2,
+        "TS2315": 11,
+        "TS2322": 18,
+        "TS2339": 72,
+        "TS2344": 1,
+        "TS2345": 57,
+        "TS2370": 3,
+        "TS2483": 1,
+        "TS2532": 4,
+        "TS2533": 3,
+        "TS2536": 1,
+        "TS2538": 6,
+        "TS2565": 8,
+        "TS2578": 2,
+        "TS2683": 4,
+        "TS2694": 5,
+        "TS2724": 1,
+        "TS2731": 3,
+        "TS2740": 1,
+        "TS2749": 209,
+        "TS2769": 1,
+        "TS5115": 1,
+        "TS7006": 56,
+        "TS7009": 1,
+        "TS7015": 1,
+        "TS7017": 1,
+        "TS7019": 1,
+        "TS7031": 15,
+        "TS7041": 1,
+        "TS7053": 71
+      },
+      "diagnosticsSha256": "ddb4ddecaa6051fb"
+    },
+    {
+      "project": "mui-docs",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 4.055287542,
+      "peakRssBytes": 3499524096,
+      "instructions": 212436732002,
+      "runs": 5,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "mui-docs",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 1.4492275835,
+      "peakRssBytes": 1379442688,
+      "instructions": 58636019805,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "mui-docs",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 1.0937581459999999,
+      "peakRssBytes": 1578082304,
+      "instructions": 87089850888,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "Compiler",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.156641625,
+      "peakRssBytes": 145948672,
+      "instructions": 4955492954,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 43,
+      "diagnosticCodes": {
+        "TS2322": 20,
+        "TS2339": 8,
+        "TS2345": 8,
+        "TS2367": 2,
+        "TS2862": 1,
+        "TS6133": 1,
+        "TS6196": 1,
+        "TS7011": 2
+      },
+      "diagnosticsSha256": "fd560ae24f916015"
+    },
+    {
+      "project": "Compiler",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.08856989600000001,
+      "peakRssBytes": 80420864,
+      "instructions": 1705013995.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 43,
+      "diagnosticCodes": {
+        "TS2322": 20,
+        "TS2339": 8,
+        "TS2345": 8,
+        "TS2367": 2,
+        "TS2862": 1,
+        "TS6133": 1,
+        "TS6196": 1,
+        "TS7011": 2
+      },
+      "diagnosticsSha256": "fd560ae24f916015"
+    },
+    {
+      "project": "Compiler",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.09142600000000001,
+      "peakRssBytes": 79085568,
+      "instructions": 1695935688.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 43,
+      "diagnosticCodes": {
+        "TS2322": 20,
+        "TS2339": 8,
+        "TS2345": 8,
+        "TS2367": 2,
+        "TS2862": 1,
+        "TS6133": 1,
+        "TS6196": 1,
+        "TS7011": 2
+      },
+      "diagnosticsSha256": "fd560ae24f916015"
+    },
+    {
+      "project": "Compiler-Unions",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.288289833,
+      "peakRssBytes": 163479552,
+      "instructions": 10490054915,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 41,
+      "diagnosticCodes": {
+        "TS2322": 22,
+        "TS2339": 8,
+        "TS2345": 4,
+        "TS2352": 2,
+        "TS2367": 2,
+        "TS2862": 1,
+        "TS6196": 1,
+        "TS7011": 1
+      },
+      "diagnosticsSha256": "d40d42323bef3d3c"
+    },
+    {
+      "project": "Compiler-Unions",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.11825379150000001,
+      "peakRssBytes": 84680704,
+      "instructions": 3149107824,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 41,
+      "diagnosticCodes": {
+        "TS2322": 22,
+        "TS2339": 8,
+        "TS2345": 4,
+        "TS2352": 2,
+        "TS2367": 2,
+        "TS2862": 1,
+        "TS6196": 1,
+        "TS7011": 1
+      },
+      "diagnosticsSha256": "d40d42323bef3d3c"
+    },
+    {
+      "project": "Compiler-Unions",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.1194315625,
+      "peakRssBytes": 84738048,
+      "instructions": 3114185661.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 41,
+      "diagnosticCodes": {
+        "TS2322": 22,
+        "TS2339": 8,
+        "TS2345": 4,
+        "TS2352": 2,
+        "TS2367": 2,
+        "TS2862": 1,
+        "TS6196": 1,
+        "TS7011": 1
+      },
+      "diagnosticsSha256": "d40d42323bef3d3c"
+    },
+    {
+      "project": "cal-diy",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 2.840378458,
+      "peakRssBytes": 3324887040,
+      "instructions": 156778305469,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 136,
+      "diagnosticCodes": {
+        "TS2307": 5,
+        "TS2339": 75,
+        "TS2578": 1,
+        "TS7006": 22,
+        "TS7016": 28,
+        "TS7031": 5
+      },
+      "diagnosticsSha256": "f93a696d7f4328fb"
+    },
+    {
+      "project": "cal-diy",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 1.028146521,
+      "peakRssBytes": 1405714432,
+      "instructions": 45881873089,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 136,
+      "diagnosticCodes": {
+        "TS2307": 5,
+        "TS2339": 75,
+        "TS2578": 1,
+        "TS7006": 22,
+        "TS7016": 28,
+        "TS7031": 5
+      },
+      "diagnosticsSha256": "f93a696d7f4328fb"
+    },
+    {
+      "project": "cal-diy",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.729508812,
+      "peakRssBytes": 1837268992,
+      "instructions": 67350284019.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 136,
+      "diagnosticCodes": {
+        "TS2307": 5,
+        "TS2339": 75,
+        "TS2578": 1,
+        "TS7006": 22,
+        "TS7016": 28,
+        "TS7031": 5
+      },
+      "diagnosticsSha256": "f93a696d7f4328fb"
+    },
+    {
+      "project": "formbricks-web",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 3.341907166,
+      "peakRssBytes": 4411834368,
+      "instructions": 178089122759,
+      "runs": 5,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "formbricks-web",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 1.1927054795,
+      "peakRssBytes": 2059452416,
+      "instructions": 51823465025,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "formbricks-web",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.7208400830000001,
+      "peakRssBytes": 1954643968,
+      "instructions": 62126222118.5,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "supabase-studio",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 4.010366167,
+      "peakRssBytes": 3431661568,
+      "instructions": 186719763215,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 9,
+      "diagnosticCodes": {
+        "TS7031": 9
+      },
+      "diagnosticsSha256": "32fbeecb2f83667c"
+    },
+    {
+      "project": "supabase-studio",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 1.4733042505,
+      "peakRssBytes": 1471807488,
+      "instructions": 57316538201.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 9,
+      "diagnosticCodes": {
+        "TS7031": 9
+      },
+      "diagnosticsSha256": "32fbeecb2f83667c"
+    },
+    {
+      "project": "supabase-studio",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.7938731665000001,
+      "peakRssBytes": 1650098176,
+      "instructions": 69316102926,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 9,
+      "diagnosticCodes": {
+        "TS7031": 9
+      },
+      "diagnosticsSha256": "32fbeecb2f83667c"
+    },
+    {
+      "project": "t3code-server",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 7.204413292,
+      "peakRssBytes": 4686774272,
+      "instructions": 364609036984,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 6,
+      "diagnosticCodes": {
+        "TS2304": 3,
+        "TS2322": 1,
+        "TS7006": 2
+      },
+      "diagnosticsSha256": "17c4ff4c7f990211"
+    },
+    {
+      "project": "t3code-server",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 1.7259995,
+      "peakRssBytes": 1953554432,
+      "instructions": 75848554137.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 6,
+      "diagnosticCodes": {
+        "TS2304": 3,
+        "TS2322": 1,
+        "TS7006": 2
+      },
+      "diagnosticsSha256": "17c4ff4c7f990211"
+    },
+    {
+      "project": "t3code-server",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 1.191682125,
+      "peakRssBytes": 2092670976,
+      "instructions": 111618601844,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 6,
+      "diagnosticCodes": {
+        "TS2304": 3,
+        "TS2322": 1,
+        "TS7006": 2
+      },
+      "diagnosticsSha256": "17c4ff4c7f990211"
+    },
+    {
+      "project": "mikro-orm",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 4.634170958,
+      "peakRssBytes": 4511662080,
+      "instructions": 235282303734,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 11,
+      "diagnosticCodes": {
+        "TS2883": 2,
+        "TS5088": 9
+      },
+      "diagnosticsSha256": "91096592883b1b39"
+    },
+    {
+      "project": "mikro-orm",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 1.3789157285,
+      "peakRssBytes": 1712054272,
+      "instructions": 60129578245.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 11,
+      "diagnosticCodes": {
+        "TS2883": 2,
+        "TS5088": 9
+      },
+      "diagnosticsSha256": "91096592883b1b39"
+    },
+    {
+      "project": "mikro-orm",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.6997611045000001,
+      "peakRssBytes": 1938653184,
+      "instructions": 74678075521.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 11,
+      "diagnosticCodes": {
+        "TS2883": 2,
+        "TS5088": 9
+      },
+      "diagnosticsSha256": "91096592883b1b39"
+    },
+    {
+      "project": "next-packages-next",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 1.474115875,
+      "peakRssBytes": 1461764096,
+      "instructions": 65551736479,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 3,
+      "diagnosticCodes": {
+        "TS2578": 1,
+        "TS7031": 2
+      },
+      "diagnosticsSha256": "0341c180f082e0ec"
+    },
+    {
+      "project": "next-packages-next",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.526833583,
+      "peakRssBytes": 651976704,
+      "instructions": 18871149282.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 3,
+      "diagnosticCodes": {
+        "TS2578": 1,
+        "TS7031": 2
+      },
+      "diagnosticsSha256": "0341c180f082e0ec"
+    },
+    {
+      "project": "next-packages-next",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.24634916700000004,
+      "peakRssBytes": 665452544,
+      "instructions": 19266294980.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 3,
+      "diagnosticCodes": {
+        "TS2578": 1,
+        "TS7031": 2
+      },
+      "diagnosticsSha256": "0341c180f082e0ec"
+    },
+    {
+      "project": "next-root",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 1.23595475,
+      "peakRssBytes": 1126465536,
+      "instructions": 47477977659,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 4,
+      "diagnosticCodes": {
+        "TS2322": 1,
+        "TS2694": 2,
+        "TS2810": 1
+      },
+      "diagnosticsSha256": "c00909878eef8b41"
+    },
+    {
+      "project": "next-root",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.545808979,
+      "peakRssBytes": 529309696,
+      "instructions": 18241959671.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 4,
+      "diagnosticCodes": {
+        "TS2322": 1,
+        "TS2694": 2,
+        "TS2810": 1
+      },
+      "diagnosticsSha256": "c00909878eef8b41"
+    },
+    {
+      "project": "next-root",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.3977311875,
+      "peakRssBytes": 515604480,
+      "instructions": 19063403614.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 4,
+      "diagnosticCodes": {
+        "TS2322": 1,
+        "TS2694": 2,
+        "TS2810": 1
+      },
+      "diagnosticsSha256": "c00909878eef8b41"
+    },
+    {
+      "project": "storybook",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.722751083,
+      "peakRssBytes": 970211328,
+      "instructions": 41400527748,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 94,
+      "diagnosticCodes": {
+        "TS2322": 1,
+        "TS2578": 1,
+        "TS6133": 72,
+        "TS6196": 8,
+        "TS6205": 1,
+        "TS7030": 11
+      },
+      "diagnosticsSha256": "5712135c44a38529"
+    },
+    {
+      "project": "storybook",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.28811212500000005,
+      "peakRssBytes": 467386368,
+      "instructions": 11878311377.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 94,
+      "diagnosticCodes": {
+        "TS2322": 1,
+        "TS2578": 1,
+        "TS6133": 72,
+        "TS6196": 8,
+        "TS6205": 1,
+        "TS7030": 11
+      },
+      "diagnosticsSha256": "5712135c44a38529"
+    },
+    {
+      "project": "storybook",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.19954687450000003,
+      "peakRssBytes": 492208128,
+      "instructions": 14892468704,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 94,
+      "diagnosticCodes": {
+        "TS2322": 1,
+        "TS2578": 1,
+        "TS6133": 72,
+        "TS6196": 8,
+        "TS6205": 1,
+        "TS7030": 11
+      },
+      "diagnosticsSha256": "5712135c44a38529"
+    },
+    {
+      "project": "nuxt",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.714198458,
+      "peakRssBytes": 987217920,
+      "instructions": 36574847602,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 1,
+      "diagnosticCodes": {
+        "TS2307": 1
+      },
+      "diagnosticsSha256": "cd76ef27a3a202e1"
+    },
+    {
+      "project": "nuxt",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.31334177100000005,
+      "peakRssBytes": 444293120,
+      "instructions": 12280886872,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 1,
+      "diagnosticCodes": {
+        "TS2307": 1
+      },
+      "diagnosticsSha256": "cd76ef27a3a202e1"
+    },
+    {
+      "project": "nuxt",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.23785729200000003,
+      "peakRssBytes": 509755392,
+      "instructions": 15843785531,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 1,
+      "diagnosticCodes": {
+        "TS2307": 1
+      },
+      "diagnosticsSha256": "cd76ef27a3a202e1"
+    },
+    {
+      "project": "playwright",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.6066702500000001,
+      "peakRssBytes": 795279360,
+      "instructions": 31380515366,
+      "runs": 5,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "playwright",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.23570970800000002,
+      "peakRssBytes": 378331136,
+      "instructions": 8680765432,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "playwright",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.15068039600000002,
+      "peakRssBytes": 469123072,
+      "instructions": 11616257861.5,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "drizzle-orm",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.709163583,
+      "peakRssBytes": 939114496,
+      "instructions": 39095256667,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 32,
+      "diagnosticCodes": {
+        "TS2305": 3,
+        "TS2416": 15,
+        "TS2430": 11,
+        "TS7006": 3
+      },
+      "diagnosticsSha256": "100cf195a82d7017"
+    },
+    {
+      "project": "drizzle-orm",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.24740758300000001,
+      "peakRssBytes": 435134464,
+      "instructions": 10718513320,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 32,
+      "diagnosticCodes": {
+        "TS2305": 3,
+        "TS2416": 15,
+        "TS2430": 11,
+        "TS7006": 3
+      },
+      "diagnosticsSha256": "100cf195a82d7017"
+    },
+    {
+      "project": "drizzle-orm",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.1727634795,
+      "peakRssBytes": 550944768,
+      "instructions": 14837317416.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 32,
+      "diagnosticCodes": {
+        "TS2305": 3,
+        "TS2416": 15,
+        "TS2430": 11,
+        "TS7006": 3
+      },
+      "diagnosticsSha256": "100cf195a82d7017"
+    },
+    {
+      "project": "typeorm",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.47924758300000003,
+      "peakRssBytes": 486653952,
+      "instructions": 20703465775,
+      "runs": 5,
+      "exitCode": 2,
+      "diagnostics": 31,
+      "diagnosticCodes": {
+        "TS1192": 1,
+        "TS2503": 30
+      },
+      "diagnosticsSha256": "faf290dd0f867793"
+    },
+    {
+      "project": "typeorm",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.24896095850000002,
+      "peakRssBytes": 244400128,
+      "instructions": 7354290534.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 31,
+      "diagnosticCodes": {
+        "TS1192": 1,
+        "TS2503": 30
+      },
+      "diagnosticsSha256": "faf290dd0f867793"
+    },
+    {
+      "project": "typeorm",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.19356704200000002,
+      "peakRssBytes": 258342912,
+      "instructions": 7786307051.5,
+      "runs": 10,
+      "exitCode": 2,
+      "diagnostics": 31,
+      "diagnosticCodes": {
+        "TS1192": 1,
+        "TS2503": 30
+      },
+      "diagnosticsSha256": "faf290dd0f867793"
+    },
+    {
+      "project": "date-fns",
+      "checkers": "default",
+      "compiler": "typescript",
+      "wallSeconds": 0.3209385,
+      "peakRssBytes": 405225472,
+      "instructions": 13258804978,
+      "runs": 5,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "date-fns",
+      "checkers": "default",
+      "compiler": "tsrs",
+      "wallSeconds": 0.17204131250000002,
+      "peakRssBytes": 184688640,
+      "instructions": 4553804239,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    },
+    {
+      "project": "date-fns",
+      "checkers": "default",
+      "compiler": "tsrs_fast",
+      "wallSeconds": 0.1439119785,
+      "peakRssBytes": 191365120,
+      "instructions": 4672016613,
+      "runs": 10,
+      "exitCode": 0,
+      "diagnostics": 0,
+      "diagnosticCodes": {},
+      "diagnosticsSha256": "4f53cda18c2baa0c"
+    }
+  ],
+  "sourceBundleSha256": "068efc6fc8f5047b3b0f9a8e6a4113f54ec7270708d0dfbccba095ca0cfcc896",
+  "renderer": {
+    "revision": "77d3cddb44540734abc33a42ccca4d3f33bee527",
+    "files": {
+      "render.mjs": "30b0e596b934780dd92a6896ed950101720446f46237f992edc20d1f6d51787b",
+      "results.mjs": "8fc9f5c6ff0546647346388069e4fbbf0cc15c0e6fe26d440893edc2a4317a72",
+      "lib.mjs": "9575f389d7eef9336abc42b3e83dea9d7cd8b589899dcd119e386de3944eed1f",
+      "release.mjs": "561b62fdfbc37a8121dbea204ffad462ed6ff4531f1665fac923f6c25f78c7fc",
+      "pnpm-lock.yaml": "48110ed5c03db98e9e397964e936a48f332226a063026c7f200290cd31438af1"
+    },
+    "sha256": "c23b87c912621cde8bf9345f022db53b9e6430017be335524085fd0d78d5bfd7"
+  }
+}

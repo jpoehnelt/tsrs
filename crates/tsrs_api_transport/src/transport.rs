@@ -3,7 +3,7 @@
 // MessagePack + SyncConn by default, JSON-RPC + AsyncConn with `--async`.
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use crate::conn_async::AsyncConn;
@@ -16,10 +16,10 @@ use crate::protocol::WireProtocol;
 
 #[cfg(unix)]
 #[path = "transport_unix.rs"]
-mod pipe_os;
+pub mod pipe_os;
 #[cfg(windows)]
 #[path = "transport_windows.rs"]
-mod pipe_os;
+pub mod pipe_os;
 #[cfg(not(any(unix, windows)))]
 mod pipe_os {
     use std::io;
@@ -68,7 +68,7 @@ pub struct Stream {
 
 impl Stream {
     /// `StdioTransport`. Stdout is the wire: nothing else in the process may write to it.
-    pub fn stdio() -> Stream {
+    fn stdio() -> Stream {
         Stream {
             reader: Box::new(std::io::stdin()),
             writer: Box::new(std::io::stdout()),
@@ -99,18 +99,6 @@ impl PipeListener {
 
     pub fn accept(&self) -> std::io::Result<Stream> {
         self.inner.accept()
-    }
-}
-
-/// ipc.GeneratePipePath: `<tmpdir>/<name>` on Unix, `\\.\pipe\<name>` on Windows.
-pub fn generate_pipe_path(name: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
-        PathBuf::from(format!(r"\\.\pipe\{name}"))
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::temp_dir().join(name)
     }
 }
 
@@ -151,11 +139,11 @@ impl Caller for LateCaller {
 
 #[derive(Clone, Debug)]
 pub struct ServeOptions {
-    pub protocol: WireProtocol,
+    protocol: WireProtocol,
     pub collect_timing: bool,
-    pub max_frame_bytes: u64,
+    max_frame_bytes: u64,
     /// See `ConnOptions::reentrancy_grace`.
-    pub reentrancy_grace: std::time::Duration,
+    reentrancy_grace: std::time::Duration,
     /// See `ConnOptions::shutdown`. The CLI cancels it on SIGINT/SIGTERM (Go signal.NotifyContext).
     pub shutdown: CancellationToken,
 }
@@ -217,13 +205,6 @@ impl Connection {
         match self {
             Connection::Sync(c) => c.caller(),
             Connection::Async(c) => c.caller(),
-        }
-    }
-
-    pub fn cancellation(&self) -> CancellationToken {
-        match self {
-            Connection::Sync(c) => c.cancellation(),
-            Connection::Async(c) => c.cancellation(),
         }
     }
 

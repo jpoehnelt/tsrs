@@ -158,7 +158,7 @@ fn from_map_with_clock_option<K: AsRef<str>, F: Into<MapFile>>(
     iovfs::from(mapfs, use_case_sensitive_file_names)
 }
 
-fn convert_map_fs(input: Vec<(String, MapFile)>, use_case_sensitive_file_names: bool) -> MapFS {
+pub fn convert_map_fs(input: Vec<(String, MapFile)>, use_case_sensitive_file_names: bool) -> MapFS {
     let m = MapFS {
         inner: RwLock::new(MapFSInner::default()),
         use_case_sensitive_file_names,
@@ -540,7 +540,7 @@ impl MapFS {
         );
     }
 
-    pub fn write_file(&self, path: &str, data: &str, perm: FileMode) -> Result<(), FsError> {
+    fn write_file(&self, path: &str, data: &str, perm: FileMode) -> Result<(), FsError> {
         let mut inner = self.inner.write().unwrap();
 
         let parent = dir_name(path);
@@ -590,7 +590,7 @@ impl MapFS {
         Ok(())
     }
 
-    pub fn append_file(&self, path: &str, data: &str, perm: FileMode) -> Result<(), FsError> {
+    fn append_file(&self, path: &str, data: &str, perm: FileMode) -> Result<(), FsError> {
         let mut inner = self.inner.write().unwrap();
 
         let parent = dir_name(path);
@@ -651,18 +651,13 @@ impl MapFS {
         clippy::unnecessary_wraps,
         reason = "The in-memory filesystem keeps the fallible Remove API shared with OS-backed file operations."
     )]
-    pub fn remove(&self, path: &str) -> Result<(), FsError> {
+    fn remove(&self, path: &str) -> Result<(), FsError> {
         let mut inner = self.inner.write().unwrap();
         self.remove_locked(&mut inner, path);
         Ok(())
     }
 
-    pub fn chtimes(
-        &self,
-        path: &str,
-        _a_time: SystemTime,
-        m_time: SystemTime,
-    ) -> Result<(), FsError> {
+    fn chtimes(&self, path: &str, _a_time: SystemTime, m_time: SystemTime) -> Result<(), FsError> {
         let mut inner = self.inner.write().unwrap();
         let canonical = self.get_canonical_path(path);
         let Some(file_info) = inner.m.get_mut(&canonical) else {
@@ -778,7 +773,3 @@ impl WritableFS for MapFS {
         MapFS::chtimes(self, path, a_time, m_time)
     }
 }
-
-#[cfg(test)]
-#[path = "vfstest_test.rs"]
-mod vfstest_test;

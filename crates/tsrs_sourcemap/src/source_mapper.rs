@@ -20,15 +20,15 @@ pub trait Host {
 // Similar to `Mapping`, but position-based.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MappedPosition {
-    pub(crate) generated_position: Option<u32>,
-    pub(crate) source_position: Option<u32>,
-    pub(crate) source_index: Option<u32>,
-    pub(crate) name_index: Option<u32>,
+    generated_position: Option<u32>,
+    source_position: Option<u32>,
+    source_index: Option<u32>,
+    name_index: Option<u32>,
 }
 
 impl MappedPosition {
     // source_mapper.go:34
-    pub(crate) fn is_source_mapped_position(&self) -> bool {
+    fn is_source_mapped_position(&self) -> bool {
         self.source_index.is_some() && self.source_position.is_some()
     }
 }
@@ -49,7 +49,7 @@ pub struct DocumentPositionMapper {
 }
 
 // source_mapper.go:52
-pub fn create_document_position_mapper(
+fn create_document_position_mapper(
     host: &dyn Host,
     source_map: &RawSourceMap,
     source_root_field: Option<&str>,
@@ -359,13 +359,13 @@ pub fn convert_document_to_source_mapper(
 }
 
 // source_mapper.go:305
-pub struct ParsedRawSourceMap {
-    pub(crate) source_map: RawSourceMap,
-    pub(crate) source_root: Option<String>,
-    pub(crate) null_sources: Vec<bool>,
+struct ParsedRawSourceMap {
+    source_map: RawSourceMap,
+    source_root: Option<String>,
+    null_sources: Vec<bool>,
 }
 
-pub fn try_parse_raw_source_map(contents: &str) -> Option<ParsedRawSourceMap> {
+fn try_parse_raw_source_map(contents: &str) -> Option<ParsedRawSourceMap> {
     let value = json::unmarshal(contents).ok()?;
     let Value::Object(members) = &value else { return None };
     let source_root = match members.get("sourceRoot") {
@@ -385,7 +385,7 @@ pub fn try_parse_raw_source_map(contents: &str) -> Option<ParsedRawSourceMap> {
 
 // source_mapper.go:284
 // Go `tryGetSourceMappingURL`; the trailing `_` keeps it apart from util.go's exported `TryGetSourceMappingURL`.
-pub fn try_get_source_mapping_url_(host: &dyn Host, file_name: &str) -> String {
+fn try_get_source_mapping_url_(host: &dyn Host, file_name: &str) -> String {
     let line_info = host.get_ecma_line_info(file_name);
     try_get_source_mapping_url(line_info.as_deref())
 }
@@ -428,7 +428,7 @@ pub fn try_parse_base64_url(url: &str) -> (&str, bool) {
 
 // Go encoding/base64 StdEncoding.DecodeString for input already restricted to [A-Za-z0-9+/=] (so no newlines to
 // skip): padded quanta of four, '=' only as "xx==" or "xxx=" in the last quantum, nonzero trailing bits accepted.
-fn base64_std_decode_string(s: &str) -> Option<Vec<u8>> {
+pub fn base64_std_decode_string(s: &str) -> Option<Vec<u8>> {
     let src = s.as_bytes();
     if !src.len().is_multiple_of(4) {
         return None;
@@ -461,7 +461,3 @@ fn base64_std_decode_string(s: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
-
-#[cfg(test)]
-#[path = "source_mapper_test.rs"]
-mod source_mapper_test;

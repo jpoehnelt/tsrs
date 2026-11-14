@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::SystemTime;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tsrs_core::collections::{Set, SyncMap, SyncSet};
 use tsrs_core::new_work_group;
 use tsrs_core::tspath::{self, Path};
@@ -34,7 +34,7 @@ pub struct CachedLayeredFileSystem {
 }
 
 // snapshotfs.go:38
-pub fn new_cached_layered_file_system(
+fn new_cached_layered_file_system(
     file_system: Arc<dyn LayeredFileSystem>,
 ) -> Arc<dyn LayeredFileSystem> {
     Arc::new(CachedLayeredFileSystem {
@@ -118,12 +118,12 @@ impl FS for CachedLayeredFileSystem {
 // (Go guards `paths` with a mutex; here it is only mutated through `&mut` inside a dirty-map change.)
 #[derive(Clone, Default)]
 pub struct RealpathAliasSet {
-    pub(crate) paths: Set<Path>,
+    paths: Set<Path>,
 }
 
 impl RealpathAliasSet {
     // snapshotfs.go:76
-    pub(crate) fn add(&mut self, path: Path) {
+    fn add(&mut self, path: Path) {
         self.paths.add(path);
     }
 }
@@ -142,7 +142,7 @@ impl Cloneable for RealpathAliasSet {
 pub type CacheDirectories = SharedMap<Path, CloneableMap<Path, String>>;
 
 pub struct SnapshotFS {
-    pub(crate) to_path: ToPath,
+    to_path: ToPath,
     pub(crate) fs: Arc<dyn LayeredFileSystem>,
     pub(crate) cache_files: SharedMap<Path, CachedFile>,
     pub(crate) cache_directories: CacheDirectories,
@@ -156,7 +156,7 @@ pub struct SnapshotFS {
 // Go `func() FileHandle` built with `sync.OnceValue`.
 type MemoizedCachedFile = Arc<OnceLock<Option<Arc<dyn FileHandle>>>>;
 
-pub fn new_snapshot_fs(to_path: ToPath, fs: Arc<dyn LayeredFileSystem>) -> SnapshotFS {
+pub(crate) fn new_snapshot_fs(to_path: ToPath, fs: Arc<dyn LayeredFileSystem>) -> SnapshotFS {
     SnapshotFS {
         to_path,
         fs,
@@ -222,20 +222,22 @@ fn merge_cached_directory_entries(
 ) -> Entries {
     let mut entries =
         Entries { symlinks: directory_entries.symlinks.clone(), ..Default::default() };
-    let equal_name = |left: &str, right: &str| {
-        tspath::get_canonical_file_name(left, use_case_sensitive_file_names)
-            == tspath::get_canonical_file_name(right, use_case_sensitive_file_names)
-    };
-    let has_name =
-        |names: &[String], name: &str| names.iter().any(|candidate| equal_name(candidate, name));
+    let canonical =
+        |name: &str| tspath::get_canonical_file_name(name, use_case_sensitive_file_names);
+    // Go's `hasName` scans the merged files and directories for every name, which is quadratic in the directory's
+    // size; the canonical names of everything merged so far answer the same question (a package directory can hold
+    // tens of thousands of files).
+    let mut merged_names: FxHashSet<String> = FxHashSet::default();
     #[expect(
         clippy::iter_over_hash_type,
         reason = "Go ranges the cached entry map too, so cached children are appended in map order there as well"
     )]
     for (child_path, child_name) in cached_entries.iter() {
+        let child = canonical(child_name);
         if let Some(symlinks) = &mut entries.symlinks {
-            symlinks.retain(|name| !equal_name(name, child_name));
+            symlinks.retain(|name| canonical(name) != child);
         }
+        merged_names.insert(child);
         if is_cached_file(child_path) {
             entries.files.push(child_name.clone());
         } else {
@@ -243,14 +245,12 @@ fn merge_cached_directory_entries(
         }
     }
     for file_name in &directory_entries.files {
-        if !has_name(&entries.files, file_name) && !has_name(&entries.directories, file_name) {
+        if merged_names.insert(canonical(file_name)) {
             entries.files.push(file_name.clone());
         }
     }
     for directory_name in &directory_entries.directories {
-        if !has_name(&entries.files, directory_name)
-            && !has_name(&entries.directories, directory_name)
-        {
+        if merged_names.insert(canonical(directory_name)) {
             entries.directories.push(directory_name.clone());
         }
     }
@@ -260,14 +260,14 @@ fn merge_cached_directory_entries(
 pub struct SnapshotFSBuilder {
     pub(crate) fs: Arc<dyn LayeredFileSystem>,
     pub(crate) cache_files: dirty::SyncMap<Path, CachedFile>,
-    pub(crate) cache_directories: dirty::Map<Path, CloneableMap<Path, String>>,
+    cache_directories: dirty::Map<Path, CloneableMap<Path, String>>,
     source_backed_replacements: Mutex<Set<Path>>,
     node_modules_realpath_aliases: dirty::SyncMap<Path, RealpathAliasSet>,
     pub(crate) to_path: ToPath,
 }
 
 // snapshotfs.go:186
-pub fn new_snapshot_fs_builder_from_source(
+pub(crate) fn new_snapshot_fs_builder_from_source(
     fs: Arc<dyn LayeredFileSystem>,
     cache_files: SharedMap<Path, CachedFile>,
     cache_directories: CacheDirectories,
@@ -1024,7 +1024,7 @@ impl SnapshotFS {
 // snapshotfs.go:639
 // isRelevantExtension returns true if the given extension is a known TypeScript
 // or JavaScript extension that can affect the project.
-pub fn is_relevant_extension(ext: &str) -> bool {
+pub(crate) fn is_relevant_extension(ext: &str) -> bool {
     matches!(ext, ".js" | ".jsx" | ".mjs" | ".cjs" | ".ts" | ".tsx" | ".mts" | ".cts" | ".json")
 }
 
@@ -1032,7 +1032,7 @@ pub fn is_relevant_extension(ext: &str) -> bool {
 // isNodeModulesPath reports whether path is a node_modules directory itself or
 // lives inside one. Used to preserve node_modules watch deletions, whose package
 // files are read transiently and therefore never tracked in cacheDirectories.
-pub fn is_node_modules_path(path: &Path) -> bool {
+pub(crate) fn is_node_modules_path(path: &Path) -> bool {
     path.ends_with("/node_modules") || path.contains("/node_modules/")
 }
 
@@ -1062,7 +1062,11 @@ pub struct SourceFS {
 }
 
 // snapshotfs.go:777
-pub fn new_source_fs(tracking: bool, source: Arc<dyn FileSource>, to_path: ToPath) -> SourceFS {
+pub(crate) fn new_source_fs(
+    tracking: bool,
+    source: Arc<dyn FileSource>,
+    to_path: ToPath,
+) -> SourceFS {
     let (seen_files, missing_directories) = if tracking {
         (Some(Arc::new(SyncMap::default())), Some(Arc::new(SyncSet::default())))
     } else {

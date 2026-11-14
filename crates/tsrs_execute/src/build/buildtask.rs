@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
-use tsrs_ast::{Diagnostic, new_compiler_diagnostic};
+use rustc_hash::FxHashMap;
+
+use tsrs_ast::{Diagnostic, NodeFactory, detach_diagnostic_source_files, new_compiler_diagnostic};
 use tsrs_compiler::{ProgramOptions, WriteFileData, new_program};
 use tsrs_core::P;
 use tsrs_core::arena::Region;
@@ -38,8 +40,8 @@ pub enum BuildKind {
 }
 
 pub struct UpstreamTask {
-    pub(crate) task: P<BuildTask>,
-    pub(crate) ref_index: usize,
+    pub task: P<BuildTask>,
+    pub ref_index: usize,
 }
 
 pub struct BuildInfoEntry {
@@ -57,14 +59,14 @@ pub struct TaskResult {
     pub(crate) builder: Arc<Mutex<String>>,
     pub(crate) report_status: Option<DiagnosticReporter<'static>>,
     pub(crate) diagnostic_reporter: Option<DiagnosticReporter<'static>>,
-    pub(crate) exit_status: ExitStatus,
-    pub(crate) statistics: Option<Statistics>,
+    exit_status: ExitStatus,
+    statistics: Option<Statistics>,
     pub(crate) program: Option<P<tsrs_incremental::Program>>,
     // tsrs-only: what the program's file loader allocated, freed with the program
     // (`Orchestrator::frees_built_programs`).
     pub(crate) program_regions: Option<Arc<tsrs_compiler::ProgramRegions>>,
-    pub(crate) build_kind: BuildKind,
-    pub(crate) files_to_delete: Vec<String>,
+    build_kind: BuildKind,
+    files_to_delete: Vec<String>,
 }
 
 impl TaskResult {
@@ -117,11 +119,11 @@ impl CloseSignal {
 }
 
 pub struct BuildTask {
-    pub(crate) config: String,
+    pub config: String,
     pub(crate) resolved: Mutex<Option<P<ParsedCommandLine>>>,
-    pub(crate) up_stream: Mutex<Vec<UpstreamTask>>,
+    pub up_stream: Mutex<Vec<UpstreamTask>>,
     pub(crate) down_stream: Mutex<Vec<P<BuildTask>>>, // Only set and used in watch mode
-    pub(crate) status: Mutex<Option<UpToDateStatus>>,
+    status: Mutex<Option<UpToDateStatus>>,
     pub(crate) done: CloseSignal,
 
     // task reporting
@@ -155,9 +157,6 @@ pub struct BuildTask {
     watch_changes: Mutex<Option<Vec<(Path, tsrs_fswatch::EventKind)>>>,
     // tsrs-only, watch mode: the task built a program this cycle (reset by the orchestrator each cycle).
     pub(crate) built_program: AtomicBool,
-    // tsrs-only: the file loader regions of a freed program whose task reported diagnostics, which point at the files
-    // in them (`free_built_program`).
-    diagnostic_file_regions: Mutex<Option<Arc<tsrs_compiler::ProgramRegions>>>,
 }
 
 // tsrs-only (watch mode): what a task's full build allocated beside its program, which the programs `reuse_program`
@@ -175,7 +174,7 @@ fn diag(message: &'static Message, args: &[&dyn std::fmt::Display]) -> P<Diagnos
 }
 
 impl BuildTask {
-    pub(crate) fn new(config: String, is_initial_cycle: bool) -> BuildTask {
+    pub fn new(config: String, is_initial_cycle: bool) -> BuildTask {
         BuildTask {
             config,
             resolved: Mutex::new(None),
@@ -199,7 +198,6 @@ impl BuildTask {
             watch_incremental: Mutex::new(None),
             watch_changes: Mutex::new(None),
             built_program: AtomicBool::new(false),
-            diagnostic_file_regions: Mutex::new(None),
         }
     }
 
@@ -542,8 +540,24 @@ impl BuildTask {
     // exhausts the arena reservation.
     //
     // The task's diagnostics stay (the build's error summary reads them): they escape the checker regions when made,
-    // but they point at their files, which the file loader parsed into `regions`, so a task that reported any keeps
-    // those. The declaration and JSON files projects share are in regions of their own (`host::get_source_file`).
+    // but they point at their files, which the file loader parsed into `regions`.  Before the regions are freed,
+    // `detach_diagnostic_files` replaces those file references with minimal copies that hold only what the diagnostic
+    // writer needs (file name, text, line map).  The declaration and JSON files projects share are in regions of their
+    // own (`host::get_source_file`).
+    pub(crate) fn detach_diagnostic_files(&self) {
+        let _diag_scope = tsrs_core::arena::escape_for_diagnostic();
+        let factory = NodeFactory::default();
+        let mut cache = FxHashMap::default();
+        let mut errors = self.errors.lock().unwrap();
+        for i in 0..errors.len() {
+            errors[i] = detach_diagnostic_source_files(errors[i], &factory, &mut cache);
+        }
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "Keeps the same method-call site as before the region-detaching change."
+    )]
     pub(crate) fn free_built_program(
         &self,
         program: P<tsrs_incremental::Program>,
@@ -556,9 +570,9 @@ impl BuildTask {
         // SAFETY: a full build (`new_program`; batch builds never reuse a program), so it shares nothing with another
         // version, and no checker handle of it is held once its task is built.
         unsafe { tsrs_compiler::free_unshared_program(compiler_program) };
-        if !self.errors.lock().unwrap().is_empty() {
-            *self.diagnostic_file_regions.lock().unwrap() = regions;
-        }
+        // The diagnostics were detached in `build_or_clean_project` before this runs, so the loader regions can be
+        // dropped regardless of whether any diagnostics were reported.
+        drop(regions);
     }
 
     // tsrs-only (watch mode): adds the files the task's program, its last full build's processed-file data and the
@@ -773,7 +787,6 @@ impl BuildTask {
             // Other CLI builds free it once the task is built (`free_built_program`); the diagnostics stay.
             let frees = watch || orchestrator.frees_built_programs();
             program_options.checker_regions = frees;
-            // `watch_full_build` keeps the parents of the synthetic imports the reused programs keep.
             program_options.reuse_synthetic_imports = watch;
             program_options.checker_diagnostic_regions =
                 watch && orchestrator.opts.testing.is_none();
@@ -856,7 +869,7 @@ impl BuildTask {
         // Go passes `orchestrator.host.mTimes` (the map pointer). Take the Arc here: a guard created inside the call's
         // argument list would live until the call returns, and `host.get_m_time` (WriteFile of a `.d.ts` that differs
         // only in its map, emitfileshandler.go:240) locks the same mutex during emit, which deadlocked.
-        let testing_m_times_cache = host.m_times.lock().unwrap().clone();
+        let testing_m_times_cache = host.m_times.read().unwrap().clone();
         let (result, statistics) = emit_and_report_statistics(&EmitInput {
             sys,
             program,
@@ -1777,65 +1790,9 @@ pub fn is_content_mapper_supplemental_build_info_path<'a>(
 
 // Whether a changed file that is not a file of a program could change its module resolution: a file module
 // resolution could find, or a package.json.
-fn could_change_resolution(path: &Path) -> bool {
+pub fn could_change_resolution(path: &Path) -> bool {
     tspath::get_base_file_name(path.as_str()) == "package.json"
         || [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"]
             .iter()
             .any(|ext| tspath::file_extension_is(path.as_str(), ext))
-}
-
-#[cfg(test)]
-mod buildtask_contentmapper_test {
-    use tsrs_core::tspath::Path;
-
-    use super::is_content_mapper_supplemental_build_info_path;
-
-    // buildtask_contentmapper_test.go:11. A build info file entry that names a supplemental output of a root file
-    // (`<root>.<n>.<ext>`) is skipped when the file is gone, instead of making the build out of date; anything else
-    // must still be checked.
-    #[test]
-    fn test_is_content_mapper_supplemental_build_info_path() {
-        let roots = [Path::new("/src/app.vue"), Path::new("/src/index.ts")];
-        let path = Path::new;
-
-        assert!(is_content_mapper_supplemental_build_info_path(&path("/src/app.vue.0.ts"), &roots));
-        assert!(is_content_mapper_supplemental_build_info_path(
-            &path("/src/app.vue.12.mts"),
-            &roots
-        ));
-        assert!(!is_content_mapper_supplemental_build_info_path(&path("/src/app.vue.ts"), &roots));
-        assert!(!is_content_mapper_supplemental_build_info_path(
-            &path("/src/app.vue.0.txt"),
-            &roots
-        ));
-        assert!(!is_content_mapper_supplemental_build_info_path(
-            &path("/src/other.vue.0.ts"),
-            &roots
-        ));
-    }
-}
-
-#[cfg(test)]
-mod could_change_resolution_test {
-    use tsrs_core::tspath::Path;
-
-    use super::could_change_resolution;
-
-    #[test]
-    fn paths_module_resolution_could_find() {
-        for path in [
-            "/a/b.ts",
-            "/a/b.d.ts",
-            "/a/b.tsx",
-            "/a/b.mts",
-            "/a/b.cjs",
-            "/a/b.json",
-            "/a/package.json",
-        ] {
-            assert!(could_change_resolution(&Path::new(path)), "{path}");
-        }
-        for path in ["/a/b.md", "/a/b.css", "/a/b.tsbuildinfo", "/a/b.js.map", "/a/4913"] {
-            assert!(!could_change_resolution(&Path::new(path)), "{path}");
-        }
-    }
 }

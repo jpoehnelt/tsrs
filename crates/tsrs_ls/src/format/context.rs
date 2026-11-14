@@ -1,3 +1,8 @@
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -10,10 +15,10 @@ use crate::astnav;
 use crate::lsutil::FormatCodeSettings;
 
 // context.go:11
-pub struct FormattingContext {
+pub(crate) struct FormattingContext {
     pub(crate) current_token_span: TextRangeWithKind,
     pub(crate) next_token_span: TextRangeWithKind,
-    pub(crate) context_node: Option<P<Node>>,
+    context_node: Option<P<Node>>,
     pub(crate) current_token_parent: Option<P<Node>>,
     pub(crate) next_token_parent: Option<P<Node>>,
 
@@ -23,13 +28,13 @@ pub struct FormattingContext {
     context_node_block_is_on_one_line: Cell<Tristate>,
     next_node_block_is_on_one_line: Cell<Tristate>,
 
-    pub source_file: P<SourceFile>,
-    pub formatting_request_kind: FormatRequestKind,
-    pub options: Rc<FormatCodeSettings>,
+    pub(crate) source_file: P<SourceFile>,
+    pub(crate) formatting_request_kind: FormatRequestKind,
+    pub(crate) options: Rc<FormatCodeSettings>,
 }
 
 // context.go:29
-pub fn new_formatting_context(
+pub(crate) fn new_formatting_context(
     file: P<SourceFile>,
     kind: FormatRequestKind,
     options: Rc<FormatCodeSettings>,
@@ -66,7 +71,7 @@ impl FormattingContext {
     }
 
     // context.go:38
-    pub fn update_context(
+    pub(crate) fn update_context(
         &mut self,
         cur: TextRangeWithKind,
         cur_parent: Option<P<Node>>,
@@ -120,7 +125,7 @@ impl FormattingContext {
     }
 
     // context.go:88
-    pub fn context_node_all_on_same_line(&self) -> bool {
+    pub(crate) fn context_node_all_on_same_line(&self) -> bool {
         if self.context_node_all_on_same_line.get() == Tristate::Unknown {
             self.context_node_all_on_same_line.set(self.node_is_on_one_line(self.context_node()));
         }
@@ -128,7 +133,7 @@ impl FormattingContext {
     }
 
     // context.go:95
-    pub fn next_node_all_on_same_line(&self) -> bool {
+    pub(crate) fn next_node_all_on_same_line(&self) -> bool {
         if self.next_node_all_on_same_line.get() == Tristate::Unknown {
             self.next_node_all_on_same_line.set(self.node_is_on_one_line(self.next_token_parent()));
         }
@@ -136,7 +141,7 @@ impl FormattingContext {
     }
 
     // context.go:102
-    pub fn tokens_are_on_same_line(&self) -> bool {
+    pub(crate) fn tokens_are_on_same_line(&self) -> bool {
         if self.tokens_are_on_same_line.get() == Tristate::Unknown {
             self.tokens_are_on_same_line.set(self.range_is_on_one_line(TextRange::from_text_pos(
                 self.current_token_span.loc.pos(),
@@ -147,7 +152,7 @@ impl FormattingContext {
     }
 
     // context.go:109
-    pub fn context_node_block_is_on_one_line(&self) -> bool {
+    pub(crate) fn context_node_block_is_on_one_line(&self) -> bool {
         if self.context_node_block_is_on_one_line.get() == Tristate::Unknown {
             self.context_node_block_is_on_one_line
                 .set(self.block_is_on_one_line(self.context_node()));
@@ -156,7 +161,7 @@ impl FormattingContext {
     }
 
     // context.go:116
-    pub fn next_node_block_is_on_one_line(&self) -> bool {
+    pub(crate) fn next_node_block_is_on_one_line(&self) -> bool {
         if self.next_node_block_is_on_one_line.get() == Tristate::Unknown {
             self.next_node_block_is_on_one_line
                 .set(self.block_is_on_one_line(self.next_token_parent()));
@@ -166,7 +171,7 @@ impl FormattingContext {
 }
 
 // context.go:73
-pub fn with_token_start(loc: P<Node>, file: P<SourceFile>) -> TextRange {
+pub(crate) fn with_token_start(loc: P<Node>, file: P<SourceFile>) -> TextRange {
     let start_pos = scanner::get_token_pos_of_node(loc, file, false);
     TextRange::new(start_pos, loc.end().expect_source("parsed nodes have source positions"))
 }

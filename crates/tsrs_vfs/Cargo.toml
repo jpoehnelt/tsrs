@@ -1,10 +1,17 @@
 [package]
 name = "tsrs_vfs"
-version.workspace = true
+version = "7.1.0-beta.tsrs1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+categories.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+readme.workspace = true
+include = ["/src", "/build.rs", "/LICENSE", "/NOTICE", "/libs"]
+description = "Virtual filesystem and bundled TypeScript libraries for tsrs"
 
 [lints]
 workspace = true
@@ -26,7 +33,8 @@ miniz_oxide = { version = "0.9.1", optional = true }
 miniz_oxide = { version = "0.9.1", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { version = "1.1.5", features = ["fs"] }
+rustix.workspace = true
 
 [lib]
+test = false
 doctest = false

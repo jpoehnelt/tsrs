@@ -2,7 +2,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_MIN_WAIT_TIME: Duration = Duration::from_millis(50);
+const DEFAULT_MIN_WAIT_TIME: Duration = Duration::from_millis(50);
 pub const DEFAULT_MAX_WAIT_TIME: Duration = Duration::from_millis(500);
 
 // Go keeps these as package variables so tests can shorten them; nothing changes them here.
@@ -61,7 +61,7 @@ struct LatchState {
 
 impl Debounce {
     // debounce.go:42
-    pub(crate) fn new() -> Arc<Debounce> {
+    pub fn new() -> Arc<Debounce> {
         let d = Arc::new(Debounce {
             mu: Mutex::new(DebounceState { callbacks: FxHashMap::default(), last_time: None }),
             latch_mu: Mutex::new(LatchState::default()),
@@ -234,10 +234,9 @@ impl Debounce {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
 impl Debounce {
     // Drive the real event classifier synchronously without a background thread draining its pending batch.
-    pub(crate) fn new_without_loop_for_test() -> Arc<Self> {
+    pub fn new_without_loop_for_test() -> Arc<Self> {
         Arc::new(Self {
             mu: Mutex::new(DebounceState { callbacks: FxHashMap::default(), last_time: None }),
             latch_mu: Mutex::new(LatchState::default()),
@@ -246,7 +245,7 @@ impl Debounce {
         })
     }
 
-    pub(crate) fn leading_edge_is_held_for_test(&self) -> bool {
+    pub fn leading_edge_is_held_for_test(&self) -> bool {
         self.mu.lock().unwrap().last_time.is_some()
     }
 }

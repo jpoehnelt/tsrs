@@ -68,6 +68,7 @@ pub fn run_lsp(args: &[String]) -> i32 {
                 Err(err) => Err(err.to_string()),
             }
         })),
+        spawn: Some(Arc::new(tsrs_contentmapper::spawn_process)),
         progress_delay: Duration::from_millis(250),
         set_parent_process_id: new_parent_process_watchdog(&ctx, &stop, client_process_id),
     });
@@ -178,7 +179,7 @@ struct FlagDef {
     value: FlagValue,
 }
 
-pub struct FlagSet {
+pub(crate) struct FlagSet {
     name: &'static str,
     flags: Vec<FlagDef>,
 }
@@ -196,7 +197,7 @@ impl FlagSet {
         self.flags.push(FlagDef { name, usage, value: FlagValue::String(String::new()) });
     }
 
-    pub(crate) fn int(&mut self, name: &'static str, usage: &'static str) {
+    fn int(&mut self, name: &'static str, usage: &'static str) {
         self.flags.push(FlagDef { name, usage, value: FlagValue::Int(0) });
     }
 
@@ -215,7 +216,7 @@ impl FlagSet {
         }
     }
 
-    pub(crate) fn int_value(&self, name: &str) -> i64 {
+    fn int_value(&self, name: &str) -> i64 {
         match self.lookup(name).map(|f| &f.value) {
             Some(FlagValue::Int(i)) => *i,
             _ => 0,

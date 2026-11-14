@@ -3,9 +3,9 @@
 use crate::*;
 
 // modifiervisitor.go:8
-pub struct ModifierVisitor {
-    pub base: Transformer,
-    pub allowed_modifiers: ModifierFlags,
+struct ModifierVisitor {
+    base: Transformer,
+    allowed_modifiers: ModifierFlags,
 }
 
 impl ModifierVisitor {
@@ -20,7 +20,11 @@ impl ModifierVisitor {
 }
 
 // modifiervisitor.go:21
-pub fn extract_modifiers(
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+pub(crate) fn extract_modifiers(
     emit_context: P<EmitContext>,
     modifiers: Option<P<ModifierList>>,
     allowed: ModifierFlags,

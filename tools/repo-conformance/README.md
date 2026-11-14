@@ -38,11 +38,13 @@ and ten configs in all; 180 seconds for setup (60 for cloning); 120 seconds for 
 compiler per config. tsrs is not run when tsgo fails or times out. Timeouts kill child processes too.
 
 Each project is compared in two modes. Default mode runs both compilers as users do, with no extra flags, so the
-project's own options (including `checkers`) apply to both. Strict mode runs tsgo again with `--checkers 4`, its
+project's own options (including `checkers`) apply to both. Since 0.20.0, tsrs uses Go's checker defaults;
+this comparison does not opt into `--fast`. Strict mode runs tsgo again with `--checkers 4`, its
 default count (`internal/compiler/checkerpool.go`: one checker under `singleThreaded`, never more than the file count),
-and `tsrs --checkerAssignment go --checkers 4 --noLazyMembers`, which reproduces Go's checker assignment, history and
-caches; lazy members change which instantiations a checker has cached, and so where depth limits are hit
-(`docs/DEBUGGING.md`). Strict mode has its own tsgo run because no tsgo output says how many checkers the default run
+and `tsrs --checkerAssignment go --checkers 4 --noLazyMembers`, which explicitly fixes the checker count, assignment,
+history and eager members even if the project's options differ. Lazy members change which instantiations a checker
+has cached, and so where depth limits are hit (`docs/DEBUGGING.md`). Strict mode has its own tsgo run because no tsgo
+output says how many checkers the default run
 used. It runs only for projects where default-mode tsgo completed, after all default comparisons, splitting the time
 they leave (half to tsgo, the rest to tsrs, at most 60 seconds each), so it never shortens them. tsrs is not run when
 strict tsgo fails. A strict-mode timeout with less time than the default run's limit counts as not compared rather than
@@ -90,11 +92,11 @@ and `--previous` adds shards from an earlier run:
 ```sh
 docker build -t tsrs-repo-conformance tools/repo-conformance
 TSRS_CONFORMANCE_SANDBOX_IMAGE=tsrs-repo-conformance \
-  python3 -m unittest discover -s tools/repo-conformance -p 'test_sandbox.py' -v
-python3 tools/repo-conformance/run.py plan --count 20 --shards 1 --out /tmp/top-repos/manifest.json
-python3 tools/repo-conformance/run.py run --manifest /tmp/top-repos/manifest.json --shard 0 \
+  node --test tools/repo-conformance/test_sandbox.mjs
+vp run repo-conformance plan --count 20 --shards 1 --out /tmp/top-repos/manifest.json
+vp run repo-conformance run --manifest /tmp/top-repos/manifest.json --shard 0 \
   --tsrs target/debug/tsrs --tsgo /path/to/pinned/tsgo --out /tmp/top-repos/results --cache /tmp/top-repos/cache
-python3 tools/repo-conformance/run.py report --manifest /tmp/top-repos/manifest.json \
+vp run repo-conformance report --manifest /tmp/top-repos/manifest.json \
   --results /tmp/top-repos/results --out /tmp/top-repos/report.md
 ```
 
@@ -102,5 +104,5 @@ Run the harness tests with real compilers:
 
 ```sh
 TSRS_CONFORMANCE_TSRS="$PWD/target/debug/tsrs" TSRS_CONFORMANCE_TSGO=/path/to/pinned/tsgo \
-  python3 -m unittest discover -s tools/repo-conformance -p 'test_*.py' -v
+  node --test tools/repo-conformance/test_*.mjs
 ```

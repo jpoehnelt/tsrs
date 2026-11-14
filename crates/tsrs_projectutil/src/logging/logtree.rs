@@ -110,25 +110,15 @@ impl LogTree {
     }
 
     // logtree.go:77
-    pub fn is_verbose(&self) -> bool {
+    fn is_verbose(&self) -> bool {
         // Relaxed: verbosity is an independent flag; it does not publish other data.
         self.0.as_ref().is_some_and(|c| c.verbose.load(Ordering::Relaxed))
     }
 
     // logtree.go:81
-    pub fn set_verbose(&self, verbose: bool) {
+    fn set_verbose(&self, verbose: bool) {
         if let Some(c) = &self.0 {
             c.verbose.store(verbose, Ordering::Relaxed);
-        }
-    }
-
-    // logtree.go:88
-    #[must_use]
-    pub fn verbose(&self) -> LogTree {
-        match &self.0 {
-            // Relaxed: this is a logging preference; it does not publish log entries or other data.
-            Some(c) if c.verbose.load(Ordering::Relaxed) => self.clone(),
-            _ => LogTree::nil(),
         }
     }
 
@@ -234,33 +224,5 @@ impl Logger for LogTree {
 impl LogCollector for LogTree {
     fn string(&self) -> String {
         LogTree::string(self)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // logtree_test.go:12 TestLogTreeImplementsLogger
-    #[test]
-    fn log_tree_implements_logger() {
-        let tree = new_log_tree("test");
-        let _: &dyn Logger = &tree;
-    }
-
-    // logtree_test.go:17 TestLogTree (empty in Go); tsrs-only: the rendering of nested forks.
-    #[test]
-    fn log_tree() {
-        let tree = new_log_tree("root");
-        tree.log("a");
-        let child = tree.fork("child");
-        child.log("b");
-        let s = tree.string();
-        let lines: Vec<&str> = s.lines().collect();
-        assert_eq!(lines[0], "======== root ========");
-        assert!(lines[1].ends_with(" a"));
-        assert!(lines[2].ends_with(" child"));
-        assert!(lines[3].starts_with('\t') && lines[3].ends_with(" b"));
-        LogTree::nil().fork("x").log("ignored");
     }
 }

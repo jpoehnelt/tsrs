@@ -144,12 +144,7 @@ impl FileMode {
     }
 
     #[must_use]
-    pub fn perm(self) -> FileMode {
-        self & FileMode::Perm
-    }
-
-    #[must_use]
-    pub fn type_(self) -> FileMode {
+    pub(crate) fn type_(self) -> FileMode {
         self & FileMode::Type
     }
 }
@@ -199,7 +194,7 @@ pub enum FsError {
 }
 
 impl FsError {
-    pub fn is_not_exist(&self) -> bool {
+    pub(crate) fn is_not_exist(&self) -> bool {
         matches!(self, FsError::NotExist)
     }
 }

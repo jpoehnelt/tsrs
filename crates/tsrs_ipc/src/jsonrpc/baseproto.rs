@@ -7,9 +7,9 @@ use crate::error::eof;
 // https://microsoft.github.io/language-server-protocol/specifications/base/0.9/specification/
 
 // baseproto.go:16
-pub const ERR_INVALID_HEADER: &str = "jsonrpc: invalid header";
-pub const ERR_INVALID_CONTENT_LENGTH: &str = "jsonrpc: invalid content length";
-pub const ERR_NO_CONTENT_LENGTH: &str = "jsonrpc: no content length";
+const ERR_INVALID_HEADER: &str = "jsonrpc: invalid header";
+const ERR_INVALID_CONTENT_LENGTH: &str = "jsonrpc: invalid content length";
+const ERR_NO_CONTENT_LENGTH: &str = "jsonrpc: no content length";
 
 // bufio.NewReader's and bufio.NewWriter's default size.
 const BUFFER_SIZE: usize = 4096;
@@ -154,6 +154,6 @@ fn parse_int(s: &[u8]) -> Result<i64, String> {
 // Go's `%q` of a byte slice (strconv.Quote): printable runes as they are, the usual backslash escapes, `\x` for
 // invalid UTF-8 and ASCII controls, `\u` / `\U` for other non-printable runes. Go's unicode.IsPrint is
 // approximated: controls, white space other than ' ', and the format characters a header is likely to contain.
-pub fn go_quote(b: &[u8]) -> String {
+fn go_quote(b: &[u8]) -> String {
     tsrs_core::gocompat::quote(b, tsrs_core::gocompat::QuoteStyle::Header)
 }

@@ -46,11 +46,6 @@ pub struct CheckerRegistry {
 }
 
 impl CheckerRegistry {
-    #[cfg(test)]
-    pub fn new() -> CheckerRegistry {
-        CheckerRegistry::default()
-    }
-
     /// Drops every registered pointer. Runs when the snapshot's `SnapshotData` is dropped.
     pub fn release(&self) {
         let mut st = self.lock();
@@ -66,7 +61,7 @@ impl CheckerRegistry {
     }
 
     /// Takes over one reference of `snapshot` until `release` (see `retained`).
-    pub fn retain_snapshot(
+    pub(crate) fn retain_snapshot(
         &self,
         snapshot: std::sync::Arc<tsrs_project::Snapshot>,
     ) -> CheckerResult<()> {
@@ -80,7 +75,6 @@ impl CheckerRegistry {
         Ok(())
     }
 
-    #[cfg(test)]
     pub fn is_released(&self) -> bool {
         self.lock().released
     }
@@ -99,7 +93,7 @@ impl CheckerRegistry {
     }
 
     /// Go `registerSymbol`. Returns the symbol id and its canonical project.
-    pub fn register_symbol(
+    pub(crate) fn register_symbol(
         &self,
         symbol: P<Symbol>,
         canonical_project: &str,
@@ -123,7 +117,7 @@ impl CheckerRegistry {
     }
 
     /// Go `resolveSymbolHandle`.
-    pub fn resolve_symbol(&self, id: u64) -> CheckerResult<P<Symbol>> {
+    pub(crate) fn resolve_symbol(&self, id: u64) -> CheckerResult<P<Symbol>> {
         if id == 0 {
             return Err(CheckerError::client("empty symbol handle"));
         }
@@ -148,7 +142,12 @@ impl CheckerRegistry {
     }
 
     /// Go `registerType`. `checker_id` is the id of the API checker that produced `t`.
-    pub fn register_type(&self, project: &str, checker_id: u32, t: P<Type>) -> CheckerResult<u32> {
+    pub(crate) fn register_type(
+        &self,
+        project: &str,
+        checker_id: u32,
+        t: P<Type>,
+    ) -> CheckerResult<u32> {
         assert!(!project.is_empty(), "registerType: empty project ID");
         let id = t.id().0;
         let mut st = self.lock();
@@ -194,7 +193,7 @@ impl CheckerRegistry {
     }
 
     /// Go `registerSignature`.
-    pub fn register_signature(
+    pub(crate) fn register_signature(
         &self,
         project: &str,
         checker_id: u32,
@@ -215,7 +214,7 @@ impl CheckerRegistry {
     }
 
     /// Go `resolveSignatureHandle`.
-    pub fn resolve_signature(
+    pub(crate) fn resolve_signature(
         &self,
         project: &str,
         id: u64,

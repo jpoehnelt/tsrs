@@ -19,7 +19,7 @@ const JSONRPC_VERSION: &str = "2.0";
 const MESSAGE_START: &str = "{\"jsonrpc\":\"2.0\"";
 
 // jsonrpc.go:22
-pub const ERR_INVALID_JSONRPC_VERSION: &str = "invalid JSON-RPC version";
+const ERR_INVALID_JSONRPC_VERSION: &str = "invalid JSON-RPC version";
 
 // jsonrpc.go:24
 // JSONRPCVersion.UnmarshalJSON. Go compares the raw member text with `"2.0"`; this compares the decoded string, so
@@ -100,7 +100,7 @@ pub struct ResponseError {
 
 impl ResponseError {
     // jsonrpc.go:104
-    pub fn string(&self) -> String {
+    fn string(&self) -> String {
         if json::marshal(self.data.as_ref().unwrap_or(&Value::Null)).is_err() {
             // Go prints the nil []byte json.Marshal returned with its error.
             return format!("[{}]: {}\n[]", self.code, self.message);

@@ -221,7 +221,7 @@ pub fn with_checker_data_lease(ctx: &Context) -> Context {
 // mergeGlobalDiagnosticsFromCheckerLocked's merge. Region hook: the pool keeps the regions of the diagnostics it
 // accumulates, including those a merged copy refers to (`compact_and_merge_related_infos` clones a diagnostic outside
 // the checker's region, sharing its text, chain and related information).
-fn accumulate_global_diagnostics(all: &[P<Diagnostic>]) -> Vec<P<Diagnostic>> {
+pub fn accumulate_global_diagnostics(all: &[P<Diagnostic>]) -> Vec<P<Diagnostic>> {
     let accumulated = sort_and_deduplicate_diagnostics(all);
     for &d in &accumulated {
         tsrs_ast::note_diagnostic_escape(d);
@@ -397,7 +397,7 @@ impl CheckerPoolImpl {
 
     // Region hook: frees every checker of the pool and their regions. Called when the program is freed (nothing
     // holds a checker or refers to checker data any more).
-    pub(crate) fn free_checkers(&self) {
+    pub fn free_checkers(&self) {
         let mut checkers: Vec<PooledChecker> = std::mem::take(&mut *self.parked.lock().unwrap());
         {
             let mut st = self.mu.lock().unwrap();
@@ -856,7 +856,7 @@ impl CheckerPoolImpl {
     // checkerpool.go:481
     // TakeNewGlobalDiagnostics reports whether new global diagnostics have been
     // accumulated since the last call, and resets the flag.
-    pub fn take_new_global_diagnostics(&self) -> bool {
+    pub(crate) fn take_new_global_diagnostics(&self) -> bool {
         let mut st = self.mu.lock().unwrap();
         std::mem::replace(&mut st.global_diag_changed, false)
     }
@@ -878,29 +878,24 @@ impl CheckerPoolImpl {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn checker_ptr(&self, index: usize) -> Option<*const Checker> {
+    pub fn checker_ptr(&self, index: usize) -> Option<*const Checker> {
         self.mu.lock().unwrap().checkers[index].as_ref().map(|c| &raw const **c)
     }
 
-    #[cfg(test)]
-    pub(crate) fn persistent_ptr(&self) -> Option<*const Checker> {
+    pub fn persistent_ptr(&self) -> Option<*const Checker> {
         self.mu.lock().unwrap().persistent_checker.as_ref().map(|c| &raw const **c)
     }
 
-    #[cfg(test)]
-    pub(crate) fn opts(&self) -> CheckerPoolOptions {
+    pub fn opts(&self) -> CheckerPoolOptions {
         self.opts
     }
 
-    #[cfg(test)]
-    pub(crate) fn query_sem_used(&self) -> usize {
+    pub fn query_sem_used(&self) -> usize {
         self.query_sem.state.lock().unwrap().used
     }
 
     // (checker regions, disposed checkers waiting for their leases, parked checkers)
-    #[cfg(test)]
-    pub(crate) fn region_counts(&self) -> (usize, usize, usize) {
+    pub fn region_counts(&self) -> (usize, usize, usize) {
         let instances = self.instances.lock().unwrap();
         (
             instances.len(),
@@ -909,8 +904,7 @@ impl CheckerPoolImpl {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_state<R>(&self, f: impl FnOnce(&CheckerPoolTestView) -> R) -> R {
+    pub fn test_state<R>(&self, f: impl FnOnce(&CheckerPoolTestView) -> R) -> R {
         let st = self.mu.lock().unwrap();
         let view = CheckerPoolTestView {
             checkers: st.checkers.iter().map(std::option::Option::is_some).collect(),
@@ -926,24 +920,23 @@ impl CheckerPoolImpl {
     }
 }
 
-#[cfg(test)]
 pub struct CheckerPoolTestView {
-    pub(crate) checkers: Vec<bool>,
+    pub checkers: Vec<bool>,
     #[expect(
         dead_code,
         reason = "Retained in the Go-shaped pool test view; the currently ported cases inspect other fields."
     )]
-    pub(crate) held_by: Vec<String>,
-    pub(crate) file_associations: FxHashMap<P<SourceFile>, usize>,
-    pub(crate) request_associations: FxHashMap<String, usize>,
-    pub(crate) has_cleanup_timer: bool,
-    pub(crate) discarded: bool,
-    pub(crate) persistent: bool,
+    held_by: Vec<String>,
+    pub file_associations: FxHashMap<P<SourceFile>, usize>,
+    pub request_associations: FxHashMap<String, usize>,
+    pub has_cleanup_timer: bool,
+    pub discarded: bool,
+    pub persistent: bool,
     #[expect(
         dead_code,
         reason = "Retained in the Go-shaped pool test view; the currently ported cases inspect other fields."
     )]
-    pub(crate) persistent_held: bool,
+    persistent_held: bool,
 }
 
 impl CheckerPoolImpl {
@@ -963,7 +956,3 @@ impl CheckerPoolImpl {
         self.free_or_park(key, instance);
     }
 }
-
-#[cfg(test)]
-#[path = "checkerpool_test.rs"]
-mod checkerpool_test;

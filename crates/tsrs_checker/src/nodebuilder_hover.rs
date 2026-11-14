@@ -6,7 +6,11 @@ use tsrs_core::*;
 
 // nodebuilder_hover.go:16
 // isExpanding returns whether the node builder context is operating in hover-expansion mode.
-pub fn is_expanding(ctx: P<NodeBuilderContext>) -> bool {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+pub(crate) fn is_expanding(ctx: P<NodeBuilderContext>) -> bool {
     ctx.max_expansion_depth.get().is_some()
 }
 
@@ -47,7 +51,7 @@ impl NodeBuilderImpl {
 
     // nodebuilder_hover.go:52
     // expandEnumDecl produces an EnumDeclaration node with all members.
-    pub(crate) fn expand_enum_decl(&self, c: &mut Checker, symbol: P<Symbol>) -> P<Node> {
+    fn expand_enum_decl(&self, c: &mut Checker, symbol: P<Symbol>) -> P<Node> {
         let name = symbol_name(symbol);
         let ctx = self.ctx();
         ctx.approximate_length.set(ctx.approximate_length.get() + 9 + name.len());
@@ -110,7 +114,7 @@ impl NodeBuilderImpl {
     }
 
     // nodebuilder_hover.go:92
-    pub(crate) fn enum_member_initializer(&self, c: &mut Checker, p: P<Symbol>) -> Option<P<Node>> {
+    fn enum_member_initializer(&self, c: &mut Checker, p: P<Symbol>) -> Option<P<Node>> {
         let member_decl = p.declarations().iter().copied().find(|d| is_enum_member(*d));
         let member_decl = member_decl?;
         let val = c.get_constant_value(member_decl);
@@ -126,7 +130,7 @@ impl NodeBuilderImpl {
 
     // nodebuilder_hover.go:111
     // expandClassDecl produces a ClassDeclaration node with heritage clauses and members.
-    pub(crate) fn expand_class_decl(&self, c: &mut Checker, symbol: P<Symbol>) -> P<Node> {
+    fn expand_class_decl(&self, c: &mut Checker, symbol: P<Symbol>) -> P<Node> {
         let name = symbol_name(symbol);
         let ctx = self.ctx();
         ctx.approximate_length.set(ctx.approximate_length.get() + 9 + name.len());
@@ -224,7 +228,7 @@ impl NodeBuilderImpl {
     // nodebuilder_hover.go:187
     // addClassModifiers post-processes class member nodes to add class-specific modifiers
     // (private, protected, public, abstract, static) based on the original symbol declarations.
-    pub(crate) fn add_class_modifiers(
+    fn add_class_modifiers(
         &self,
         _c: &mut Checker,
         members: &mut [P<Node>],
@@ -270,7 +274,7 @@ impl NodeBuilderImpl {
 // typeElementsToClassElements converts TypeElement nodes (PropertySignature, MethodSignature)
 // to their ClassElement equivalents (PropertyDeclaration, MethodDeclaration) so they can be
 // used as members of a ClassDeclaration. Nodes that are already ClassElements pass through unchanged.
-pub fn type_elements_to_class_elements(f: &NodeFactory, members: &mut [P<Node>]) -> Vec<P<Node>> {
+fn type_elements_to_class_elements(f: &NodeFactory, members: &mut [P<Node>]) -> Vec<P<Node>> {
     for element in members.iter_mut() {
         let m = *element;
         match m.kind() {
@@ -307,7 +311,7 @@ impl NodeBuilderImpl {
     // expandInterfaceDecl produces an InterfaceDeclaration with members.
     // Reuses addPropertyToElementList for property serialization and
     // signatureToSignatureDeclarationHelper for signatures.
-    pub(crate) fn expand_interface_decl(&self, c: &mut Checker, symbol: P<Symbol>) -> P<Node> {
+    fn expand_interface_decl(&self, c: &mut Checker, symbol: P<Symbol>) -> P<Node> {
         let name = symbol_name(symbol);
         let ctx = self.ctx();
         ctx.approximate_length.set(ctx.approximate_length.get() + 14 + name.len());
@@ -368,11 +372,7 @@ impl NodeBuilderImpl {
     }
 
     // nodebuilder_hover.go:275
-    pub(crate) fn hover_heritage_clauses(
-        &self,
-        _c: &mut Checker,
-        declarations: &[P<Node>],
-    ) -> Vec<P<Node>> {
+    fn hover_heritage_clauses(&self, _c: &mut Checker, declarations: &[P<Node>]) -> Vec<P<Node>> {
         let mut extends_types: Vec<P<Node>> = Vec::new();
         let mut implements_types: Vec<P<Node>> = Vec::new();
         for &declaration in declarations {
@@ -407,7 +407,7 @@ impl NodeBuilderImpl {
     // nodebuilder_hover.go:299
     // serializePropertiesWithTruncation iterates properties using addPropertyToElementList,
     // with truncation checks matching Strada's createTypeNodesFromResolvedType behavior.
-    pub(crate) fn serialize_properties_with_truncation(
+    fn serialize_properties_with_truncation(
         &self,
         c: &mut Checker,
         properties: &[P<Symbol>],
@@ -444,7 +444,7 @@ impl NodeBuilderImpl {
 
     // nodebuilder_hover.go:317
     // serializeConstructors builds constructor signature(s) for a class, with base type filtering.
-    pub(crate) fn serialize_constructors(
+    fn serialize_constructors(
         &self,
         c: &mut Checker,
         static_type: P<Type>,
@@ -534,7 +534,7 @@ impl NodeBuilderImpl {
 
     // nodebuilder_hover.go:369
     // serializeIndexSignaturesOfType builds index signature declarations, filtering those identical to baseType.
-    pub(crate) fn serialize_index_signatures_of_type(
+    fn serialize_index_signatures_of_type(
         &self,
         c: &mut Checker,
         input: P<Type>,
@@ -561,7 +561,7 @@ impl NodeBuilderImpl {
     // nodebuilder_hover.go:385
     // serializeNamespaceMember produces the appropriate declaration node for a namespace member
     // based on its symbol flags (type alias, enum, class, interface, nested namespace, or variable).
-    pub(crate) fn serialize_namespace_member(
+    fn serialize_namespace_member(
         &self,
         c: &mut Checker,
         resolved: P<Symbol>,
@@ -603,7 +603,7 @@ impl NodeBuilderImpl {
 
     // nodebuilder_hover.go:413
     // expandModuleDecl produces a ModuleDeclaration with exported members.
-    pub(crate) fn expand_module_decl(&self, c: &mut Checker, symbol: P<Symbol>) -> P<Node> {
+    fn expand_module_decl(&self, c: &mut Checker, symbol: P<Symbol>) -> P<Node> {
         struct HoverStatement {
             node: P<Node>,
             is_local: bool, // local declarations (e.g. alias targets) should not get export modifier
@@ -833,7 +833,7 @@ impl NodeBuilderImpl {
 
     // nodebuilder_hover.go:558
     // serializeTypeAliasForNamespace produces a TypeAliasDeclaration for a type alias inside a namespace body.
-    pub(crate) fn serialize_type_alias_for_namespace(
+    fn serialize_type_alias_for_namespace(
         &self,
         c: &mut Checker,
         symbol: P<Symbol>,
@@ -859,7 +859,7 @@ impl NodeBuilderImpl {
 
     // nodebuilder_hover.go:571
     // filterInheritedProperties removes properties already present in base types.
-    pub(crate) fn filter_inherited_properties(
+    fn filter_inherited_properties(
         c: &mut Checker,
         t: P<Type>,
         base_types: &[P<Type>],
@@ -894,7 +894,7 @@ impl NodeBuilderImpl {
     }
 
     // nodebuilder_hover.go:598
-    pub(crate) fn is_namespace_member(_c: &mut Checker, p: P<Symbol>) -> bool {
+    fn is_namespace_member(_c: &mut Checker, p: P<Symbol>) -> bool {
         p.flags().intersects(SymbolFlags::Type | SymbolFlags::Namespace | SymbolFlags::Alias)
             || !(p.flags().intersects(SymbolFlags::Prototype)
                 || p.name() == "prototype"
@@ -904,6 +904,6 @@ impl NodeBuilderImpl {
 }
 
 // nodebuilder_hover.go:603
-pub fn is_hash_private(s: P<Symbol>) -> bool {
+fn is_hash_private(s: P<Symbol>) -> bool {
     s.value_declaration().is_some_and(|d| d.name().is_some_and(is_private_identifier))
 }

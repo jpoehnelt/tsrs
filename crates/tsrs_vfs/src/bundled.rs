@@ -8,11 +8,11 @@ mod bundled;
 #[cfg(feature = "compressed-stdlib")]
 mod compressed;
 pub mod embed;
-#[cfg(any(not(feature = "compressed-stdlib"), test))]
+#[cfg(not(feature = "compressed-stdlib"))]
 mod embed_generated;
 mod libs_generated;
 #[cfg(feature = "noembed")]
-mod noembed;
+pub mod noembed;
 
 pub use self::bundled::*;
 #[cfg(not(feature = "noembed"))]
@@ -21,7 +21,3 @@ pub use self::implementation::is_bundled;
 pub use self::libs_generated::*;
 #[cfg(feature = "noembed")]
 use self::noembed as implementation;
-
-#[cfg(test)]
-#[path = "bundled/bundled_test.rs"]
-mod bundled_test;

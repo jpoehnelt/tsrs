@@ -1,3 +1,8 @@
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+
 //! Non-function declarations of the modulespecifiers package (types.go, plus those of preferences.go, specifiers.go
 //! and util.go).
 
@@ -37,15 +42,14 @@ pub enum ResultKind {
 #[derive(Clone, Debug, Default)]
 pub struct ModuleSpecifiersResult {
     pub specifiers: Vec<String>,
-    pub kind: ResultKind,
     pub ambient_module_symbol: Option<P<Symbol>>, // used to construct an import attributes node, if one is needed
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModulePath {
     pub file_name: String,
-    pub is_in_node_modules: bool,
-    pub is_redirect: bool,
+    pub(crate) is_in_node_modules: bool,
+    pub(crate) is_redirect: bool,
 }
 
 /// Go `ModuleSpecifierGenerationHost`.
@@ -208,9 +212,9 @@ pub enum MatchingMode {
 /// options, so the owned captures are stored here and `get_allowed_endings_in_preferred_order(host,
 /// compiler_options, mode)` (preferences.rs) takes the other two from the caller, which always holds the same
 /// ones Go captured.
-pub struct ModuleSpecifierPreferences {
-    pub relative_preference: RelativePreferenceKind,
-    pub exclude_regexes: Vec<String>,
+pub(crate) struct ModuleSpecifierPreferences {
+    pub(crate) relative_preference: RelativePreferenceKind,
+    pub(crate) exclude_regexes: Vec<String>,
     pub(crate) prefs: UserPreferences,
     pub(crate) importing_source_file: P<SourceFile>,
     pub(crate) old_import_specifier: String,
@@ -220,12 +224,12 @@ pub struct ModuleSpecifierPreferences {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RegexPatternCacheKey {
-    pub pattern: String,
-    pub case_insensitive: bool,
+    pub(crate) pattern: String,
+    pub(crate) case_insensitive: bool,
 }
 
 /// Go `regexPatternCache` guarded by `regexPatternCacheMu` (one `RwLock`).
-pub static REGEX_PATTERN_CACHE: LazyLock<
+pub(crate) static REGEX_PATTERN_CACHE: LazyLock<
     RwLock<FxHashMap<RegexPatternCacheKey, Option<P<regex::Regex>>>>,
 > = LazyLock::new(|| RwLock::new(FxHashMap::default()));
 
@@ -250,27 +254,27 @@ pub enum NodeModulesPathParseState {
 
 #[derive(Clone, Debug, Default)]
 pub struct AmbientModuleInfo {
-    pub name: String,
-    pub symbol: Option<P<Symbol>>,
+    pub(crate) name: String,
+    pub(crate) symbol: Option<P<Symbol>>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Info {
-    pub use_case_sensitive_file_names: bool,
-    pub importing_source_file_name: String,
-    pub source_directory: String,
+    pub(crate) use_case_sensitive_file_names: bool,
+    pub(crate) importing_source_file_name: String,
+    pub(crate) source_directory: String,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct PkgJsonDirAttemptResult {
-    pub module_file_to_try: String,
-    pub package_root_path: String,
-    pub blocked_by_exports: bool,
-    pub verbatim_from_exports: bool,
+    pub(crate) module_file_to_try: String,
+    pub(crate) package_root_path: String,
+    pub(crate) blocked_by_exports: bool,
+    pub(crate) verbatim_from_exports: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct SpecPair {
-    pub ending: ModuleSpecifierEnding,
-    pub value: String,
+    pub(crate) ending: ModuleSpecifierEnding,
+    pub(crate) value: String,
 }

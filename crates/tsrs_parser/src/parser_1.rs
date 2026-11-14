@@ -4,8 +4,8 @@ use std::sync::LazyLock;
 use bitflags::bitflags;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tsrs_ast::{
-    self as ast, Diagnostic, DiagnosticExt, Kind, ModifierFlags, ModifierList, Node, NodeFactory,
-    NodeFlags, NodeList, SourceFile, SourceFileParseOptions, TokenFlags,
+    self as ast, CommentRange, Diagnostic, DiagnosticExt, Kind, ModifierFlags, ModifierList, Node,
+    NodeFactory, NodeFlags, NodeList, SourceFile, SourceFileParseOptions, TokenFlags,
 };
 use tsrs_core::{
     LanguageVariant, P, ScriptKind, TextRange, alloc_slice, alloc_str, alloc_vec, new_text_range,
@@ -54,7 +54,7 @@ pub enum ParsingContext {
 }
 
 impl ParsingContext {
-    pub(crate) const ALL: [ParsingContext; ParsingContext::Count as usize] = [
+    const ALL: [ParsingContext; ParsingContext::Count as usize] = [
         ParsingContext::SourceElements,
         ParsingContext::BlockStatements,
         ParsingContext::SwitchClauses,
@@ -108,7 +108,7 @@ pub struct Parser {
     pub(crate) opts: SourceFileParseOptions,
     pub(crate) source_text: &'static str,
 
-    pub(crate) script_kind: ScriptKind,
+    script_kind: ScriptKind,
     pub(crate) language_variant: LanguageVariant,
     pub(crate) diagnostics: Vec<P<Diagnostic>>,
     pub(crate) js_diagnostics: Vec<P<Diagnostic>>,
@@ -127,10 +127,17 @@ pub struct Parser {
     pub(crate) source_text_index: u32,
     pub(crate) not_parenthesized_arrow: FxHashSet<u32>,
     pub(crate) jsdoc_infos: Vec<JSDocInfo>,
-    pub(crate) possible_await_spans: Vec<usize>,
+    possible_await_spans: Vec<usize>,
     pub(crate) jsdoc_comments_space: Vec<&'static str>,
     pub(crate) jsdoc_tag_comments_space: Vec<&'static str>,
     pub(crate) jsdoc_tag_comments_parts_space: Vec<P<Node>>,
+    // tsrs-only: the per-node comment ranges, the tags and comment parts of one JSDoc comment and the text of one
+    // `{@link}`, kept between comments like the three above (notes/perf-jsdoc-parser.md). Nested lists inside a tag
+    // (typedef and callback children, template type parameters) build on `node_stack`.
+    pub(crate) jsdoc_comment_ranges_space: Vec<CommentRange>,
+    pub(crate) jsdoc_tags_space: Vec<P<Node>>,
+    pub(crate) jsdoc_comment_parts_space: Vec<P<Node>>,
+    pub(crate) jsdoc_link_text_space: Vec<&'static str>,
     pub(crate) reparse_list: Vec<P<Node>>,
 
     pub(crate) current_parent: Option<P<Node>>,
@@ -141,8 +148,8 @@ pub struct Parser {
 
     // tsrs-only: member lists of this declaration file are parsed lazily (`enable_lazy_dts`, tsrs_ast `lazylist`),
     // and the records of the lazy lists so far.
-    pub(crate) lazy_dts: bool,
-    pub(crate) lazy_lists: Vec<P<tsrs_ast::lazylist::LazyNodeList>>,
+    lazy_dts: bool,
+    lazy_lists: Vec<P<tsrs_ast::lazylist::LazyNodeList>>,
 
     // Go builds node lists in `make([]*ast.Node, 0, 16)` slices that escape analysis keeps on the goroutine stack,
     // and clones the finished list into the node slice arena. The port builds every list on this one stack
@@ -152,9 +159,13 @@ pub struct Parser {
 }
 
 pub fn new_parser() -> Parser {
+    new_parser_with(NodeFactory::default())
+}
+
+fn new_parser_with(factory: NodeFactory) -> Parser {
     Parser {
         scanner: Scanner::new(),
-        factory: NodeFactory::default(),
+        factory,
         opts: SourceFileParseOptions::default(),
         source_text: "",
         script_kind: ScriptKind::Unknown,
@@ -177,6 +188,10 @@ pub fn new_parser() -> Parser {
         jsdoc_comments_space: Vec::new(),
         jsdoc_tag_comments_space: Vec::new(),
         jsdoc_tag_comments_parts_space: Vec::new(),
+        jsdoc_comment_ranges_space: Vec::new(),
+        jsdoc_tags_space: Vec::new(),
+        jsdoc_comment_parts_space: Vec::new(),
+        jsdoc_link_text_space: Vec::new(),
         reparse_list: Vec::new(),
         current_parent: None,
         reparsed_clones: Vec::new(),
@@ -184,6 +199,27 @@ pub fn new_parser() -> Parser {
         lazy_dts: false,
         lazy_lists: Vec::new(),
         node_stack: Vec::new(),
+    }
+}
+
+impl Parser {
+    /// tsrs-only: puts this parser back into `new_parser`'s state, keeping its factory handle (the two shared
+    /// counters) and the `JSDoc` scratch buffers, for the per-thread parser behind `parse_jsdoc_for_node`
+    /// (notes/perf-jsdoc-parser.md). Everything else starts fresh, the scanner's number caches included, so nothing
+    /// of the previous file is carried over.
+    pub(crate) fn recycle(&mut self) {
+        let mut fresh = new_parser_with(self.factory.clone());
+        fresh.jsdoc_comments_space = std::mem::take(&mut self.jsdoc_comments_space);
+        fresh.jsdoc_tag_comments_space = std::mem::take(&mut self.jsdoc_tag_comments_space);
+        fresh.jsdoc_tag_comments_parts_space =
+            std::mem::take(&mut self.jsdoc_tag_comments_parts_space);
+        fresh.jsdoc_comment_ranges_space = std::mem::take(&mut self.jsdoc_comment_ranges_space);
+        fresh.jsdoc_tags_space = std::mem::take(&mut self.jsdoc_tags_space);
+        fresh.jsdoc_comment_parts_space = std::mem::take(&mut self.jsdoc_comment_parts_space);
+        fresh.jsdoc_link_text_space = std::mem::take(&mut self.jsdoc_link_text_space);
+        fresh.node_stack = std::mem::take(&mut self.node_stack);
+        fresh.node_stack.clear();
+        *self = fresh;
     }
 }
 
@@ -303,7 +339,7 @@ impl Parser {
         self.script_kind == ScriptKind::JS || self.script_kind == ScriptKind::JSX
     }
 
-    pub(crate) fn parse_json_text(&mut self) -> P<SourceFile> {
+    fn parse_json_text(&mut self) -> P<SourceFile> {
         let pos = self.node_pos();
         let statements: P<NodeList>;
         let eof: P<Node>;
@@ -390,7 +426,7 @@ pub fn get_error_span_for_node(source_text: &str, node: P<Node>) -> TextRange {
 }
 
 impl Parser {
-    pub(crate) fn validate_json_value(
+    fn validate_json_value(
         &mut self,
         source_file: P<SourceFile>,
         value_expression: Option<P<Node>>,
@@ -450,11 +486,7 @@ pub fn is_double_quoted_string(node: P<Node>) -> bool {
 
 impl Parser {
     // validateJsonObjectLiteral validates properties of a JSON object literal.
-    pub(crate) fn validate_json_object_literal(
-        &mut self,
-        source_file: P<SourceFile>,
-        node: P<Node>,
-    ) {
+    fn validate_json_object_literal(&mut self, source_file: P<SourceFile>, node: P<Node>) {
         for element in node.as_object_literal_expression().properties().nodes() {
             let element = *element;
             if element.kind() != Kind::PropertyAssignment {
@@ -493,7 +525,7 @@ pub fn parse_isolated_entity_name(text: &str) -> Option<P<Node>> {
 }
 
 impl Parser {
-    pub(crate) fn initialize_state(
+    fn initialize_state(
         &mut self,
         opts: SourceFileParseOptions,
         source_text: &str,
@@ -503,7 +535,7 @@ impl Parser {
     }
 
     /// `initialize_state` for text that already lives in the arena (Go shares the string; no copy).
-    pub(crate) fn initialize_state_static(
+    fn initialize_state_static(
         &mut self,
         opts: SourceFileParseOptions,
         source_text: &'static str,
@@ -514,9 +546,18 @@ impl Parser {
             "ScriptKind must be specified when parsing source file: {}",
             opts.file_name
         );
-
-        self.scanner.reset();
         self.opts = opts;
+        self.initialize_text_state(source_text, script_kind);
+    }
+
+    /// `initialize_state_static` without the parse options, which only `parse_source_file_worker` reads: the lazy
+    /// `JSDoc` parser (`parse_jsdoc_for_node`) parses the comments of an already parsed file.
+    pub(crate) fn initialize_text_state(
+        &mut self,
+        source_text: &'static str,
+        script_kind: ScriptKind,
+    ) {
+        self.scanner.reset();
         self.source_text = source_text;
         self.source_text_index = ast::NO_SOURCE_TEXT;
         self.script_kind = script_kind;
@@ -531,7 +572,7 @@ impl Parser {
         self.scanner.set_language_variant(self.language_variant);
     }
 
-    pub(crate) fn scan_error(
+    fn scan_error(
         &mut self,
         message: &'static Message,
         pos: u32,
@@ -604,19 +645,19 @@ impl Parser {
 
 #[derive(Clone, Copy)]
 pub struct ParserState {
-    pub(crate) scanner_state: ScannerState,
-    pub(crate) context_flags: NodeFlags,
-    pub(crate) diagnostics_len: usize,
-    pub(crate) js_diagnostics_len: usize,
-    pub(crate) jsdoc_infos_len: usize,
-    pub(crate) reparsed_clones_len: usize,
-    pub(crate) lazy_lists_len: usize,
-    pub(crate) statement_has_await_identifier: bool,
-    pub(crate) has_parse_error: bool,
+    scanner_state: ScannerState,
+    context_flags: NodeFlags,
+    diagnostics_len: usize,
+    js_diagnostics_len: usize,
+    jsdoc_infos_len: usize,
+    reparsed_clones_len: usize,
+    lazy_lists_len: usize,
+    statement_has_await_identifier: bool,
+    has_parse_error: bool,
     // Rolling back a parse also discards the arena memory it allocated (notes/mem-recycle.md). Parser data that
     // `rewind` does not truncate and that can receive nodes from inside a speculation (`reparse_list`,
     // `jsdoc_diagnostics`, the scanner's number caches) calls `tsrs_core::arena_pin`, which cancels that.
-    pub(crate) arena: tsrs_core::arena::Checkpoint,
+    arena: tsrs_core::arena::Checkpoint,
 }
 
 impl Parser {
@@ -642,7 +683,7 @@ impl Parser {
     }
 
     /// `rewind` for a caller that keeps nodes it parsed after `mark` (the top-level await reparse).
-    pub(crate) fn rewind_keeping_nodes(&mut self, state: ParserState) {
+    fn rewind_keeping_nodes(&mut self, state: ParserState) {
         self.scanner.rewind(state.scanner_state);
         self.token = self.scanner.token();
         self.context_flags = state.context_flags;
@@ -726,7 +767,7 @@ impl Parser {
         info
     }
 
-    pub(crate) fn parse_source_file_worker(&mut self) -> P<SourceFile> {
+    fn parse_source_file_worker(&mut self) -> P<SourceFile> {
         let is_declaration_file = tspath::is_declaration_file_name(&self.opts.file_name);
         if is_declaration_file {
             self.context_flags |= NodeFlags::Ambient;
@@ -776,7 +817,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn finish_source_file(&mut self, result: P<SourceFile>, is_declaration_file: bool) {
+    fn finish_source_file(&mut self, result: P<SourceFile>, is_declaration_file: bool) {
         result.comment_directives.set(alloc_slice(self.scanner.comment_directives()));
         result.pragmas.set(alloc_vec(get_comment_pragmas(&mut self.factory, self.source_text)));
         self.process_pragmas_into_fields(result);
@@ -790,17 +831,17 @@ impl Parser {
         result.node_count.set(self.factory.node_count());
         result.text_count.set(self.factory.text_count());
         result.identifier_count.set(self.identifier_count);
-        result.set_jsdoc_cache(self.create_jsdoc_cache());
-        // For non-JS files, enable lazy JSDoc parsing on demand
+        // For non-JS files, enable lazy JSDoc parsing on demand (before the cache is stored: it picks the map).
         if !self.is_java_script() {
             result.set_has_lazy_jsdoc(true);
         }
+        result.set_jsdoc_cache(self.create_jsdoc_cache());
         self.reparsed_clones.sort_by(|a, b| ast::compare_node_positions(*a, *b));
         result.reparsed_clones.set(alloc_slice(&self.reparsed_clones));
         ast::set_external_module_indicator(&result, self.opts.external_module_indicator_options);
     }
 
-    pub(crate) fn create_jsdoc_cache(&self) -> FxHashMap<P<Node>, &'static [P<Node>]> {
+    fn create_jsdoc_cache(&self) -> FxHashMap<P<Node>, &'static [P<Node>]> {
         if self.jsdoc_infos.is_empty() {
             return FxHashMap::default();
         }
@@ -810,7 +851,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_toplevel_statement(&mut self, i: usize) -> P<Node> {
+    fn parse_toplevel_statement(&mut self, i: usize) -> P<Node> {
         self.statement_has_await_identifier = false;
         let statement = self.parse_statement();
         // Reparsed nodes (e.g. JSDoc @typedef) produced while parsing this statement are inserted
@@ -833,7 +874,7 @@ impl Parser {
         statement
     }
 
-    pub(crate) fn reparse_top_level_await(&mut self, source_file: P<SourceFile>) -> P<Node> {
+    fn reparse_top_level_await(&mut self, source_file: P<SourceFile>) -> P<Node> {
         assert!(
             self.possible_await_spans.len() % 2 != 1,
             "possibleAwaitSpans malformed: odd number of indices, not paired into spans."
@@ -949,7 +990,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_list_index(
+    fn parse_list_index(
         &mut self,
         kind: ParsingContext,
         parse_element: impl FnMut(&mut Parser, usize) -> P<Node>,
@@ -959,7 +1000,7 @@ impl Parser {
     }
 
     /// `parseListIndex` with the elements left on `node_stack` above the returned start index.
-    pub(crate) fn parse_list_index_on_stack(
+    fn parse_list_index_on_stack(
         &mut self,
         kind: ParsingContext,
         mut parse_element: impl FnMut(&mut Parser, usize) -> P<Node>,
@@ -1199,10 +1240,7 @@ impl Parser {
     }
 
     // Returns true if we should abort parsing.
-    pub(crate) fn abort_parsing_list_or_move_to_next_token(
-        &mut self,
-        kind: ParsingContext,
-    ) -> bool {
+    fn abort_parsing_list_or_move_to_next_token(&mut self, kind: ParsingContext) -> bool {
         self.parsing_context_errors(kind);
         if self.is_in_some_parsing_context() {
             return true;
@@ -1212,7 +1250,7 @@ impl Parser {
     }
 
     // True if positioned at element or terminator of the current list or any enclosing list
-    pub(crate) fn is_in_some_parsing_context(&mut self) -> bool {
+    fn is_in_some_parsing_context(&mut self) -> bool {
         // We should be in at least one parsing context, be it SourceElements while parsing
         // a SourceFile, or JSDocComment when lazily parsing JSDoc.
         assert!(self.parsing_contexts != 0, "Missing parsing context");
@@ -1231,7 +1269,7 @@ impl Parser {
         false
     }
 
-    pub(crate) fn parsing_context_errors(&mut self, context: ParsingContext) {
+    fn parsing_context_errors(&mut self, context: ParsingContext) {
         match context {
             ParsingContext::SourceElements => {
                 if self.token == Kind::DefaultKeyword {
@@ -1362,7 +1400,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn is_list_element(
+    fn is_list_element(
         &mut self,
         parsing_context: ParsingContext,
         in_error_recovery: bool,
@@ -1481,7 +1519,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn is_list_terminator(&mut self, kind: ParsingContext) -> bool {
+    fn is_list_terminator(&mut self, kind: ParsingContext) -> bool {
         if self.token == Kind::EndOfFile {
             return true;
         }
@@ -1704,14 +1742,14 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_optional_token_jsdoc(&mut self, kind: Kind) -> Option<P<Node>> {
+    fn parse_optional_token_jsdoc(&mut self, kind: Kind) -> Option<P<Node>> {
         if self.token == kind {
             return Some(self.parse_token_node());
         }
         None
     }
 
-    pub(crate) fn parse_statement(&mut self) -> P<Node> {
+    fn parse_statement(&mut self) -> P<Node> {
         #[cfg(feature = "embedding-limits")]
         let Some(_depth) = crate::budget::enter() else {
             return self.abort_recursion();
@@ -1800,7 +1838,7 @@ impl Parser {
         self.parse_expression_or_labeled_statement()
     }
 
-    pub(crate) fn parse_declaration(&mut self) -> P<Node> {
+    fn parse_declaration(&mut self) -> P<Node> {
         // `parseListElement` attempted to get the reused node at this position,
         // but the ambient context flag was not yet set, so the node appeared
         // not reusable in that context.
@@ -1832,7 +1870,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_declaration_worker(
+    fn parse_declaration_worker(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -1892,13 +1930,13 @@ pub fn is_declare_modifier(modifier: P<Node>) -> bool {
 }
 
 impl Parser {
-    pub(crate) fn is_let_declaration(&mut self) -> bool {
+    fn is_let_declaration(&mut self) -> bool {
         // In ES6 'let' always starts a lexical declaration if followed by an identifier or {
         // or [.
         self.look_ahead(Parser::next_token_is_binding_identifier_or_start_of_destructuring)
     }
 
-    pub(crate) fn next_token_is_binding_identifier_or_start_of_destructuring(&mut self) -> bool {
+    fn next_token_is_binding_identifier_or_start_of_destructuring(&mut self) -> bool {
         self.next_token();
         self.is_binding_identifier()
             || self.token == Kind::OpenBraceToken
@@ -1945,7 +1983,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_empty_statement(&mut self) -> P<Node> {
+    fn parse_empty_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::SemicolonToken);
@@ -1955,7 +1993,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_if_statement(&mut self) -> P<Node> {
+    fn parse_if_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::IfKeyword);
@@ -1979,7 +2017,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_do_statement(&mut self) -> P<Node> {
+    fn parse_do_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::DoKeyword);
@@ -2005,7 +2043,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_while_statement(&mut self) -> P<Node> {
+    fn parse_while_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::WhileKeyword);
@@ -2025,7 +2063,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_for_or_for_in_or_for_of_statement(&mut self) -> P<Node> {
+    fn parse_for_or_for_in_or_for_of_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::ForKeyword);
@@ -2096,7 +2134,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_break_statement(&mut self) -> P<Node> {
+    fn parse_break_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::BreakKeyword);
@@ -2108,7 +2146,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_continue_statement(&mut self) -> P<Node> {
+    fn parse_continue_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::ContinueKeyword);
@@ -2120,14 +2158,14 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_identifier_unless_at_semicolon(&mut self) -> Option<P<Node>> {
+    fn parse_identifier_unless_at_semicolon(&mut self) -> Option<P<Node>> {
         if !self.can_parse_semicolon() {
             return Some(self.parse_identifier());
         }
         None
     }
 
-    pub(crate) fn parse_return_statement(&mut self) -> P<Node> {
+    fn parse_return_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::ReturnKeyword);
@@ -2142,7 +2180,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_with_statement(&mut self) -> P<Node> {
+    fn parse_with_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::WithKeyword);
@@ -2163,7 +2201,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_case_clause(&mut self) -> P<Node> {
+    fn parse_case_clause(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::CaseKeyword);
@@ -2178,7 +2216,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_default_clause(&mut self) -> P<Node> {
+    fn parse_default_clause(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::DefaultKeyword);
@@ -2195,14 +2233,14 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_case_or_default_clause(&mut self) -> P<Node> {
+    fn parse_case_or_default_clause(&mut self) -> P<Node> {
         if self.token == Kind::CaseKeyword {
             return self.parse_case_clause();
         }
         self.parse_default_clause()
     }
 
-    pub(crate) fn parse_case_block(&mut self) -> P<Node> {
+    fn parse_case_block(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::OpenBraceToken);
@@ -2215,7 +2253,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_switch_statement(&mut self) -> P<Node> {
+    fn parse_switch_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::SwitchKeyword);
@@ -2229,7 +2267,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_throw_statement(&mut self) -> P<Node> {
+    fn parse_throw_statement(&mut self) -> P<Node> {
         // ThrowStatement[Yield] :
         //      throw [no LineTerminator here]Expression[In, ?Yield];
         let pos = self.node_pos();
@@ -2255,7 +2293,7 @@ impl Parser {
     }
 
     // TODO: Review for error recovery
-    pub(crate) fn parse_try_statement(&mut self) -> P<Node> {
+    fn parse_try_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::TryKeyword);
@@ -2281,7 +2319,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_catch_clause(&mut self) -> P<Node> {
+    fn parse_catch_clause(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.parse_expected(Kind::CatchKeyword);
         let mut variable_declaration = None;
@@ -2294,7 +2332,7 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn parse_debugger_statement(&mut self) -> P<Node> {
+    fn parse_debugger_statement(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         self.parse_expected(Kind::DebuggerKeyword);
@@ -2305,7 +2343,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_expression_or_labeled_statement(&mut self) -> P<Node> {
+    fn parse_expression_or_labeled_statement(&mut self) -> P<Node> {
         // Avoiding having to do the lookahead for a labeled statement by just trying to parse
         // out an expression, seeing if it is identifier and then seeing if it is followed by
         // a colon.
@@ -2334,7 +2372,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_variable_statement(
+    fn parse_variable_statement(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -2350,10 +2388,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_variable_declaration_list(
-        &mut self,
-        in_for_statement_initializer: bool,
-    ) -> P<Node> {
+    fn parse_variable_declaration_list(&mut self, in_for_statement_initializer: bool) -> P<Node> {
         let pos = self.node_pos();
         let mut flags = NodeFlags::None;
         match self.token {
@@ -2401,7 +2436,7 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn next_is_identifier_and_close_paren(&mut self) -> bool {
+    fn next_is_identifier_and_close_paren(&mut self) -> bool {
         self.next_token_is_identifier() && self.next_token() == Kind::CloseParenToken
     }
 
@@ -2410,15 +2445,15 @@ impl Parser {
         self.is_identifier()
     }
 
-    pub(crate) fn parse_variable_declaration(&mut self) -> P<Node> {
+    fn parse_variable_declaration(&mut self) -> P<Node> {
         self.parse_variable_declaration_worker(false /*allowExclamation*/)
     }
 
-    pub(crate) fn parse_variable_declaration_allow_exclamation(&mut self) -> P<Node> {
+    fn parse_variable_declaration_allow_exclamation(&mut self) -> P<Node> {
         self.parse_variable_declaration_worker(true /*allowExclamation*/)
     }
 
-    pub(crate) fn parse_variable_declaration_worker(&mut self, allow_exclamation: bool) -> P<Node> {
+    fn parse_variable_declaration_worker(&mut self, allow_exclamation: bool) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         let name = self.parse_identifier_or_pattern_with_diagnostic(Some(
@@ -2466,7 +2501,7 @@ impl Parser {
         self.parse_binding_identifier_with_diagnostic(private_identifier_diagnostic_message)
     }
 
-    pub(crate) fn parse_array_binding_pattern(&mut self) -> P<Node> {
+    fn parse_array_binding_pattern(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.parse_expected(Kind::OpenBracketToken);
         let save_context_flags = self.context_flags;
@@ -2483,7 +2518,7 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn parse_array_binding_element(&mut self) -> P<Node> {
+    fn parse_array_binding_element(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let mut dot_dot_dot_token = None;
         let mut name = None;
@@ -2503,7 +2538,7 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn parse_object_binding_pattern(&mut self) -> P<Node> {
+    fn parse_object_binding_pattern(&mut self) -> P<Node> {
         let pos = self.node_pos();
         self.parse_expected(Kind::OpenBraceToken);
         let save_context_flags = self.context_flags;
@@ -2520,7 +2555,7 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn parse_object_binding_element(&mut self) -> P<Node> {
+    fn parse_object_binding_element(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let dot_dot_dot_token = self.parse_optional_token(Kind::DotDotDotToken);
         let token_is_identifier = self.is_binding_identifier();
@@ -2553,7 +2588,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn parse_function_declaration(
+    fn parse_function_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -2606,7 +2641,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_class_declaration(
+    fn parse_class_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -2702,7 +2737,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_name_of_class_declaration_or_expression(&mut self) -> Option<P<Node>> {
+    fn parse_name_of_class_declaration_or_expression(&mut self) -> Option<P<Node>> {
         // implements is a future reserved word so
         // 'class implements' might mean either
         // - class expression with omitted name, 'implements' starts heritage clause
@@ -2718,7 +2753,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn is_implements_clause(&mut self) -> bool {
+    fn is_implements_clause(&mut self) -> bool {
         self.token == Kind::ImplementsKeyword
             && self.look_ahead(Parser::next_token_is_identifier_or_keyword)
     }
@@ -2733,7 +2768,7 @@ pub fn is_async_modifier(modifier: P<Node>) -> bool {
 }
 
 impl Parser {
-    pub(crate) fn parse_heritage_clauses(&mut self, is_interface: bool) -> Option<P<NodeList>> {
+    fn parse_heritage_clauses(&mut self, is_interface: bool) -> Option<P<NodeList>> {
         // ClassTail[Yield,Await] : (Modified) See 14.5
         //      ClassHeritage[?Yield,?Await]opt { ClassBody[?Yield,?Await]opt }
         if self.is_heritage_clause() {
@@ -2744,7 +2779,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn parse_heritage_clause(&mut self, is_interface: bool) -> P<Node> {
+    fn parse_heritage_clause(&mut self, is_interface: bool) -> P<Node> {
         let pos = self.node_pos();
         let kind = self.token;
         self.next_token();
@@ -2768,7 +2803,7 @@ pub fn is_type_heritage_clause(is_interface: bool, token: Kind) -> bool {
 }
 
 impl Parser {
-    pub(crate) fn parse_type_heritage_clause_element(&mut self) -> P<Node> {
+    fn parse_type_heritage_clause_element(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let node = self.parse_expression_with_type_arguments();
         let expression_with_type_arguments = node.as_expression_with_type_arguments();
@@ -2797,10 +2832,7 @@ pub fn is_valid_heritage_type_reference_expression(node: P<Node>) -> bool {
 }
 
 impl Parser {
-    pub(crate) fn convert_entity_name_expression_to_entity_name(
-        &mut self,
-        node: P<Node>,
-    ) -> P<Node> {
+    fn convert_entity_name_expression_to_entity_name(&mut self, node: P<Node>) -> P<Node> {
         if ast::is_identifier(node) {
             return node;
         }
@@ -2814,7 +2846,7 @@ impl Parser {
         )
     }
 
-    pub(crate) fn parse_expression_with_type_arguments(&mut self) -> P<Node> {
+    fn parse_expression_with_type_arguments(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let expression = self.parse_left_hand_side_expression_or_higher();
         if ast::is_expression_with_type_arguments(expression) {
@@ -2825,7 +2857,7 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn parse_class_element(&mut self) -> P<Node> {
+    fn parse_class_element(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         if self.token == Kind::SemicolonToken {
@@ -2907,7 +2939,7 @@ impl Parser {
         panic!("Should not have attempted to parse class member declaration.");
     }
 
-    pub(crate) fn parse_class_static_block_declaration(
+    fn parse_class_static_block_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -2921,7 +2953,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_class_static_block_body(&mut self) -> P<Node> {
+    fn parse_class_static_block_body(&mut self) -> P<Node> {
         let save_context_flags = self.context_flags;
         self.set_context_flags(NodeFlags::YieldContext, false);
         self.set_context_flags(NodeFlags::AwaitContext, true);
@@ -2931,7 +2963,7 @@ impl Parser {
         body
     }
 
-    pub(crate) fn try_parse_constructor_declaration(
+    fn try_parse_constructor_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -2968,11 +3000,11 @@ impl Parser {
         None
     }
 
-    pub(crate) fn next_token_is_open_paren(&mut self) -> bool {
+    fn next_token_is_open_paren(&mut self) -> bool {
         self.next_token() == Kind::OpenParenToken
     }
 
-    pub(crate) fn parse_property_or_method_declaration(
+    fn parse_property_or_method_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3044,7 +3076,7 @@ pub fn modifier_list_has_async(modifiers: Option<P<ModifierList>>) -> bool {
 }
 
 impl Parser {
-    pub(crate) fn parse_property_declaration(
+    fn parse_property_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3076,7 +3108,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_semicolon_after_property_name(
+    fn parse_semicolon_after_property_name(
         &mut self,
         name: P<Node>,
         type_node: Option<P<Node>>,
@@ -3121,7 +3153,7 @@ impl Parser {
         self.parse_error_for_missing_semicolon_after(name);
     }
 
-    pub(crate) fn parse_error_for_missing_semicolon_after(&mut self, node: P<Node>) {
+    fn parse_error_for_missing_semicolon_after(&mut self, node: P<Node>) {
         // Tagged template literals are sometimes used in places where only simple strings are allowed, i.e.:
         //   module `M1` {
         //   ^^^^^^^^^^^ This block is parsed as a template literal like module`M1`.
@@ -3239,7 +3271,7 @@ pub fn get_space_suggestion(expression_text: &str) -> String {
 }
 
 impl Parser {
-    pub(crate) fn parse_error_for_invalid_name(
+    fn parse_error_for_invalid_name(
         &mut self,
         name_diagnostic: &'static Message,
         blank_diagnostic: &'static Message,
@@ -3253,7 +3285,7 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_interface_declaration(
+    fn parse_interface_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3278,7 +3310,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_type_alias_declaration(
+    fn parse_type_alias_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3310,7 +3342,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn next_is_not_dot(&mut self) -> bool {
+    fn next_is_not_dot(&mut self) -> bool {
         self.next_token() != Kind::DotToken
     }
 
@@ -3318,7 +3350,7 @@ impl Parser {
     // In a non-ambient declaration, the grammar allows uninitialized members only in a
     // ConstantEnumMemberSection, which starts at the beginning of an enum declaration
     // or any time an integer literal initializer is encountered.
-    pub(crate) fn parse_enum_member(&mut self) -> P<Node> {
+    fn parse_enum_member(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let jsdoc = self.jsdoc_scanner_info();
         let name = self.parse_property_name();
@@ -3330,7 +3362,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_enum_declaration(
+    fn parse_enum_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3359,7 +3391,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_module_declaration(
+    fn parse_module_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3383,7 +3415,7 @@ impl Parser {
         )
     }
 
-    pub(crate) fn parse_ambient_external_module_declaration(
+    fn parse_ambient_external_module_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3418,7 +3450,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_module_block(&mut self) -> P<Node> {
+    fn parse_module_block(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let statements: P<NodeList>;
         if self.parse_expected(Kind::OpenBraceToken) {
@@ -3431,7 +3463,7 @@ impl Parser {
         self.finish_node(result, pos)
     }
 
-    pub(crate) fn parse_module_or_namespace_declaration(
+    fn parse_module_or_namespace_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3469,7 +3501,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_import_declaration_or_import_equals_declaration(
+    fn parse_import_declaration_or_import_equals_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3545,12 +3577,12 @@ impl Parser {
         result
     }
 
-    pub(crate) fn next_token_is_from_keyword_or_equals_token(&mut self) -> bool {
+    fn next_token_is_from_keyword_or_equals_token(&mut self) -> bool {
         self.next_token();
         self.token == Kind::FromKeyword || self.token == Kind::EqualsToken
     }
 
-    pub(crate) fn should_parse_import_phase_modifier(&mut self) -> bool {
+    fn should_parse_import_phase_modifier(&mut self) -> bool {
         match self.token {
             Kind::CommaToken | Kind::EqualsToken => false,
             Kind::FromKeyword => !self.look_ahead(Parser::next_token_is_token_string_literal),
@@ -3566,15 +3598,15 @@ impl Parser {
         }
     }
 
-    pub(crate) fn token_after_import_definitely_produces_import_declaration(&self) -> bool {
+    fn token_after_import_definitely_produces_import_declaration(&self) -> bool {
         self.token == Kind::AsteriskToken || self.token == Kind::OpenBraceToken
     }
 
-    pub(crate) fn token_after_imported_identifier_allows_import_equals_declaration(&self) -> bool {
+    fn token_after_imported_identifier_allows_import_equals_declaration(&self) -> bool {
         !matches!(self.token, Kind::CommaToken | Kind::FromKeyword)
     }
 
-    pub(crate) fn parse_import_equals_declaration(
+    fn parse_import_equals_declaration(
         &mut self,
         pos: u32,
         jsdoc: JsdocScannerInfo,
@@ -3596,7 +3628,7 @@ impl Parser {
         result
     }
 
-    pub(crate) fn parse_module_reference(&mut self) -> P<Node> {
+    fn parse_module_reference(&mut self) -> P<Node> {
         if self.token == Kind::RequireKeyword && self.look_ahead(Parser::next_token_is_open_paren) {
             return self.parse_external_module_reference();
         }
@@ -3607,7 +3639,7 @@ impl Parser {
         )
     }
 
-    pub(crate) fn parse_external_module_reference(&mut self) -> P<Node> {
+    fn parse_external_module_reference(&mut self) -> P<Node> {
         let save_has_await_identifier = self.statement_has_await_identifier;
         let pos = self.node_pos();
         self.parse_expected(Kind::RequireKeyword);
@@ -3660,7 +3692,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn parse_import_clause(
+    fn parse_import_clause(
         &mut self,
         identifier: Option<P<Node>>,
         pos: u32,

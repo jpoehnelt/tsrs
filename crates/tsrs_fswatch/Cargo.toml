@@ -1,10 +1,17 @@
 [package]
 name = "tsrs_fswatch"
-version.workspace = true
+version = "7.1.0-beta.tsrs1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+categories.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+repository.workspace = true
+readme.workspace = true
+include = ["/src", "/build.rs", "/LICENSE", "/NOTICE"]
+description = "Filesystem watching for the tsrs TypeScript compiler"
 
 [lints]
 workspace = true
@@ -13,7 +20,8 @@ workspace = true
 rustc-hash.workspace = true
 tsrs_core.workspace = true
 # kqueue / inotify / pipe / pathconf / stat bindings (Go: golang.org/x/sys/unix).
-libc = "0.2"
+libc.workspace = true
 
 [lib]
+test = false
 doctest = false

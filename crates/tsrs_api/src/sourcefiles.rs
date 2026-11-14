@@ -42,7 +42,7 @@ impl SourceFileState {
 }
 
 /// Go `sourceFileNodeID`.
-pub fn source_file_node_id(file: P<SourceFile>) -> u64 {
+pub(crate) fn source_file_node_id(file: P<SourceFile>) -> u64 {
     tsrs_ast::get_node_id(file.as_node()).0
 }
 
@@ -159,7 +159,7 @@ fn parse_cache_key(d: &Value) -> Result<tsrs_project::ParseCacheKey, String> {
 
 impl Session {
     /// Go `encoder.GetNodeIndexTable` (cached per live file; see the module comment).
-    pub(crate) fn node_index_table(&self, file: P<SourceFile>) -> Arc<NodeIndexTable> {
+    fn node_index_table(&self, file: P<SourceFile>) -> Arc<NodeIndexTable> {
         let addr = file.as_node().addr();
         if let Some(t) = self.source_files.tables.lock().unwrap().get(&addr) {
             return Arc::clone(t);
@@ -221,10 +221,7 @@ impl Session {
     }
 
     /// Go `encodeSourceFileResponse`.
-    pub(crate) fn encode_source_file_response(
-        &self,
-        file: Option<P<SourceFile>>,
-    ) -> ApiResult<Response> {
+    fn encode_source_file_response(&self, file: Option<P<SourceFile>>) -> ApiResult<Response> {
         match file {
             None if self.binary_responses() => Ok(Response::Binary(Vec::new())),
             None => Ok(Response::null()),
@@ -236,7 +233,7 @@ impl Session {
     }
 
     /// Go `nodeHandleFrom`.
-    pub(crate) fn node_handle_from(&self, node: P<Node>) -> ApiResult<String> {
+    pub fn node_handle_from(&self, node: P<Node>) -> ApiResult<String> {
         let file = tsrs_ast::get_source_file_of_node(node)
             .ok_or_else(|| ApiError::internal("node has no source file"))?;
         let table = self.node_index_table(file);

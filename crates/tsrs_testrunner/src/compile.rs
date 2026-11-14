@@ -119,15 +119,15 @@ enum Compiled {
     Unsupported(String),
 }
 
-pub struct CompilationResult {
-    pub diagnostics: Vec<P<Diagnostic>>,
-    pub options: &'static CompilerOptions,
-    pub program: &'static compiler::Program,
-    pub harness_options: HarnessOptions,
-    pub host: Arc<dyn CompilerHost>,
-    pub tsconfig: Option<P<ParsedCommandLine>>,
+pub(crate) struct CompilationResult {
+    pub(crate) diagnostics: Vec<P<Diagnostic>>,
+    options: &'static CompilerOptions,
+    pub(crate) program: &'static compiler::Program,
+    harness_options: HarnessOptions,
+    pub(crate) host: Arc<dyn CompilerHost>,
+    pub(crate) tsconfig: Option<P<ParsedCommandLine>>,
     // The emit outputs, only under `--baselines js` (docs/EMIT.md section 8).
-    pub emit: Option<crate::emit_harness::EmitOutputs>,
+    pub(crate) emit: Option<crate::emit_harness::EmitOutputs>,
 }
 
 /// Dev metric for the option sweep (docs/EMIT.md section 13, wave E12): `TSRS_TEST_DTS_ONLY=1` with
@@ -135,7 +135,7 @@ pub struct CompilationResult {
 /// compares only the `.d.ts` outputs with the `.d.ts` sections of the reference `.js` baseline
 /// (`compiler_runner::extract_dts_block`). Not a gate: forcing the option can change diagnostics. Write the
 /// results elsewhere (`TSRS_TEST_RESULTS=...`).
-pub fn dts_only_mode() -> bool {
+pub(crate) fn dts_only_mode() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("TSRS_TEST_DTS_ONLY").as_deref() == Ok("1"))
 }
@@ -218,6 +218,11 @@ fn compile_files_ex(
     symlinks: &BTreeMap<String, String>,
     tsconfig: Option<P<ParsedCommandLine>>,
 ) -> CompilationResult {
+    // tsrs-only: the scheduling sweep overrides upstream's program concurrency without changing the fixture.
+    if let Some(count) = crate::test_checkers() {
+        compiler_options.checkers = Some(count);
+        compiler_options.single_threaded = Tristate::False;
+    }
     let mut program_file_names = Vec::new();
     program_file_names.extend(input_files.iter().filter_map(|file| {
         let file_name = tspath::get_normalized_absolute_path(&file.unit_name, current_directory);
@@ -382,7 +387,7 @@ fn create_program(
     config: P<ParsedCommandLine>,
 ) -> &'static compiler::Program {
     let mut opts = compiler::ProgramOptions::new(config, host);
-    if test_program_is_single_threaded() {
+    if crate::test_checkers().is_none() && test_program_is_single_threaded() {
         opts.single_threaded = Tristate::True;
     }
     compiler::new_program(opts)
@@ -422,7 +427,7 @@ fn compile_files_with_host(
 }
 
 // newCompilerTest + verifyDiagnostics
-pub fn run(item: &TestItem, table: &OptionTable) -> Outcome {
+pub(crate) fn run(item: &TestItem, table: &OptionTable) -> Outcome {
     let content = compiler_runner::read_test_file(&item.path);
     let named_configuration =
         match compiler_runner::find_configuration(&content, table, &item.config) {
@@ -679,7 +684,7 @@ fn verify_source_maps(result: &CompilationResult) -> Option<compiler_runner::Sou
     Some(compiler_runner::SourceMapBaselines { js_map, sourcemap })
 }
 
-pub fn convert_diagnostics(diagnostics: &[P<Diagnostic>]) -> Vec<Diag> {
+pub(crate) fn convert_diagnostics(diagnostics: &[P<Diagnostic>]) -> Vec<Diag> {
     let mut files: FxHashMap<P<SourceFile>, Rc<FileLike>> = FxHashMap::default();
     diagnostics.iter().map(|d| convert(*d, &mut files)).collect()
 }

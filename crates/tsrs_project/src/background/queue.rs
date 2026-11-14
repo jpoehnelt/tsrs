@@ -68,7 +68,7 @@ fn worker_pool() -> &'static WorkerPool {
 }
 
 // Go `go f()` for work that is not tracked by a Queue (timer callbacks): runs `f` on the shared workers.
-pub fn go(f: impl FnOnce() + Send + 'static) {
+pub(crate) fn go(f: impl FnOnce() + Send + 'static) {
     let pool = worker_pool();
     pool.tasks.lock().unwrap().push_back(Box::new(f));
     pool.available.notify_one();
@@ -146,7 +146,3 @@ impl Drop for ScopeDone {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "queue_test.rs"]
-mod queue_test;

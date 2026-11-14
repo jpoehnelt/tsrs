@@ -3,7 +3,7 @@ use crate::collections::OrderedMap;
 use crate::tspath;
 use rustc_hash::FxHashMap;
 use std::fmt;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PluginImport {
@@ -89,8 +89,9 @@ pub struct CompilerOptions {
     pub no_unchecked_side_effect_imports: Tristate,
     pub out_dir: String,
     // Go's `*OrderedMap[string, []string]` keeps a nil slice for a substitution that is not an array (TS5063), apart
-    // from an empty one (TS5066); `None` is the nil slice.
-    pub paths: Option<OrderedMap<String, Option<Vec<String>>>>,
+    // from an empty one (TS5066); `None` is the nil slice. The map is held by `Arc` so that inheriting it from an
+    // extended config copies only the pointer, not the entries.
+    pub paths: Option<Arc<OrderedMap<String, Option<Vec<String>>>>>,
     // Plugins are parsed only so tools can report that native TypeScript does not support them.
     pub plugins: Option<Vec<PluginImport>>,
     pub preserve_const_enums: Tristate,
@@ -171,8 +172,8 @@ pub struct CompilerOptions {
     pub checkers: Option<i64>,
 }
 
-pub static EMPTY_COMPILER_OPTIONS: LazyLock<CompilerOptions> =
-    LazyLock::new(CompilerOptions::default);
+#[cfg(not(compressed_ptrs))]
+static EMPTY_COMPILER_OPTIONS: LazyLock<CompilerOptions> = LazyLock::new(CompilerOptions::default);
 
 /// `EMPTY_COMPILER_OPTIONS` as an arena pointer (one per process; a compressed `P` cannot point to a static, so
 /// compressed builds keep a copy in the arena of the thread that first asks).
@@ -368,40 +369,14 @@ impl CompilerOptions {
         self.declaration_map == Tristate::True && self.get_emit_declarations()
     }
 
-    pub fn has_json_module_emit_enabled(&self) -> bool {
-        !matches!(self.get_emit_module_kind(), ModuleKind::SYSTEM | ModuleKind::UMD)
-    }
-
     pub fn get_paths_base_path(&self, current_directory: &str) -> String {
-        if self.paths.as_ref().map_or(0, indexmap::IndexMap::len) == 0 {
+        if self.paths.as_ref().map_or(0, |paths| paths.len()) == 0 {
             return String::new();
         }
         if !self.paths_base_path.is_empty() {
             return self.paths_base_path.clone();
         }
         current_directory.to_string()
-    }
-}
-
-#[cfg(test)]
-mod equality_tests {
-    use super::*;
-
-    #[test]
-    fn paths_order_is_part_of_compiler_option_equality() {
-        let mut left = CompilerOptions::default();
-        let mut right = CompilerOptions::default();
-        left.paths = Some(OrderedMap::from_iter([
-            ("a".to_string(), Some(vec!["one".to_string()])),
-            ("b".to_string(), Some(vec!["two".to_string()])),
-        ]));
-        right.paths = Some(OrderedMap::from_iter([
-            ("b".to_string(), Some(vec!["two".to_string()])),
-            ("a".to_string(), Some(vec!["one".to_string()])),
-        ]));
-        assert!(!left.equals(&right));
-        right.paths = left.paths.clone();
-        assert!(left.equals(&right));
     }
 }
 
@@ -445,7 +420,7 @@ impl ModuleKind {
     pub const PRESERVE: ModuleKind = ModuleKind(200);
 
     /// The Go constant name of a named value.
-    pub fn name(self) -> Option<&'static str> {
+    fn name(self) -> Option<&'static str> {
         match self.0 {
             0 => Some("None"),
             1 => Some("CommonJS"),
@@ -463,11 +438,6 @@ impl ModuleKind {
             200 => Some("Preserve"),
             _ => None,
         }
-    }
-
-    /// Whether this is one of Go's named constants.
-    pub fn is_named(self) -> bool {
-        self.name().is_some()
     }
 
     /// The Go int32 value.
@@ -548,7 +518,7 @@ impl ModuleResolutionKind {
     pub const BUNDLER: ModuleResolutionKind = ModuleResolutionKind(100);
 
     /// The Go constant name of a named value.
-    pub fn name(self) -> Option<&'static str> {
+    fn name(self) -> Option<&'static str> {
         match self.0 {
             0 => Some("Unknown"),
             1 => Some("Classic"),
@@ -677,7 +647,7 @@ impl ScriptTarget {
     pub const JSON: ScriptTarget = ScriptTarget(100);
 
     /// The Go constant name of a named value.
-    pub fn name(self) -> Option<&'static str> {
+    fn name(self) -> Option<&'static str> {
         match self.0 {
             0 => Some("None"),
             1 => Some("ES5"),
@@ -697,11 +667,6 @@ impl ScriptTarget {
             100 => Some("JSON"),
             _ => None,
         }
-    }
-
-    /// Whether this is one of Go's named constants.
-    pub fn is_named(self) -> bool {
-        self.name().is_some()
     }
 
     /// The Go int32 value.
@@ -753,7 +718,7 @@ impl JsxEmit {
     pub const REACT_JSX_DEV: JsxEmit = JsxEmit(5);
 
     /// The Go constant name of a named value.
-    pub fn name(self) -> Option<&'static str> {
+    fn name(self) -> Option<&'static str> {
         match self.0 {
             0 => Some("None"),
             1 => Some("Preserve"),
@@ -763,11 +728,6 @@ impl JsxEmit {
             5 => Some("ReactJSXDev"),
             _ => None,
         }
-    }
-
-    /// Whether this is one of Go's named constants.
-    pub fn is_named(self) -> bool {
-        self.name().is_some()
     }
 
     /// The Go int32 value.

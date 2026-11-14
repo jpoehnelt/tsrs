@@ -7,9 +7,9 @@ use crate::lsp::go_quote;
 // https://microsoft.github.io/language-server-protocol/specifications/base/0.9/specification/
 
 // baseproto.go:15
-pub const ERR_INVALID_HEADER: &str = "jsonrpc: invalid header";
-pub const ERR_INVALID_CONTENT_LENGTH: &str = "jsonrpc: invalid content length";
-pub const ERR_NO_CONTENT_LENGTH: &str = "jsonrpc: no content length";
+const ERR_INVALID_HEADER: &str = "jsonrpc: invalid header";
+const ERR_INVALID_CONTENT_LENGTH: &str = "jsonrpc: invalid content length";
+const ERR_NO_CONTENT_LENGTH: &str = "jsonrpc: no content length";
 
 // baseproto.go:22
 // Reader reads JSON-RPC messages with Content-Length framing.
@@ -19,7 +19,7 @@ pub struct Reader<R: Read> {
 
 // baseproto.go:27
 // NewReader creates a new Reader.
-pub fn new_reader<R: Read>(r: R) -> Reader<R> {
+pub(crate) fn new_reader<R: Read>(r: R) -> Reader<R> {
     Reader { r: BufReader::with_capacity(4096, r) }
 }
 
@@ -137,7 +137,7 @@ pub struct Writer<W: Write> {
 
 // baseproto.go:84
 // NewWriter creates a new Writer.
-pub fn new_writer<W: Write>(w: W) -> Writer<W> {
+pub(crate) fn new_writer<W: Write>(w: W) -> Writer<W> {
     Writer { w: BufWriter::with_capacity(4096, w) }
 }
 

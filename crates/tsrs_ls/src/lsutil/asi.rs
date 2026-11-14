@@ -1,3 +1,8 @@
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+
 use tsrs_ast::{self as ast, FindAncestorResult, Kind, Node, SourceFile};
 use tsrs_core::P;
 use tsrs_scanner as scanner;
@@ -6,7 +11,7 @@ use super::*;
 use crate::astnav;
 
 // asi.go:9
-pub fn position_is_asi_candidate(pos: u32, context: P<Node>, file: P<SourceFile>) -> bool {
+pub(crate) fn position_is_asi_candidate(pos: u32, context: P<Node>, file: P<SourceFile>) -> bool {
     let context_ancestor = ast::find_ancestor_or_quit(context, |ancestor| {
         if ancestor.end().source_offset() != Some(pos) {
             return FindAncestorResult::Quit;
@@ -19,7 +24,7 @@ pub fn position_is_asi_candidate(pos: u32, context: P<Node>, file: P<SourceFile>
 }
 
 // asi.go:21
-pub fn syntax_may_be_asi_candidate(kind: Kind) -> bool {
+fn syntax_may_be_asi_candidate(kind: Kind) -> bool {
     syntax_requires_trailing_comma_or_semicolon_or_asi(kind)
         || syntax_requires_trailing_function_block_or_semicolon_or_asi(kind)
         || syntax_requires_trailing_module_block_or_semicolon_or_asi(kind)
@@ -27,7 +32,7 @@ pub fn syntax_may_be_asi_candidate(kind: Kind) -> bool {
 }
 
 // asi.go:28
-pub fn syntax_requires_trailing_comma_or_semicolon_or_asi(kind: Kind) -> bool {
+pub(crate) fn syntax_requires_trailing_comma_or_semicolon_or_asi(kind: Kind) -> bool {
     kind == Kind::CallSignature
         || kind == Kind::ConstructSignature
         || kind == Kind::IndexSignature
@@ -36,7 +41,7 @@ pub fn syntax_requires_trailing_comma_or_semicolon_or_asi(kind: Kind) -> bool {
 }
 
 // asi.go:36
-pub fn syntax_requires_trailing_function_block_or_semicolon_or_asi(kind: Kind) -> bool {
+fn syntax_requires_trailing_function_block_or_semicolon_or_asi(kind: Kind) -> bool {
     kind == Kind::FunctionDeclaration
         || kind == Kind::Constructor
         || kind == Kind::MethodDeclaration
@@ -45,12 +50,12 @@ pub fn syntax_requires_trailing_function_block_or_semicolon_or_asi(kind: Kind) -
 }
 
 // asi.go:44
-pub fn syntax_requires_trailing_module_block_or_semicolon_or_asi(kind: Kind) -> bool {
+fn syntax_requires_trailing_module_block_or_semicolon_or_asi(kind: Kind) -> bool {
     kind == Kind::ModuleDeclaration
 }
 
 // asi.go:48
-pub fn syntax_requires_trailing_semicolon_or_asi(kind: Kind) -> bool {
+pub(crate) fn syntax_requires_trailing_semicolon_or_asi(kind: Kind) -> bool {
     kind == Kind::VariableStatement
         || kind == Kind::ExpressionStatement
         || kind == Kind::DoStatement
@@ -69,7 +74,7 @@ pub fn syntax_requires_trailing_semicolon_or_asi(kind: Kind) -> bool {
 }
 
 // asi.go:66
-pub fn node_is_asi_candidate(node: P<Node>, file: P<SourceFile>) -> bool {
+fn node_is_asi_candidate(node: P<Node>, file: P<SourceFile>) -> bool {
     let last_token = get_last_token(Some(node), file);
     if last_token.is_some_and(|t| t.kind() == Kind::SemicolonToken) {
         return false;

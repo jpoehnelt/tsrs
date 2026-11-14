@@ -4,10 +4,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc_safe::MiMalloc = mimalloc_safe::MiMalloc;
 
-mod api;
-mod lsp;
-mod signals;
-
+use tsrs_cli::{api, lsp, signals};
 use tsrs_execute::{execute, sys, tsc};
 
 // TSRS_MEM_SPLIT (tsrs_core::memsplit): mimalloc's view of its heap, every page of every thread.
@@ -75,17 +72,27 @@ fn mimalloc_collect(force: bool) {
     let _ = force;
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     #[cfg(all(target_os = "linux", not(any(feature = "system-alloc", miri))))]
     tsrs_core::allocator::init_mimalloc();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // `std::env::args()` panics on an argument that isn't UTF-8. tsgo keeps the bytes and its diagnostics format them
+    // with `strings.ToValidUTF8`, so converting the same way up front prints the same text.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| tsrs_core::gocompat::to_valid_utf8(arg.as_encoded_bytes()))
+        .collect();
+    // `--lint` is the type-aware linter that oxlint runs (`tsrs-lint`, tools/tsgolint/README.md). It returns before
+    // any compiler command-line setup, so it runs exactly as the `tsrs-lint` binary does.
+    if args.first().map(String::as_str) == Some("--lint") {
+        return std::process::ExitCode::from(tsrs_lint::cli::main(args[1..].to_vec()) as u8);
+    }
     #[cfg(not(feature = "system-alloc"))]
     tsrs_core::memsplit::set_heap_hooks(mimalloc_heap_stats, mimalloc_collect);
     // main.go:21: `--lsp` runs the language server (its threads have their own stacks); `--api` runs the
     // native API server (docs/NODE_API.md).
     if args.first().map(String::as_str) == Some("--lsp") {
         signals::notify_interrupts();
-        std::process::exit(lsp::run_lsp(&args[1..]));
+        return std::process::ExitCode::from(lsp::run_lsp(&args[1..]) as u8);
     }
     if args.first().map(String::as_str) == Some("--api") {
         // Checking recurses deeply; serve requests on a large stack like the command line below.
@@ -97,7 +104,7 @@ fn main() {
             .unwrap()
             .join()
             .unwrap_or(1);
-        std::process::exit(status);
+        return std::process::ExitCode::from(status as u8);
     }
     // Type checking recurses deeply; run on a thread with a large stack
     // (Go's goroutine stacks grow on demand).
@@ -121,5 +128,6 @@ fn main() {
     tsrs_core::memsplit::report("exit");
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let _ = std::io::Write::flush(&mut std::io::stderr());
-    std::process::exit(status as i32)
+    // Return through the C runtime so LLVM's atexit handler writes PGO profiles on Windows too.
+    std::process::ExitCode::from(status as u8)
 }

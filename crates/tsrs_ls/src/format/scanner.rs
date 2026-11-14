@@ -7,12 +7,12 @@ use super::*;
 // scanner.go:12
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct TextRangeWithKind {
-    pub loc: TextRange,
-    pub kind: Kind,
+    pub(crate) loc: TextRange,
+    pub(crate) kind: Kind,
 }
 
 // scanner.go:17
-pub fn new_text_range_with_kind(pos: u32, end: u32, kind: Kind) -> TextRangeWithKind {
+pub(crate) fn new_text_range_with_kind(pos: u32, end: u32, kind: Kind) -> TextRangeWithKind {
     TextRangeWithKind { loc: TextRange::new(pos, end), kind }
 }
 
@@ -25,7 +25,7 @@ pub struct TokenInfo {
 }
 
 // scanner.go:30
-pub struct FormattingScanner {
+pub(crate) struct FormattingScanner {
     s: Scanner,
     start_pos: u32,
     end_pos: u32,
@@ -39,7 +39,7 @@ pub struct FormattingScanner {
 }
 
 // scanner.go:43
-pub fn new_formatting_scanner(
+pub(crate) fn new_formatting_scanner(
     text: &'static str,
     language_variant: LanguageVariant,
     start_pos: u32,

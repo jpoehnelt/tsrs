@@ -1,4 +1,4 @@
-import { defineConfig } from "vite-plus";
+import { defineConfig, lazyPlugins } from "vite-plus";
 import { prepareAssets } from "./scripts/prepare-assets.mjs";
 import { upstreamWebsite } from "./scripts/upstream-website.mjs";
 import { fileURLToPath } from "node:url";
@@ -22,7 +22,7 @@ export default defineConfig({
       },
     ],
   },
-  plugins: [
+  plugins: lazyPlugins(() => [
     upstreamWebsite(),
     {
       name: "playground-assets",
@@ -41,13 +41,8 @@ export default defineConfig({
         }
       },
     },
-  ],
+  ]),
   worker: { format: "es" },
   build: { assetsInlineLimit: 0 },
-  lint: {
-    ignorePatterns: ["vendor/**", "public/**", "src/generated/**"],
-    options: { typeAware: true, typeCheck: true },
-  },
-  fmt: { ignorePatterns: ["vendor/**", "public/**", "src/generated/**"] },
   test: { include: ["src/**/*.test.ts"], testTimeout: 30_000 },
 });

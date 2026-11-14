@@ -140,7 +140,12 @@ async function checkout(name, repo, commit, install, destination, project) {
       await exec(['git', '-C', destination, 'fetch', '-q', '--depth', '1', repo, commit], { inherit: true });
       await exec(['git', '-C', destination, '-c', 'advice.detachedHead=false', 'checkout', '-q', 'FETCH_HEAD']);
       for (const [relative, bytes] of overlay) { const target = path.join(destination, relative); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, bytes); }
-      if (install) await exec(['/bin/bash', '-lc', install], { cwd: destination, env: { ...process.env, CI: 'true', HUSKY: '0', COREPACK_ENABLE_PROJECT_SPEC: '0' }, timeout: 3600, inherit: true });
+      if (install) {
+        // Keep the bootstrap pnpm stable; install commands select each project's package manager.
+        const { packageManager } = await readJson(path.join(REPO, 'package.json'));
+        const env = { ...process.env, CI: 'true', HUSKY: '0', COREPACK_ENABLE_PROJECT_SPEC: '0', VP_PNPM_VERSION: packageManager.slice('pnpm@'.length) };
+        await exec(['/bin/bash', '-lc', install], { cwd: destination, env, timeout: 3600, inherit: true });
+      }
       await writeJson(path.join(destination, MARKER), marker);
       return;
     } catch (error) {
@@ -177,7 +182,9 @@ export function machine() {
 export function cleanEnvironment(workers, memoryGiB) {
   const env = { ...process.env }, removed = [];
   for (const key of Object.keys(env)) if (/^(TSRS_|TS_TEST_|RAYON_|MIMALLOC_|MALLOC_|Malloc)/.test(key) || ['GOGC', 'GOMEMLIMIT', 'GOMAXPROCS', 'GODEBUG'].includes(key)) { delete env[key]; removed.push(key); }
-  env.GOMAXPROCS = String(workers); env.RAYON_NUM_THREADS = String(workers);
+  // Older tsrs binaries ignore this variable and retain their then-default optimized mode.
+  env.TSRS_FAST = '1';
+  if (workers !== undefined) { env.GOMAXPROCS = String(workers); env.RAYON_NUM_THREADS = String(workers); }
   if (memoryGiB) env.GOMEMLIMIT = `${memoryGiB}GiB`;
   return { env, removed: removed.sort() };
 }

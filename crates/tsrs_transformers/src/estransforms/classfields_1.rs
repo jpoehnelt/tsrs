@@ -1,3 +1,8 @@
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "Only the public API is re-exported; implementation helpers remain crate-private."
+)]
+
 // Port of estransforms/classfields.go, part 1 (Go lines 1-1888: types, transformer, constructor and the functions up
 // to `visitInNewClassLexicalEnvironment`). Part 2 is classfields_2.rs.
 
@@ -76,31 +81,31 @@ pub struct ClassLexicalEnvironment {
     pub(crate) class_constructor: Cell<Option<P<Node>>>,
     pub(crate) class_this: Cell<Option<P<Node>>>,
     // superClassReference is used for `super` references in static initializers.
-    pub(crate) super_class_reference: Cell<Option<P<Node>>>,
+    super_class_reference: Cell<Option<P<Node>>>,
 }
 
 // classfields.go:82
 // classLexicalEnv is a linked list of class lexical environments.
-pub struct ClassLexicalEnv {
+pub(crate) struct ClassLexicalEnv {
     pub(crate) previous: Option<P<ClassLexicalEnv>>,
     pub(crate) data: Cell<Option<P<ClassLexicalEnvironment>>>,
     pub(crate) private_env: Cell<Option<P<PrivateEnvironment>>>,
 }
 
 // classfields.go:88
-pub struct ClassFieldsTransformer {
-    pub base: Transformer,
+pub(crate) struct ClassFieldsTransformer {
+    base: Transformer,
     pub(crate) compiler_options: P<CompilerOptions>,
-    pub(crate) resolver: ReferenceResolverRef,
+    resolver: ReferenceResolverRef,
 
     // Computed configuration flags
     pub(crate) should_transform_initializers_using_set: Cell<bool>,
-    pub(crate) should_transform_initializers_using_define: Cell<bool>,
+    should_transform_initializers_using_define: Cell<bool>,
     pub(crate) should_transform_initializers: Cell<bool>,
     pub(crate) should_transform_private_elements_or_class_static_blocks: Cell<bool>,
-    pub(crate) should_transform_auto_accessors: Cell<bool>,
+    should_transform_auto_accessors: Cell<bool>,
     pub(crate) should_transform_this_in_static_initializers: Cell<bool>,
-    pub(crate) should_transform_super_in_static_initializers: Cell<bool>,
+    should_transform_super_in_static_initializers: Cell<bool>,
     pub(crate) should_transform_private_static_elements_in_file: Cell<bool>,
     pub(crate) legacy_decorators: bool,
 
@@ -111,35 +116,35 @@ pub struct ClassFieldsTransformer {
     // initializers must be emitted at the next execution site, in document order (for decorated classes).
     pub(crate) pending_statements: RefCell<Vec<P<Node>>>,
     pub(crate) lexical_environment: Cell<Option<P<ClassLexicalEnv>>>,
-    pub(crate) current_class_container: Cell<Option<P<Node>>>,
+    current_class_container: Cell<Option<P<Node>>>,
     pub(crate) current_class_element: Cell<Option<P<Node>>>,
     // classAliases maps class declarations to alias identifiers for substituting class name
     // references in static initializers. Replaces Strada's onSubstituteNode/trySubstituteClassAlias.
     pub(crate) class_aliases: RefCell<FxHashMap<P<Node>, P<Node>>>,
-    pub(crate) enclosing_class_declarations: RefCell<FxHashSet<P<Node>>>,
-    pub(crate) in_iteration_statement: Cell<bool>,
+    enclosing_class_declarations: RefCell<FxHashSet<P<Node>>>,
+    in_iteration_statement: Cell<bool>,
     // insideComputedPropertyName replaces Strada's onEmitNode for ComputedPropertyName, which
     // switches to the outer lexical environment. Used by visitThisExpression() to apply
     // the outer environment's substitution without requiring currentClassElement to be static.
     pub(crate) inside_computed_property_name: Cell<bool>,
-    pub(crate) parent_node: Cell<Option<P<Node>>>,
-    pub(crate) current_node: Cell<Option<P<Node>>>,
+    parent_node: Cell<Option<P<Node>>>,
+    current_node: Cell<Option<P<Node>>>,
 
     // Visitors
-    pub(crate) modifier_visitor: OnceCell<NodeVisitor>,
-    pub(crate) discarded_value_visitor: OnceCell<NodeVisitor>,
-    pub(crate) heritage_clause_visitor: OnceCell<NodeVisitor>,
-    pub(crate) assignment_target_visitor: OnceCell<NodeVisitor>,
-    pub(crate) class_element_visitor: OnceCell<NodeVisitor>,
-    pub(crate) accessor_field_result_visitor: OnceCell<NodeVisitor>,
-    pub(crate) array_assignment_element_visitor: OnceCell<NodeVisitor>,
-    pub(crate) object_assignment_element_visitor: OnceCell<NodeVisitor>,
-    pub(crate) substitution_visitor: OnceCell<NodeVisitor>,
+    modifier_visitor: OnceCell<NodeVisitor>,
+    discarded_value_visitor: OnceCell<NodeVisitor>,
+    heritage_clause_visitor: OnceCell<NodeVisitor>,
+    assignment_target_visitor: OnceCell<NodeVisitor>,
+    class_element_visitor: OnceCell<NodeVisitor>,
+    accessor_field_result_visitor: OnceCell<NodeVisitor>,
+    array_assignment_element_visitor: OnceCell<NodeVisitor>,
+    object_assignment_element_visitor: OnceCell<NodeVisitor>,
+    substitution_visitor: OnceCell<NodeVisitor>,
     // Go `isAnonymousClassNeedingAssignedName` (a pre-bound method value) is a closure built at each call site.
 }
 
 // classfields.go:140
-pub fn new_class_fields_transformer(opts: &TransformOptions) -> Option<P<Transformer>> {
+pub(crate) fn new_class_fields_transformer(opts: &TransformOptions) -> Option<P<Transformer>> {
     let language_version = opts.compiler_options.get_emit_script_target();
     let use_define_for_class_fields = opts.compiler_options.get_use_define_for_class_fields();
 
@@ -267,7 +272,7 @@ impl ClassFieldsTransformer {
         self.modifier_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn discarded_value_visitor(&self) -> NodeVisitor {
+    fn discarded_value_visitor(&self) -> NodeVisitor {
         self.discarded_value_visitor.get().unwrap().clone()
     }
 
@@ -275,7 +280,7 @@ impl ClassFieldsTransformer {
         self.heritage_clause_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn assignment_target_visitor(&self) -> NodeVisitor {
+    fn assignment_target_visitor(&self) -> NodeVisitor {
         self.assignment_target_visitor.get().unwrap().clone()
     }
 
@@ -283,7 +288,7 @@ impl ClassFieldsTransformer {
         self.class_element_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn accessor_field_result_visitor(&self) -> NodeVisitor {
+    fn accessor_field_result_visitor(&self) -> NodeVisitor {
         self.accessor_field_result_visitor.get().unwrap().clone()
     }
 
@@ -295,7 +300,7 @@ impl ClassFieldsTransformer {
         self.object_assignment_element_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn substitution_visitor(&self) -> NodeVisitor {
+    fn substitution_visitor(&self) -> NodeVisitor {
         self.substitution_visitor.get().unwrap().clone()
     }
 
@@ -331,7 +336,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:220
-    pub(crate) fn visit_source_file(&self, node: P<Node>) -> P<Node> {
+    fn visit_source_file(&self, node: P<Node>) -> P<Node> {
         if node.as_source_file().is_declaration_file.get() {
             return node;
         }
@@ -351,7 +356,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:235
-    pub(crate) fn visit_modifier(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_modifier(&self, node: P<Node>) -> Option<P<Node>> {
         if node.kind() == Kind::AccessorKeyword {
             if self.should_transform_auto_accessors_in_current_class() {
                 return None;
@@ -365,7 +370,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:248
-    pub(crate) fn push_node(&self, node: P<Node>) -> Option<P<Node>> {
+    fn push_node(&self, node: P<Node>) -> Option<P<Node>> {
         let grandparent_node = self.parent_node.get();
         self.parent_node.set(self.current_node.get());
         self.current_node.set(Some(node));
@@ -373,7 +378,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:255
-    pub(crate) fn pop_node(&self, grandparent_node: Option<P<Node>>) {
+    fn pop_node(&self, grandparent_node: Option<P<Node>>) {
         self.current_node.set(self.parent_node.get());
         self.parent_node.set(grandparent_node);
     }
@@ -384,7 +389,7 @@ impl ClassFieldsTransformer {
     // identifiers that reference class declarations with their aliases, while skipping
     // the .Name() of PropertyAccessExpressions since Strada's onSubstituteNode only
     // fires for EmitHint.Expression, which excludes property access names.
-    pub(crate) fn visit_for_substitution(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_for_substitution(&self, node: P<Node>) -> Option<P<Node>> {
         if node.kind() == Kind::Identifier {
             return Some(self.visit_identifier(node));
         }
@@ -401,7 +406,7 @@ impl ClassFieldsTransformer {
 
     // classfields.go:276
     // visit is the main visitor.
-    pub(crate) fn visit(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit(&self, node: P<Node>) -> Option<P<Node>> {
         let grandparent_node = self.push_node(node);
         let result = self.visit_worker(node);
         self.pop_node(grandparent_node);
@@ -475,7 +480,7 @@ impl ClassFieldsTransformer {
 
     // classfields.go:343
     // visitDiscardedValue visits a node in an expression whose result is discarded.
-    pub(crate) fn visit_discarded_value(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_discarded_value(&self, node: P<Node>) -> Option<P<Node>> {
         match node.kind() {
             Kind::PrefixUnaryExpression | Kind::PostfixUnaryExpression => {
                 self.visit_pre_or_postfix_unary_expression(node, true /*discarded*/)
@@ -490,7 +495,7 @@ impl ClassFieldsTransformer {
 
     // classfields.go:357
     // visitHeritageClause visits a node in a HeritageClause.
-    pub(crate) fn visit_heritage_clause(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_heritage_clause(&self, node: P<Node>) -> Option<P<Node>> {
         match node.kind() {
             Kind::HeritageClause => self.heritage_clause_visitor().visit_each_child(Some(node)),
             Kind::ExpressionWithTypeArguments => {
@@ -502,7 +507,7 @@ impl ClassFieldsTransformer {
 
     // classfields.go:369
     // visitAssignmentTarget visits the assignment target of a destructuring assignment.
-    pub(crate) fn visit_assignment_target(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_assignment_target(&self, node: P<Node>) -> Option<P<Node>> {
         match node.kind() {
             Kind::ObjectLiteralExpression | Kind::ArrayLiteralExpression => {
                 self.visit_assignment_pattern(node)
@@ -566,7 +571,7 @@ impl ClassFieldsTransformer {
 
     // classfields.go:416
     // visitClassElement visits a member of a class.
-    pub(crate) fn visit_class_element(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_class_element(&self, node: P<Node>) -> Option<P<Node>> {
         match node.kind() {
             Kind::Constructor => self.set_current_class_element_and(
                 Some(node),
@@ -602,7 +607,7 @@ impl ClassFieldsTransformer {
 
     // classfields.go:439
     // visitPropertyName visits a property name of a class member.
-    pub(crate) fn visit_property_name(&self, name: P<Node>) -> Option<P<Node>> {
+    fn visit_property_name(&self, name: P<Node>) -> Option<P<Node>> {
         if ast::is_computed_property_name(name) {
             return self.visit_computed_property_name(name);
         }
@@ -611,7 +616,7 @@ impl ClassFieldsTransformer {
 
     // classfields.go:447
     // visitAccessorFieldResult visits the results of an auto-accessor field transformation in a second pass.
-    pub(crate) fn visit_accessor_field_result(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_accessor_field_result(&self, node: P<Node>) -> Option<P<Node>> {
         match node.kind() {
             Kind::PropertyDeclaration => self.transform_field_initializer(node),
             Kind::GetAccessor | Kind::SetAccessor => self.visit_class_element(node),
@@ -628,7 +633,7 @@ impl ClassFieldsTransformer {
     // visitIdentifier replaces Strada's onSubstituteNode/trySubstituteClassAlias. Instead of
     // substituting at emit time using NodeCheckFlags.ConstructorReference, we resolve the
     // identifier to its declaration and check if that declaration has a registered alias.
-    pub(crate) fn visit_identifier(&self, node: P<Node>) -> P<Node> {
+    fn visit_identifier(&self, node: P<Node>) -> P<Node> {
         let declaration = self.resolver.get_referenced_value_declaration(
             self.emit_context().most_original(Some(node)).unwrap(),
         );
@@ -655,7 +660,7 @@ impl ClassFieldsTransformer {
         clippy::unnecessary_wraps,
         reason = "Visitor branches share an optional node result so sibling branches can remove a node."
     )]
-    pub(crate) fn visit_private_identifier(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_private_identifier(&self, node: P<Node>) -> Option<P<Node>> {
         if !self.should_transform_private_elements_or_class_static_blocks.get() {
             return Some(node);
         }
@@ -669,10 +674,7 @@ impl ClassFieldsTransformer {
 
     // classfields.go:492
     // transformPrivateIdentifierInInExpression visits `#id in expr`.
-    pub(crate) fn transform_private_identifier_in_in_expression(
-        &self,
-        node: P<Node>,
-    ) -> Option<P<Node>> {
+    fn transform_private_identifier_in_in_expression(&self, node: P<Node>) -> Option<P<Node>> {
         let b = node.as_binary_expression();
         let info = self.access_private_identifier(b.left);
         if let Some(info) = info {
@@ -688,7 +690,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:504
-    pub(crate) fn visit_property_assignment(&self, mut node: P<Node>) -> Option<P<Node>> {
+    fn visit_property_assignment(&self, mut node: P<Node>) -> Option<P<Node>> {
         // 13.2.5.5 RS: PropertyDefinitionEvaluation
         //   PropertyAssignment : PropertyName `:` AssignmentExpression
         //     ...
@@ -712,7 +714,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:518
-    pub(crate) fn visit_variable_statement(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_variable_statement(&self, node: P<Node>) -> Option<P<Node>> {
         let saved_pending_statements = std::mem::take(&mut *self.pending_statements.borrow_mut());
 
         let visited_node = self.visitor().visit_each_child(Some(node));
@@ -733,7 +735,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:536
-    pub(crate) fn visit_variable_declaration(&self, mut node: P<Node>) -> Option<P<Node>> {
+    fn visit_variable_declaration(&self, mut node: P<Node>) -> Option<P<Node>> {
         // 14.3.1.2 RS: Evaluation
         //   LexicalBinding : BindingIdentifier Initializer
         //     ...
@@ -759,7 +761,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:557
-    pub(crate) fn visit_parameter_declaration(&self, mut node: P<Node>) -> Option<P<Node>> {
+    fn visit_parameter_declaration(&self, mut node: P<Node>) -> Option<P<Node>> {
         // 8.6.3 RS: IteratorBindingInitialization
         //   SingleNameBinding : BindingIdentifier Initializer?
         //     ...
@@ -787,7 +789,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:580
-    pub(crate) fn visit_binding_element(&self, mut node: P<Node>) -> Option<P<Node>> {
+    fn visit_binding_element(&self, mut node: P<Node>) -> Option<P<Node>> {
         // 8.6.3 RS: IteratorBindingInitialization
         //   SingleNameBinding : BindingIdentifier Initializer?
         //     ...
@@ -815,7 +817,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:603
-    pub(crate) fn visit_export_assignment(&self, mut node: P<Node>) -> Option<P<Node>> {
+    fn visit_export_assignment(&self, mut node: P<Node>) -> Option<P<Node>> {
         // 16.2.3.7 RS: Evaluation
         //   ExportDeclaration : `export` `default` AssignmentExpression `;`
         //     1. If IsAnonymousFunctionDefinition(|AssignmentExpression|) is *true*, then
@@ -845,7 +847,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:623
-    pub(crate) fn inject_pending_expressions(&self, mut expression: P<Node>) -> P<Node> {
+    fn inject_pending_expressions(&self, mut expression: P<Node>) -> P<Node> {
         if !self.pending_expressions.borrow().is_empty() {
             if ast::is_parenthesized_expression(expression) {
                 self.pending_expressions.borrow_mut().push(expression.expression().unwrap());
@@ -867,7 +869,7 @@ impl ClassFieldsTransformer {
         clippy::unnecessary_wraps,
         reason = "Visitor branches share an optional node result so sibling branches can remove a node."
     )]
-    pub(crate) fn visit_computed_property_name(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_computed_property_name(&self, node: P<Node>) -> Option<P<Node>> {
         // Computed property names are evaluated in the enclosing scope, not the current class.
         // Replaces Strada's onEmitNode for ComputedPropertyName which switches to
         // lexicalEnvironment?.previous. We do this explicitly during transformation.
@@ -888,7 +890,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:656
-    pub(crate) fn visit_constructor_declaration(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_constructor_declaration(&self, node: P<Node>) -> Option<P<Node>> {
         if let Some(container) = self.current_class_container.get() {
             return self.transform_constructor(Some(node), container);
         }
@@ -904,7 +906,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:670
-    pub(crate) fn should_always_transform_private_static_elements(&self, node: P<Node>) -> bool {
+    fn should_always_transform_private_static_elements(&self, node: P<Node>) -> bool {
         ast::has_static_modifier(node)
             && self
                 .emit_context()
@@ -921,7 +923,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:681
-    pub(crate) fn visit_method_or_accessor_declaration(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_method_or_accessor_declaration(&self, node: P<Node>) -> Option<P<Node>> {
         assert!(!ast::has_decorators(node));
 
         if !ast::is_private_identifier_class_element_declaration(node)
@@ -970,10 +972,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:714
-    pub(crate) fn extract_non_static_non_accessor_modifiers(
-        &self,
-        node: P<Node>,
-    ) -> Option<P<ModifierList>> {
+    fn extract_non_static_non_accessor_modifiers(&self, node: P<Node>) -> Option<P<ModifierList>> {
         extract_modifiers(
             self.emit_context(),
             node.modifiers(),
@@ -1000,12 +999,12 @@ impl ClassFieldsTransformer {
 
     // classfields.go:730
     // visitEachChildOfNode just calls Visitor.VisitEachChild, but is necessary to avoid repeated closure allocations when passing as a callback.
-    pub(crate) fn visit_each_child_of_node(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_each_child_of_node(&self, node: P<Node>) -> Option<P<Node>> {
         self.visitor().visit_each_child(Some(node))
     }
 
     // classfields.go:734
-    pub(crate) fn set_in_iteration_statement_and(
+    fn set_in_iteration_statement_and(
         &self,
         in_iteration: bool,
         visitor: fn(&Self, P<Node>) -> Option<P<Node>>,
@@ -1034,10 +1033,7 @@ impl ClassFieldsTransformer {
     // member of the current class. This allows visitThisExpression to correctly substitute
     // `this` -> `_classThis` inside synthesized functions (e.g., ES decorator descriptor
     // methods for static private auto-accessors).
-    pub(crate) fn visit_function_expression_or_declaration(
-        &self,
-        node: P<Node>,
-    ) -> Option<P<Node>> {
+    fn visit_function_expression_or_declaration(&self, node: P<Node>) -> Option<P<Node>> {
         if self.current_class_element.get().is_some() {
             let original = self.emit_context().most_original(Some(node));
             if original != Some(node)
@@ -1068,12 +1064,12 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:781
-    pub(crate) fn set_class_element_and_visit_each_child(&self, node: P<Node>) -> Option<P<Node>> {
+    fn set_class_element_and_visit_each_child(&self, node: P<Node>) -> Option<P<Node>> {
         self.set_current_class_element_and(Some(node), Self::visit_each_child_of_node, node)
     }
 
     // classfields.go:785
-    pub(crate) fn get_hoisted_function_name(&self, node: P<Node>) -> Option<P<Node>> {
+    fn get_hoisted_function_name(&self, node: P<Node>) -> Option<P<Node>> {
         assert!(node.name().is_some_and(ast::is_private_identifier));
         let info = self.access_private_identifier(node.name().unwrap());
         assert!(info.is_some(), "Undeclared private name for property declaration.");
@@ -1093,7 +1089,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:803
-    pub(crate) fn try_get_class_this(&self) -> Option<P<Node>> {
+    fn try_get_class_this(&self) -> Option<P<Node>> {
         if let Some(class_this) = self.try_get_class_this_no_container() {
             return Some(class_this);
         }
@@ -1129,7 +1125,7 @@ impl ClassFieldsTransformer {
         clippy::unnecessary_wraps,
         reason = "Visitor branches share an optional node result so sibling branches can remove a node."
     )]
-    pub(crate) fn transform_auto_accessor(&self, node: P<Node>) -> Option<P<Node>> {
+    fn transform_auto_accessor(&self, node: P<Node>) -> Option<P<Node>> {
         let comment_range = self.emit_context().comment_range(node);
         let source_map_range = self.emit_context().source_map_range(node);
 
@@ -1217,7 +1213,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:895
-    pub(crate) fn transform_private_field_initializer(&self, mut node: P<Node>) -> Option<P<Node>> {
+    fn transform_private_field_initializer(&self, mut node: P<Node>) -> Option<P<Node>> {
         if self.should_transform_class_element_to_weak_map(node) {
             // If we are transforming private elements into WeakMap/WeakSet, we should elide the node.
             let info = self.get_private_identifier(
@@ -1293,7 +1289,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:949
-    pub(crate) fn transform_public_field_initializer(&self, node: P<Node>) -> Option<P<Node>> {
+    fn transform_public_field_initializer(&self, node: P<Node>) -> Option<P<Node>> {
         if self.should_transform_initializers.get()
             && !ast::is_auto_accessor_property_declaration(node)
         {
@@ -1353,7 +1349,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:993
-    pub(crate) fn transform_field_initializer(&self, node: P<Node>) -> Option<P<Node>> {
+    fn transform_field_initializer(&self, node: P<Node>) -> Option<P<Node>> {
         assert!(
             !ast::has_decorators(node),
             "Decorators should already have been transformed and elided."
@@ -1379,7 +1375,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1011
-    pub(crate) fn visit_property_declaration(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_property_declaration(&self, node: P<Node>) -> Option<P<Node>> {
         // If this is an auto-accessor, we defer to `transformAutoAccessor`. That function
         // will in turn call `transformFieldInitializer` as needed.
         if ast::is_auto_accessor_property_declaration(node)
@@ -1393,7 +1389,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1022
-    pub(crate) fn create_private_identifier_access(
+    fn create_private_identifier_access(
         &self,
         info: P<PrivateIdentifierInfo>,
         receiver: P<Node>,
@@ -1403,7 +1399,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1027
-    pub(crate) fn create_private_identifier_access_helper(
+    fn create_private_identifier_access_helper(
         &self,
         info: P<PrivateIdentifierInfo>,
         receiver: P<Node>,
@@ -1445,7 +1441,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1064
-    pub(crate) fn visit_property_access_expression(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_property_access_expression(&self, node: P<Node>) -> Option<P<Node>> {
         let pa = node.as_property_access_expression();
         if ast::is_private_identifier(pa.name()) {
             let info = self.access_private_identifier(pa.name());
@@ -1500,7 +1496,7 @@ impl ClassFieldsTransformer {
     // visitPropertyAccessExpressionForSubstitution visits only the expression of a PropertyAccessExpression,
     // leaving the name unchanged. This prevents the name from being treated as a standalone identifier
     // reference and incorrectly substituted with a class alias.
-    pub(crate) fn visit_property_access_expression_for_substitution(
+    fn visit_property_access_expression_for_substitution(
         &self,
         node: P<Node>,
         mut visitor: NodeVisitor,
@@ -1520,7 +1516,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1116
-    pub(crate) fn visit_element_access_expression(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_element_access_expression(&self, node: P<Node>) -> Option<P<Node>> {
         let ea = node.as_element_access_expression();
         if self.should_transform_super_in_static_initializers.get()
             && self.current_class_element.get().is_some()
@@ -1552,7 +1548,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1140
-    pub(crate) fn visit_pre_or_postfix_unary_expression(
+    fn visit_pre_or_postfix_unary_expression(
         &self,
         node: P<Node>,
         discarded: bool,
@@ -1717,7 +1713,7 @@ impl ClassFieldsTransformer {
         clippy::unnecessary_wraps,
         reason = "Visitor branches share an optional node result so sibling branches can remove a node."
     )]
-    pub(crate) fn visit_for_statement(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_for_statement(&self, node: P<Node>) -> Option<P<Node>> {
         let n = node.as_for_statement();
         let initializer = self.discarded_value_visitor().visit_node(n.initializer);
         let condition = self.visitor().visit_node(n.condition);
@@ -1741,7 +1737,7 @@ impl ClassFieldsTransformer {
         clippy::unnecessary_wraps,
         reason = "Visitor branches share an optional node result so sibling branches can remove a node."
     )]
-    pub(crate) fn visit_expression_statement(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_expression_statement(&self, node: P<Node>) -> Option<P<Node>> {
         let expression = node.as_expression_statement().expression;
         // Preserve private identifiers that appear directly as the expression of an
         // ExpressionStatement (e.g., `#;`). This is error-recovery output from the parser
@@ -1760,10 +1756,7 @@ impl ClassFieldsTransformer {
 
     // classfields.go:1269
     // Returns (readExpression, initializeExpression).
-    pub(crate) fn create_copiable_receiver_expr(
-        &self,
-        receiver: P<Node>,
-    ) -> (P<Node>, Option<P<Node>>) {
+    fn create_copiable_receiver_expr(&self, receiver: P<Node>) -> (P<Node>, Option<P<Node>>) {
         let mut clone = receiver;
         if !ast::node_is_synthesized(receiver) {
             clone = receiver.clone_node(self.factory());
@@ -1779,7 +1772,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1283
-    pub(crate) fn visit_call_expression(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_call_expression(&self, node: P<Node>) -> Option<P<Node>> {
         let call = node.as_call_expression();
         if ast::is_property_access_expression(call.expression)
             && ast::is_private_identifier(call.expression.as_property_access_expression().name())
@@ -1856,7 +1849,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1338
-    pub(crate) fn visit_tagged_template_expression(&self, node: P<Node>) -> Option<P<Node>> {
+    fn visit_tagged_template_expression(&self, node: P<Node>) -> Option<P<Node>> {
         let tt = node.as_tagged_template_expression();
         if ast::is_property_access_expression(tt.tag)
             && ast::is_private_identifier(tt.tag.as_property_access_expression().name())
@@ -1984,7 +1977,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1424
-    pub(crate) fn set_current_class_element_and_visit_statements(
+    fn set_current_class_element_and_visit_statements(
         &self,
         class_element: P<Node>,
         statements: &'static [P<Node>],
@@ -1997,7 +1990,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1432
-    pub(crate) fn is_anonymous_class_needing_assigned_name_worker(
+    fn is_anonymous_class_needing_assigned_name_worker(
         &self,
         node: P<Node>, /*anonymousFunctionDefinition*/
     ) -> bool {
@@ -2025,11 +2018,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1452
-    pub(crate) fn visit_binary_expression(
-        &self,
-        mut node: P<Node>,
-        discarded: bool,
-    ) -> Option<P<Node>> {
+    fn visit_binary_expression(&self, mut node: P<Node>, discarded: bool) -> Option<P<Node>> {
         if ast::is_destructuring_assignment(node) {
             // ({ x: obj.#x } = ...)
             // ({ x: super.x } = ...)
@@ -2233,11 +2222,7 @@ impl ClassFieldsTransformer {
         clippy::unnecessary_wraps,
         reason = "Visitor branches share an optional node result so sibling branches can remove a node."
     )]
-    pub(crate) fn visit_parenthesized_expression(
-        &self,
-        node: P<Node>,
-        discarded: bool,
-    ) -> Option<P<Node>> {
+    fn visit_parenthesized_expression(&self, node: P<Node>, discarded: bool) -> Option<P<Node>> {
         // 8.4.5 RS: NamedEvaluation
         //   ParenthesizedExpression : `(` Expression `)`
         //     ...
@@ -2334,11 +2319,7 @@ impl ClassFieldsTransformer {
     // NodeCheckFlags.ContainsConstructorReference) by walking the AST with the EmitResolver.
     // Only checks member bodies (not computed property names), since computed property names
     // are evaluated during class definition when the binding is still correct.
-    pub(crate) fn member_contains_constructor_reference(
-        &self,
-        member: P<Node>,
-        class_decl: P<Node>,
-    ) -> bool {
+    fn member_contains_constructor_reference(&self, member: P<Node>, class_decl: P<Node>) -> bool {
         fn check(
             tx: &ClassFieldsTransformer,
             class_original: Option<P<Node>>,
@@ -2398,7 +2379,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1747
-    pub(crate) fn get_class_facts(&self, node: P<Node>) -> classFacts {
+    fn get_class_facts(&self, node: P<Node>) -> classFacts {
         let mut facts = classFacts::None;
 
         let original = self.emit_context().most_original(Some(node)).unwrap();
@@ -2496,7 +2477,7 @@ impl ClassFieldsTransformer {
     }
 
     // classfields.go:1815
-    pub(crate) fn visit_expression_with_type_arguments_in_heritage_clause(
+    fn visit_expression_with_type_arguments_in_heritage_clause(
         &self,
         node: P<Node>,
     ) -> Option<P<Node>> {

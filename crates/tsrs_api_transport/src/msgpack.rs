@@ -36,14 +36,14 @@ impl MessageType {
     }
 }
 
-pub const MSGPACK_FIXED_ARRAY3: u8 = 0x93;
-pub const MSGPACK_BIN8: u8 = 0xC4;
-pub const MSGPACK_BIN16: u8 = 0xC5;
-pub const MSGPACK_BIN32: u8 = 0xC6;
-pub const MSGPACK_U8: u8 = 0xCC;
+const MSGPACK_FIXED_ARRAY3: u8 = 0x93;
+const MSGPACK_BIN8: u8 = 0xC4;
+const MSGPACK_BIN16: u8 = 0xC5;
+const MSGPACK_BIN32: u8 = 0xC6;
+const MSGPACK_U8: u8 = 0xCC;
 
 /// api.ErrInvalidRequest's text.
-pub const ERR_INVALID_REQUEST: &str = "api: invalid request";
+const ERR_INVALID_REQUEST: &str = "api: invalid request";
 
 /// A decoded tuple.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -252,11 +252,4 @@ impl<W: Write + Send> ProtocolWriter for MessagePackWriter<W> {
         let method = id.text();
         self.write_tuple(MessageType::Error, method.as_bytes(), err.message.as_bytes())
     }
-}
-
-/// Encodes a tuple exactly as writeTuple does (test and client helper).
-pub fn encode_tuple(msg_type: MessageType, method: &[u8], payload: &[u8]) -> Vec<u8> {
-    let mut w = MessagePackWriter::new(Vec::new());
-    w.write_tuple(msg_type, method, payload).expect("writing to a Vec cannot fail");
-    w.w.into_inner().map_err(|_| ()).expect("flush to Vec")
 }
